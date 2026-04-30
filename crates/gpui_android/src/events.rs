@@ -59,12 +59,19 @@ pub(crate) fn translate_motion_event(
 
     match event.action() {
         MotionAction::Down | MotionAction::PointerDown => {
+            // `first_mouse: false` because there's no window-focus concept on
+            // Android; the app is always focused when it receives input.
+            // Setting `true` would make every click look like a focus-the-
+            // window-first click, which `ClickEvent::first_focus` returns as
+            // true — and listeners like ProjectPanel's on_click bail on a
+            // "first focus" click, so files would never open / folders would
+            // never expand.
             Some(PlatformInput::MouseDown(MouseDownEvent {
                 button: MouseButton::Left,
                 position,
                 modifiers,
                 click_count: 1,
-                first_mouse: true,
+                first_mouse: false,
             }))
         }
         MotionAction::Up | MotionAction::PointerUp => Some(PlatformInput::MouseUp(MouseUpEvent {
