@@ -92,10 +92,45 @@ impl Platform for AndroidPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
-        // Phase 7.3 will fill in the actual event loop. For 7.2 we just invoke the
-        // launch callback so smoke tests can verify the platform constructs.
-        log::warn!("AndroidPlatform::run — Phase 7.3 event loop not yet wired");
+        log::info!("AndroidPlatform::run: invoking on_finish_launching");
         on_finish_launching();
+        log::info!("AndroidPlatform::run: entering event loop");
+
+        while self.common.borrow().running {
+            // Block until: timeout, waker, or a main-event from android-activity.
+            self.android_app.poll_events(
+                Some(std::time::Duration::from_millis(16)),
+                |event| match event {
+                    android_activity::PollEvent::Wake => {}
+                    android_activity::PollEvent::Timeout => {}
+                    android_activity::PollEvent::Main(main_event) => {
+                        log::trace!("MainEvent: {main_event:?}");
+                        // Phase 7.4 will dispatch InitWindow/TerminateWindow/RedrawNeeded
+                        // to the active window. Phase 7.5 adds input event translation.
+                        if matches!(main_event, android_activity::MainEvent::Destroy) {
+                            self.common.borrow_mut().running = false;
+                        }
+                    }
+                    _ => {}
+                },
+            );
+
+            // Drain main-thread runnables enqueued from background threads. The
+            // AndroidAppWaker wakes poll_events above when there's work; we drain
+            // each tick regardless to catch anything between waker and poll.
+            let receiver = self.common.borrow().main_receiver.clone();
+            for runnable in receiver.try_iter() {
+                if let Ok(runnable) = runnable {
+                    runnable.run();
+                }
+            }
+        }
+
+        log::info!("AndroidPlatform::run: exiting event loop");
+        let quit = self.common.borrow_mut().callbacks.quit.take();
+        if let Some(mut fun) = quit {
+            fun();
+        }
     }
 
     fn quit(&self) {
