@@ -229,11 +229,10 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                     Ok(panel) => {
                         if let Err(err) = weak.update_in(cx, |workspace, window, cx| {
                             workspace.add_panel(panel, window, cx);
-                            workspace.open_panel::<project_panel::ProjectPanel>(window, cx);
                         }) {
                             error!("zed_android: add_panel failed: {err:#}");
                         } else {
-                            info!("zed_android: project_panel attached + opened");
+                            info!("zed_android: project_panel attached");
                         }
                     }
                     Err(err) => error!("zed_android: ProjectPanel::load failed: {err:#}"),
