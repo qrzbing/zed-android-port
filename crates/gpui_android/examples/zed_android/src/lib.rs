@@ -176,7 +176,9 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     command_palette::init(cx);
     search::init(cx);
     vim::init(cx);
-    info!("zed_android: client/Project/workspace/command_palette/search/vim init complete");
+    project_panel::init(cx);
+    settings_ui::init(cx);
+    info!("zed_android: client/Project/workspace/command_palette/search/vim/project_panel/settings_ui init complete");
 
     let project = Project::local(
         client.clone(),
@@ -220,10 +222,39 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         });
         workspace.update(cx, |workspace, cx| {
             workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
+
+            let weak = cx.weak_entity();
+            cx.spawn_in(window, async move |_, cx| {
+                match project_panel::ProjectPanel::load(weak.clone(), cx.clone()).await {
+                    Ok(panel) => {
+                        if let Err(err) = weak.update_in(cx, |workspace, window, cx| {
+                            workspace.add_panel(panel, window, cx);
+                        }) {
+                            error!("zed_android: add_panel failed: {err:#}");
+                        } else {
+                            info!("zed_android: project_panel attached");
+                        }
+                    }
+                    Err(err) => error!("zed_android: ProjectPanel::load failed: {err:#}"),
+                }
+            })
+            .detach();
         });
         workspace
     })?;
 
     info!("zed_android: workspace window opened");
+
+    let worktree_path = PathBuf::from("/sdcard/Documents");
+    project
+        .update(cx, |project, cx| {
+            project.create_worktree(worktree_path.clone(), true, cx)
+        })
+        .detach();
+    info!(
+        "zed_android: worktree creation scheduled for {}",
+        worktree_path.display()
+    );
+
     Ok(())
 }
