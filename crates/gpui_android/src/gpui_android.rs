@@ -3,6 +3,7 @@
 
 mod dispatcher;
 mod display;
+mod events;
 mod keyboard;
 mod platform;
 mod window;

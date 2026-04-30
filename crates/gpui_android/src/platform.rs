@@ -97,6 +97,48 @@ impl AndroidPlatform {
         }
     }
 
+    /// Pull every queued `InputEvent` off android-activity's iterator and
+    /// route translatable ones into the active gpui window. Returning
+    /// `InputStatus::Handled` for our own events lets android-activity stop
+    /// propagating them up the system input stack (e.g. so a keyboard ENTER
+    /// doesn't also dismiss the keyboard).
+    fn drain_input_events(&self) {
+        use android_activity::input::InputEvent;
+        use android_activity::InputStatus;
+
+        let Some(window_ptr) = self.common.borrow().window.clone() else {
+            return;
+        };
+        let Ok(mut iter) = self.android_app.input_events_iter() else {
+            return;
+        };
+        let scale_factor = self.compute_scale_factor();
+        loop {
+            let read = iter.next(|event| match event {
+                InputEvent::KeyEvent(key) => match crate::events::translate_key_event(key) {
+                    Some(input) => {
+                        window_ptr.handle_input(input);
+                        InputStatus::Handled
+                    }
+                    None => InputStatus::Unhandled,
+                },
+                InputEvent::MotionEvent(motion) => {
+                    match crate::events::translate_motion_event(motion, scale_factor) {
+                        Some(input) => {
+                            window_ptr.handle_input(input);
+                            InputStatus::Handled
+                        }
+                        None => InputStatus::Unhandled,
+                    }
+                }
+                _ => InputStatus::Unhandled,
+            });
+            if !read {
+                break;
+            }
+        }
+    }
+
     fn handle_main_event(&self, event: android_activity::MainEvent<'_>) {
         use android_activity::MainEvent;
         match event {
@@ -184,6 +226,12 @@ impl Platform for AndroidPlatform {
                     runnable.run();
                 }
             }
+
+            // Drain input events into the active window. We call this every
+            // tick rather than only on Wake — android-activity gates input
+            // delivery on this iterator being polled, so missing a tick can
+            // stall touch.
+            self.drain_input_events();
 
             // Drive a paint at the poll cadence (~60Hz from the 16ms timeout).
             // gpui's request_frame callback short-circuits when nothing has

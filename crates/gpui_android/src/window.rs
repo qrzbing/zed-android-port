@@ -227,6 +227,36 @@ impl AndroidWindowStatePtr {
             self.callbacks.borrow_mut().request_frame = Some(callback);
         }
     }
+
+    /// Dispatches a translated input event into gpui via the registered
+    /// `on_input` callback, then routes printable `KeyDown`s through the
+    /// active `PlatformInputHandler` (gpui's text-input path) when the
+    /// callback didn't claim them.
+    pub(crate) fn handle_input(&self, input: PlatformInput) {
+        let callback = self.callbacks.borrow_mut().input.take();
+        if let Some(mut callback) = callback {
+            let result = callback(input.clone());
+            self.callbacks.borrow_mut().input = Some(callback);
+            if !result.propagate {
+                return;
+            }
+        }
+        if let PlatformInput::KeyDown(event) = input {
+            // Only allow shift as the modifier when inserting text — anything
+            // else (ctrl-c, alt-anything) is presumed to be a binding.
+            if event.keystroke.modifiers.is_subset_of(&Modifiers::shift()) {
+                let mut state = self.state.borrow_mut();
+                if let Some(mut input_handler) = state.input_handler.take() {
+                    if let Some(key_char) = &event.keystroke.key_char {
+                        drop(state);
+                        input_handler.replace_text_in_range(None, key_char);
+                        state = self.state.borrow_mut();
+                    }
+                    state.input_handler = Some(input_handler);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) struct AndroidWindow(pub(crate) AndroidWindowStatePtr);
