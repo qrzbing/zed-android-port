@@ -24,7 +24,7 @@ use gpui::{App, AppContext as _, KeyBinding, actions};
 use language::{Buffer, Language, LanguageConfig};
 use log::{error, info};
 use multi_buffer::MultiBuffer;
-use workspace::{AppState, Workspace, WorkspaceStore};
+use workspace::{AppState, MultiWorkspace, Workspace, WorkspaceStore};
 use reqwest_client::ReqwestClient;
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
@@ -131,21 +131,6 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         registry.list().len()
     );
 
-    // Load the default keymap so backspace/delete/arrows/ctrl-shortcuts route
-    // to editor actions. `_allow_partial_failure` skips bindings whose actions
-    // aren't registered yet (vim::*, terminal::*, workspace::* until 8.3) —
-    // we get the editor::* and zed::* subset and the rest land later.
-    match settings::KeymapFile::load_asset_allow_partial_failure(
-        settings::DEFAULT_KEYMAP_PATH,
-        cx,
-    ) {
-        Ok(bindings) => {
-            info!("zed_android: loaded {} key bindings from default keymap", bindings.len());
-            cx.bind_keys(bindings);
-        }
-        Err(err) => error!("zed_android: keymap load failed: {err:#}"),
-    }
-
     let text = std::fs::read_to_string(TARGET_PATH).unwrap_or_else(|err| {
         error!("zed_android: failed to read {TARGET_PATH}: {err:#}");
         format!("// {TARGET_PATH} unavailable: {err}\n")
@@ -179,6 +164,22 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     project_panel::init(cx);
     settings_ui::init(cx);
     info!("zed_android: client/Project/workspace/command_palette/search/vim/project_panel/settings_ui init complete");
+
+    // Keymap load runs LAST: `_allow_partial_failure` skips any binding
+    // whose action isn't registered yet, so loading before each crate's
+    // `init` would silently drop every workspace::*, project_panel::*,
+    // command_palette::*, vim::*, etc. binding. By the time we reach this
+    // point everything has registered.
+    match settings::KeymapFile::load_asset_allow_partial_failure(
+        settings::DEFAULT_KEYMAP_PATH,
+        cx,
+    ) {
+        Ok(bindings) => {
+            info!("zed_android: loaded {} key bindings from default keymap", bindings.len());
+            cx.bind_keys(bindings);
+        }
+        Err(err) => error!("zed_android: keymap load failed: {err:#}"),
+    }
 
     let project = Project::local(
         client.clone(),
@@ -255,7 +256,11 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             })
             .detach();
         });
-        workspace
+        // Wrap in MultiWorkspace so its render establishes the "Workspace"
+        // KeyContext on the dispatch tree. Without this, every
+        // `"context": "Workspace"` keymap binding (Ctrl+Alt+B for
+        // ToggleRightDock, Ctrl+B for left dock, etc.) silently misses.
+        cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
     })?;
 
     info!("zed_android: workspace window opened");
