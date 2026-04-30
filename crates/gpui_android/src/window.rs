@@ -185,6 +185,12 @@ impl AndroidWindowStatePtr {
     /// and atlas alive so the next `InitWindow` can `replace_surface` cheaply
     /// without rebuilding glyph caches.
     pub(crate) fn detach_surface(&self) {
+        // Keep the renderer alive — gpui's element tree caches
+        // `AtlasTextureId`s into our atlas. Dropping the renderer (and
+        // therefore the atlas) leaves those ids dangling, and the next
+        // paint indexes into an empty `WgpuAtlasStorage`, panicking at
+        // `wgpu_atlas.rs:79`. `unconfigure_surface` clears the swapchain
+        // but keeps the VkSurfaceKHR + atlas + pipelines.
         let mut state = self.state.borrow_mut();
         if let Some(renderer) = state.renderer.as_mut() {
             renderer.unconfigure_surface();
@@ -192,7 +198,6 @@ impl AndroidWindowStatePtr {
         state.raw_window = AndroidRawWindow {
             native_window: std::ptr::null_mut(),
         };
-        // Drop the wrapper to release our ANativeWindow refcount.
         state.native_window = None;
         log::info!("AndroidWindow::detach_surface: surface unconfigured");
     }

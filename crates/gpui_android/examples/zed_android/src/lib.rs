@@ -60,7 +60,14 @@ fn android_main(app: AndroidApp) {
 }
 
 fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
-    paths::set_custom_data_dir(&data_path.to_string_lossy());
+    // android_main can run multiple times for one process when the activity
+    // is recreated; paths' OnceLocks survive across invocations. The second
+    // call panics with "set_custom_data_dir called after data_dir or
+    // config_dir was initialized". Guard with a static flag.
+    static PATHS_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let _ = PATHS_INITIALIZED.get_or_init(|| {
+        paths::set_custom_data_dir(&data_path.to_string_lossy());
+    });
     info!("zed_android: paths data_dir set");
 
     release_channel::init(semver::Version::new(0, 1, 0), cx);
@@ -162,6 +169,46 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         cx,
     );
     info!("zed_android: Project::local constructed (entity_id={:?})", project.entity_id());
+
+    // workspace's default `Open` handler routes through
+    // `local_workspace_windows()` which excludes our workspace until it has
+    // a worktree, then falls through to `Workspace::new_local` which tries
+    // to open a second window — single-window Android rejects that, so the
+    // click silently no-ops. Fire our own picker + worktree-add instead.
+    let project_for_open = project.clone();
+    cx.on_action(move |_: &workspace::Open, cx: &mut App| {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        let project = project_for_open.clone();
+        cx.spawn(async move |cx| {
+            match paths.await {
+                Ok(Ok(Some(picked))) => {
+                    for path in picked {
+                        info!(
+                            "zed_android: Open picker → adding worktree {}",
+                            path.display()
+                        );
+                        let task = cx.update(|cx| {
+                            project.update(cx, |project, cx| {
+                                project.create_worktree(path.clone(), true, cx)
+                            })
+                        });
+                        if let Err(err) = task.await {
+                            error!("zed_android: create_worktree failed: {err:#}");
+                        }
+                    }
+                }
+                Ok(Ok(None)) => info!("zed_android: Open picker cancelled"),
+                Ok(Err(err)) => error!("zed_android: Open picker failed: {err:#}"),
+                Err(_) => error!("zed_android: Open picker channel closed"),
+            }
+        })
+        .detach();
+    });
 
     let project_for_window = project.clone();
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
