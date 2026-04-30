@@ -1,0 +1,251 @@
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
+
+use android_activity::AndroidApp;
+use anyhow::Result;
+use futures::channel::oneshot;
+use gpui::{
+    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
+    ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow,
+    PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance, WindowParams,
+};
+
+use crate::dispatcher::AndroidDispatcher;
+use crate::display::AndroidDisplay;
+use crate::keyboard::AndroidKeyboardLayout;
+
+#[derive(Default)]
+pub(crate) struct PlatformHandlers {
+    pub(crate) open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
+    pub(crate) quit: Option<Box<dyn FnMut()>>,
+    pub(crate) reopen: Option<Box<dyn FnMut()>>,
+    pub(crate) app_menu_action: Option<Box<dyn FnMut(&dyn Action)>>,
+    pub(crate) will_open_app_menu: Option<Box<dyn FnMut()>>,
+    pub(crate) validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
+    pub(crate) keyboard_layout_change: Option<Box<dyn FnMut()>>,
+}
+
+pub(crate) struct AndroidCommon {
+    pub(crate) background_executor: BackgroundExecutor,
+    pub(crate) foreground_executor: ForegroundExecutor,
+    pub(crate) text_system: Arc<dyn PlatformTextSystem>,
+    pub(crate) appearance: WindowAppearance,
+    pub(crate) callbacks: PlatformHandlers,
+    pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
+    pub(crate) active_window: Option<AnyWindowHandle>,
+    pub(crate) running: bool,
+}
+
+impl AndroidCommon {
+    pub fn new(android_app: &AndroidApp) -> Self {
+        let (dispatcher, main_receiver) = AndroidDispatcher::new(android_app);
+        let dispatcher = Arc::new(dispatcher);
+
+        let text_system: Arc<dyn PlatformTextSystem> = Arc::new(
+            gpui_wgpu::CosmicTextSystem::new_without_system_fonts("Lilex"),
+        );
+
+        Self {
+            background_executor: BackgroundExecutor::new(dispatcher.clone()),
+            foreground_executor: ForegroundExecutor::new(dispatcher),
+            text_system,
+            appearance: WindowAppearance::Light,
+            callbacks: PlatformHandlers::default(),
+            main_receiver,
+            active_window: None,
+            running: true,
+        }
+    }
+}
+
+pub struct AndroidPlatform {
+    pub(crate) common: RefCell<AndroidCommon>,
+    pub(crate) android_app: AndroidApp,
+}
+
+impl AndroidPlatform {
+    pub fn new(android_app: AndroidApp, _headless: bool) -> Self {
+        let common = AndroidCommon::new(&android_app);
+        Self {
+            common: RefCell::new(common),
+            android_app,
+        }
+    }
+}
+
+impl Platform for AndroidPlatform {
+    fn background_executor(&self) -> BackgroundExecutor {
+        self.common.borrow().background_executor.clone()
+    }
+
+    fn foreground_executor(&self) -> ForegroundExecutor {
+        self.common.borrow().foreground_executor.clone()
+    }
+
+    fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
+        self.common.borrow().text_system.clone()
+    }
+
+    fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
+        // Phase 7.3 will fill in the actual event loop. For 7.2 we just invoke the
+        // launch callback so smoke tests can verify the platform constructs.
+        log::warn!("AndroidPlatform::run — Phase 7.3 event loop not yet wired");
+        on_finish_launching();
+    }
+
+    fn quit(&self) {
+        self.common.borrow_mut().running = false;
+        let quit = self.common.borrow_mut().callbacks.quit.take();
+        if let Some(mut fun) = quit {
+            fun();
+        }
+    }
+
+    fn restart(&self, _binary_path: Option<PathBuf>) {}
+    fn activate(&self, _ignoring_other_apps: bool) {}
+    fn hide(&self) {}
+    fn hide_other_apps(&self) {}
+    fn unhide_other_apps(&self) {}
+
+    fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
+        vec![Rc::new(AndroidDisplay::new())]
+    }
+
+    fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+        Some(Rc::new(AndroidDisplay::new()))
+    }
+
+    fn active_window(&self) -> Option<AnyWindowHandle> {
+        self.common.borrow().active_window
+    }
+
+    fn open_window(
+        &self,
+        _handle: AnyWindowHandle,
+        _options: WindowParams,
+    ) -> Result<Box<dyn PlatformWindow>> {
+        Err(anyhow::anyhow!("Phase 7.4: AndroidWindow not yet implemented"))
+    }
+
+    fn window_appearance(&self) -> WindowAppearance {
+        self.common.borrow().appearance
+    }
+
+    fn open_url(&self, _url: &str) {}
+    fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
+        self.common.borrow_mut().callbacks.open_urls = Some(callback);
+    }
+    fn register_url_scheme(&self, _url: &str) -> Task<Result<()>> {
+        Task::ready(Ok(()))
+    }
+
+    fn prompt_for_paths(
+        &self,
+        _options: PathPromptOptions,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        let (tx, rx) = oneshot::channel();
+        tx.send(Err(anyhow::anyhow!(
+            "file picker not yet wired on Android"
+        )))
+        .ok();
+        rx
+    }
+
+    fn prompt_for_new_path(
+        &self,
+        _directory: &Path,
+        _suggested_name: Option<&str>,
+    ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+        let (tx, rx) = oneshot::channel();
+        tx.send(Err(anyhow::anyhow!(
+            "file picker not yet wired on Android"
+        )))
+        .ok();
+        rx
+    }
+
+    fn can_select_mixed_files_and_dirs(&self) -> bool {
+        false
+    }
+    fn reveal_path(&self, _path: &Path) {}
+    fn open_with_system(&self, _path: &Path) {}
+
+    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+        self.common.borrow_mut().callbacks.quit = Some(callback);
+    }
+    fn on_reopen(&self, callback: Box<dyn FnMut()>) {
+        self.common.borrow_mut().callbacks.reopen = Some(callback);
+    }
+    fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {}
+    fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {}
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
+        self.common.borrow_mut().callbacks.app_menu_action = Some(callback);
+    }
+    fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>) {
+        self.common.borrow_mut().callbacks.will_open_app_menu = Some(callback);
+    }
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
+        self.common.borrow_mut().callbacks.validate_app_menu_command = Some(callback);
+    }
+
+    fn thermal_state(&self) -> ThermalState {
+        ThermalState::Nominal
+    }
+    fn on_thermal_state_change(&self, _callback: Box<dyn FnMut()>) {}
+
+    fn compositor_name(&self) -> &'static str {
+        "Android"
+    }
+    fn app_path(&self) -> Result<PathBuf> {
+        Err(anyhow::anyhow!("app_path is not yet implemented on Android"))
+    }
+    fn path_for_auxiliary_executable(&self, _name: &str) -> Result<PathBuf> {
+        Err(anyhow::anyhow!(
+            "auxiliary executables are not available on Android"
+        ))
+    }
+
+    fn set_cursor_style(&self, _style: CursorStyle) {}
+    fn should_auto_hide_scrollbars(&self) -> bool {
+        true
+    }
+
+    fn read_from_clipboard(&self) -> Option<ClipboardItem> {
+        None
+    }
+    fn write_to_clipboard(&self, _item: ClipboardItem) {}
+
+    fn write_credentials(
+        &self,
+        _url: &str,
+        _username: &str,
+        _password: &[u8],
+    ) -> Task<Result<()>> {
+        Task::ready(Err(anyhow::anyhow!(
+            "credential storage not yet wired on Android"
+        )))
+    }
+    fn read_credentials(&self, _url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
+        Task::ready(Ok(None))
+    }
+    fn delete_credentials(&self, _url: &str) -> Task<Result<()>> {
+        Task::ready(Err(anyhow::anyhow!(
+            "credential storage not yet wired on Android"
+        )))
+    }
+
+    fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {
+        Box::new(AndroidKeyboardLayout)
+    }
+    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
+        Rc::new(DummyKeyboardMapper)
+    }
+    fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
+        self.common.borrow_mut().callbacks.keyboard_layout_change = Some(callback);
+    }
+}
