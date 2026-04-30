@@ -4,16 +4,17 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use anyhow::Result;
 use futures::channel::oneshot;
 use raw_window_handle as rwh;
 
 use gpui::{
-    AnyWindowHandle, Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Pixels, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
+    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Pixels,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
 };
-use gpui_wgpu::{GpuContext, WgpuRenderer};
+use gpui_wgpu::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
 
 use crate::display::AndroidDisplay;
 
@@ -80,6 +81,98 @@ pub(crate) struct AndroidWindowState {
 pub(crate) struct AndroidWindowStatePtr {
     pub(crate) state: Rc<RefCell<AndroidWindowState>>,
     pub(crate) callbacks: Rc<RefCell<Callbacks>>,
+}
+
+impl AndroidWindowStatePtr {
+    /// Called from the platform run loop on `MainEvent::InitWindow`. Wires the
+    /// new `ANativeWindow` surface into the renderer, creating it on first call
+    /// and replacing the surface on subsequent calls (e.g. after a rotation
+    /// that destroys and recreates the window).
+    ///
+    /// On first call, this is also where the shared `WgpuContext` (device,
+    /// queue, adapter) gets created — the gpu_context cell starts empty and
+    /// `WgpuRenderer::new` populates it.
+    pub(crate) fn attach_surface(
+        &self,
+        native_window: NonNull<c_void>,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let raw_window = AndroidRawWindow {
+            native_window: native_window.as_ptr(),
+        };
+        let config = WgpuSurfaceConfig {
+            size: size(
+                DevicePixels(width.max(1) as i32),
+                DevicePixels(height.max(1) as i32),
+            ),
+            transparent: false,
+            preferred_present_mode: None,
+        };
+
+        let mut state = self.state.borrow_mut();
+        state.raw_window = raw_window;
+        state.bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(width as f32), px(height as f32)),
+        };
+
+        if state.renderer.is_some() {
+            let gpu_context = state.gpu_context.clone();
+            let ctx_ref = gpu_context.borrow();
+            let instance = ctx_ref
+                .as_ref()
+                .map(|ctx| ctx.instance.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("attach_surface: gpu_context missing on re-attach")
+                })?;
+            drop(ctx_ref);
+            state
+                .renderer
+                .as_mut()
+                .unwrap()
+                .replace_surface(&raw_window, config, &instance)?;
+            log::info!("AndroidWindow::attach_surface: replaced surface ({width}x{height})");
+        } else {
+            let gpu_context = state.gpu_context.clone();
+            let renderer = WgpuRenderer::new(gpu_context, &raw_window, config, None)?;
+            state.renderer = Some(renderer);
+            log::info!("AndroidWindow::attach_surface: created renderer ({width}x{height})");
+        }
+        Ok(())
+    }
+
+    /// Called from the platform run loop on `MainEvent::TerminateWindow`. The
+    /// `ANativeWindow` is being destroyed by the system. We unconfigure the
+    /// wgpu surface so subsequent draws bail out, but keep the device, queue,
+    /// and atlas alive so the next `InitWindow` can `replace_surface` cheaply
+    /// without rebuilding glyph caches.
+    pub(crate) fn detach_surface(&self) {
+        let mut state = self.state.borrow_mut();
+        if let Some(renderer) = state.renderer.as_mut() {
+            renderer.unconfigure_surface();
+        }
+        state.raw_window = AndroidRawWindow {
+            native_window: std::ptr::null_mut(),
+        };
+        log::info!("AndroidWindow::detach_surface: surface unconfigured");
+    }
+
+    /// Called on `MainEvent::WindowResized`. Updates the drawable size on the
+    /// renderer and the cached bounds.
+    pub(crate) fn resize_surface(&self, width: u32, height: u32) {
+        let mut state = self.state.borrow_mut();
+        state.bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(width as f32), px(height as f32)),
+        };
+        if let Some(renderer) = state.renderer.as_mut() {
+            renderer.update_drawable_size(size(
+                DevicePixels(width.max(1) as i32),
+                DevicePixels(height.max(1) as i32),
+            ));
+        }
+    }
 }
 
 pub(crate) struct AndroidWindow(pub(crate) AndroidWindowStatePtr);

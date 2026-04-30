@@ -7758,6 +7758,7 @@ dependencies = [
  "gpui_wgpu",
  "libc",
  "log",
+ "ndk",
  "raw-window-handle",
  "util",
  "uuid",
@@ -11128,6 +11129,7 @@ dependencies = [
  "log",
  "ndk-sys",
  "num_enum",
+ "raw-window-handle",
  "thiserror 1.0.69",
 ]
 

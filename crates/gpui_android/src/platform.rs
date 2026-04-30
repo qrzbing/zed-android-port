@@ -85,6 +85,50 @@ impl AndroidPlatform {
             android_app,
         }
     }
+
+    fn handle_main_event(&self, event: android_activity::MainEvent<'_>) {
+        use android_activity::MainEvent;
+        match event {
+            MainEvent::InitWindow { .. } => {
+                let window_ptr = self.common.borrow().window.clone();
+                let Some(window_ptr) = window_ptr else {
+                    log::warn!("MainEvent::InitWindow received before any window registered");
+                    return;
+                };
+                let Some(native_window) = self.android_app.native_window() else {
+                    log::warn!("MainEvent::InitWindow but native_window() returned None");
+                    return;
+                };
+                let width = native_window.width() as u32;
+                let height = native_window.height() as u32;
+                let ptr = native_window.ptr().cast();
+                if let Err(e) = window_ptr.attach_surface(ptr, width, height) {
+                    log::error!("attach_surface failed: {e:#}");
+                }
+            }
+            MainEvent::TerminateWindow { .. } => {
+                if let Some(window_ptr) = self.common.borrow().window.clone() {
+                    window_ptr.detach_surface();
+                }
+            }
+            MainEvent::WindowResized { .. } => {
+                let window_ptr = self.common.borrow().window.clone();
+                let Some(window_ptr) = window_ptr else { return };
+                let Some(native_window) = self.android_app.native_window() else { return };
+                window_ptr.resize_surface(
+                    native_window.width() as u32,
+                    native_window.height() as u32,
+                );
+            }
+            MainEvent::RedrawNeeded { .. } => {
+                // Commit (c) will route this to the request_frame callback.
+            }
+            MainEvent::Destroy => {
+                self.common.borrow_mut().running = false;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Platform for AndroidPlatform {
@@ -114,11 +158,7 @@ impl Platform for AndroidPlatform {
                     android_activity::PollEvent::Timeout => {}
                     android_activity::PollEvent::Main(main_event) => {
                         log::trace!("MainEvent: {main_event:?}");
-                        // Phase 7.4 will dispatch InitWindow/TerminateWindow/RedrawNeeded
-                        // to the active window. Phase 7.5 adds input event translation.
-                        if matches!(main_event, android_activity::MainEvent::Destroy) {
-                            self.common.borrow_mut().running = false;
-                        }
+                        self.handle_main_event(main_event);
                     }
                     _ => {}
                 },
