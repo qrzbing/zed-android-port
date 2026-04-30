@@ -248,6 +248,18 @@ impl AndroidWindowStatePtr {
         }
     }
 
+    pub(crate) fn set_appearance(&self, appearance: WindowAppearance) {
+        if self.state.borrow().appearance == appearance {
+            return;
+        }
+        self.state.borrow_mut().appearance = appearance;
+        let callback = self.callbacks.borrow_mut().appearance_changed.take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.callbacks.borrow_mut().appearance_changed = Some(callback);
+        }
+    }
+
     /// Dispatches a translated input event into gpui via the registered
     /// `on_input` callback, then routes printable `KeyDown`s through the
     /// active `PlatformInputHandler` (gpui's text-input path) when the

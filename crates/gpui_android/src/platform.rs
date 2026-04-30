@@ -6,6 +6,7 @@ use std::{
 };
 
 use android_activity::AndroidApp;
+use ndk::configuration::UiModeNight;
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
@@ -61,7 +62,7 @@ impl AndroidCommon {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
-            appearance: WindowAppearance::Light,
+            appearance: appearance_from_config(android_app),
             callbacks: PlatformHandlers::default(),
             main_receiver,
             active_window: None,
@@ -69,6 +70,13 @@ impl AndroidCommon {
             window: None,
             running: true,
         }
+    }
+}
+
+fn appearance_from_config(android_app: &AndroidApp) -> WindowAppearance {
+    match android_app.config().ui_mode_night() {
+        UiModeNight::Yes => WindowAppearance::Dark,
+        _ => WindowAppearance::Light,
     }
 }
 
@@ -183,6 +191,9 @@ impl AndroidPlatform {
                     native_window.height() as u32,
                     self.compute_scale_factor(),
                 );
+                let new_appearance = appearance_from_config(&self.android_app);
+                self.common.borrow_mut().appearance = new_appearance;
+                window_ptr.set_appearance(new_appearance);
             }
             MainEvent::RedrawNeeded { .. } => {
                 if let Some(window_ptr) = self.common.borrow().window.clone() {
