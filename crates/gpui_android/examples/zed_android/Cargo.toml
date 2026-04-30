@@ -45,7 +45,6 @@ rust-embed = { version = "8.11", features = ["debug-embed", "include-exclude"] }
 settings = { path = "../../../settings" }
 theme = { path = "../../../theme" }
 theme_settings = { path = "../../../theme_settings" }
-tree-sitter-rust = "0.24.2"
 
 # Debug builds embed unwind/DWARF tables that overflow llvm-strip's ELF
 # parser at our binary size (2GB+). Drop debug info on Android — backtraces

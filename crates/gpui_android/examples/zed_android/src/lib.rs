@@ -1,13 +1,10 @@
 #![cfg(target_os = "android")]
-//! Real Zed `Editor` running on Android. Bundles the Rust tree-sitter
-//! highlight query and Lilex font, opens `/sdcard/Documents/test.rs`, and
-//! renders the editor through the gpui_android backend. No project, LSP, or
-//! workspace — just the editor element with tree-sitter highlights.
+//! Zed Workspace running on Android. Boots up the full client/project/
+//! workspace stack and shows the WelcomePage on first launch (no auto-
+//! opened project) — matches official Zed's first-run behaviour.
 
 use std::borrow::Cow;
-use std::cell::OnceCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use android_activity::AndroidApp;
@@ -19,11 +16,8 @@ use fs::{Fs, RealFs};
 use node_runtime::NodeRuntime;
 use project::{LocalProjectFlags, Project};
 use session::{AppSession, Session};
-use editor::{Editor, EditorMode};
-use gpui::{App, AppContext as _, KeyBinding, actions};
-use language::{Buffer, Language, LanguageConfig};
+use gpui::{App, AppContext as _};
 use log::{error, info};
-use multi_buffer::MultiBuffer;
 use workspace::{AppState, MultiWorkspace, Workspace, WorkspaceStore};
 use reqwest_client::ReqwestClient;
 
@@ -31,14 +25,8 @@ fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowO
     gpui::WindowOptions::default()
 }
 
-actions!(zed_android, [SaveFile]);
-
 const BUNDLED_FONT: &[u8] =
     include_bytes!("../../../../../assets/fonts/lilex/Lilex-Regular.ttf");
-
-const RUST_HIGHLIGHTS: &str = include_str!("../../../../grammars/src/rust/highlights.scm");
-
-const TARGET_PATH: &str = "/sdcard/Documents/test.rs";
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -110,32 +98,14 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     cx.text_system()
         .add_fonts(vec![Cow::Borrowed(BUNDLED_FONT)])?;
 
-    let rust = Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: "Rust".into(),
-                ..Default::default()
-            },
-            Some(tree_sitter_rust::LANGUAGE.into()),
-        )
-        .with_highlights_query(RUST_HIGHLIGHTS)?,
-    );
-
     let language_registry =
         Arc::new(language::LanguageRegistry::new(cx.background_executor().clone()));
-    language_registry.add(rust.clone());
 
     let registry = theme::ThemeRegistry::global(cx);
     info!(
         "zed_android: theme registry has {} themes loaded",
         registry.list().len()
     );
-
-    let text = std::fs::read_to_string(TARGET_PATH).unwrap_or_else(|err| {
-        error!("zed_android: failed to read {TARGET_PATH}: {err:#}");
-        format!("// {TARGET_PATH} unavailable: {err}\n")
-    });
-    info!("zed_android: loaded {} bytes from {TARGET_PATH}", text.len());
 
     let app_session = cx.new(|cx| AppSession::new(session, cx));
     let user_store_for_project = user_store.clone();
@@ -193,54 +163,19 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     );
     info!("zed_android: Project::local constructed (entity_id={:?})", project.entity_id());
 
-    let buffer_slot: Rc<OnceCell<gpui::Entity<Buffer>>> = Rc::new(OnceCell::new());
-    cx.bind_keys([KeyBinding::new("ctrl-s", SaveFile, None)]);
-    let buffer_for_save = buffer_slot.clone();
-    cx.on_action(move |_: &SaveFile, cx: &mut App| {
-        info!("zed_android: SaveFile action fired");
-        let Some(buffer) = buffer_for_save.get() else {
-            error!("zed_android: SaveFile fired before buffer initialized");
-            return;
-        };
-        let text = buffer.read(cx).text();
-        match std::fs::write(TARGET_PATH, &text) {
-            Ok(()) => info!("zed_android: saved {} bytes to {TARGET_PATH}", text.len()),
-            Err(err) => error!("zed_android: save failed: {err:#}"),
-        }
-    });
-
-    let worktree_path = PathBuf::from("/sdcard/Documents");
-    let worktree_task = project.update(cx, |project, cx| {
-        project.create_worktree(worktree_path.clone(), true, cx)
-    });
-    info!(
-        "zed_android: worktree creation scheduled for {}",
-        worktree_path.display()
-    );
-
-    let buffer_for_window = buffer_slot.clone();
     let project_for_window = project.clone();
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-        let buffer =
-            cx.new(|cx| Buffer::local(text.clone(), cx).with_language(rust.clone(), cx));
-        let _ = buffer_for_window.set(buffer.clone());
-        let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
-        let editor =
-            cx.new(|cx| Editor::new(EditorMode::full(), multibuffer, None, window, cx));
         let workspace = cx.new(|cx| {
             Workspace::new(None, project_for_window.clone(), app_state.clone(), window, cx)
         });
-        workspace.update(cx, |workspace, cx| {
-            workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
-
-            // Wait for the worktree before attaching the project panel so
-            // `Panel::starts_open` sees the worktree and opens the dock the
-            // way official Zed does on first launch.
+        // No items, no worktrees: the center pane's `should_display_welcome_page`
+        // is true (set inside Workspace::new), so the WelcomePage with
+        // "Get Started" + "Recent Projects" surfaces on first launch.
+        // Still attach the project panel so when a worktree opens later
+        // (via "Open Project" / a recent), the file tree is in place.
+        workspace.update(cx, |_, cx| {
             let weak = cx.weak_entity();
             cx.spawn_in(window, async move |_, cx| {
-                if let Err(err) = worktree_task.await {
-                    error!("zed_android: worktree creation failed: {err:#}");
-                }
                 match project_panel::ProjectPanel::load(weak.clone(), cx.clone()).await {
                     Ok(panel) => {
                         if let Err(err) = weak.update_in(cx, |workspace, window, cx| {
