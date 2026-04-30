@@ -168,6 +168,14 @@ impl AndroidWindowStatePtr {
         // Replace the previous wrapper (if any). The drop releases the prior
         // ANativeWindow refcount; Vulkan's VkSurfaceKHR holds its own ref.
         state.native_window = Some(native_window);
+
+        // Force a paint on the next refresh tick. After a fresh `replace_surface`
+        // the swapchain is uninitialized (presents black), and gpui's
+        // request_frame is a no-op when the invalidator hasn't been dirtied.
+        // On first attach this is a no-op duplicate of gpui's own initial
+        // `window.draw(cx)` inside open_window, but it's cheap and makes the
+        // background→foreground path symmetric.
+        state.force_render_after_recovery = true;
         Ok(())
     }
 
