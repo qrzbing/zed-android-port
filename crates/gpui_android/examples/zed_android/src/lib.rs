@@ -5,6 +5,8 @@
 //! workspace — just the editor element with tree-sitter highlights.
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use android_activity::AndroidApp;
@@ -66,24 +68,34 @@ fn boot(cx: &mut App) -> Result<()> {
     });
     info!("zed_android: loaded {} bytes from {TARGET_PATH}", text.len());
 
-    let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(rust.clone(), cx));
-    let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    // Construct the Buffer/MultiBuffer/Editor inside `open_window` so that
+    // gpui's update guard governs the borrow lifetime — doing it on the bare
+    // `&mut App` lets `with_language`'s background tree-sitter task fire
+    // re-entrant `borrow_mut` calls and panic. The save handler reaches the
+    // buffer through this shared cell, written from inside the update.
+    let buffer_slot: Rc<OnceCell<gpui::Entity<Buffer>>> = Rc::new(OnceCell::new());
 
-    // Wire ctrl-s → SaveFile. With `project: None` the editor's normal save
-    // path is unwired, so we own the persistence. Logs both the dispatch
-    // (was the action even routed here?) and the write outcome.
     cx.bind_keys([KeyBinding::new("ctrl-s", SaveFile, None)]);
-    let buffer_for_save = buffer.clone();
+    let buffer_for_save = buffer_slot.clone();
     cx.on_action(move |_: &SaveFile, cx: &mut App| {
         info!("zed_android: SaveFile action fired");
-        let text = buffer_for_save.read(cx).text();
+        let Some(buffer) = buffer_for_save.get() else {
+            error!("zed_android: SaveFile fired before buffer initialized");
+            return;
+        };
+        let text = buffer.read(cx).text();
         match std::fs::write(TARGET_PATH, &text) {
             Ok(()) => info!("zed_android: saved {} bytes to {TARGET_PATH}", text.len()),
             Err(err) => error!("zed_android: save failed: {err:#}"),
         }
     });
 
+    let buffer_for_window = buffer_slot.clone();
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+        let buffer =
+            cx.new(|cx| Buffer::local(text.clone(), cx).with_language(rust.clone(), cx));
+        let _ = buffer_for_window.set(buffer.clone());
+        let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
         cx.new(|cx| Editor::new(EditorMode::full(), multibuffer, None, window, cx))
     })?;
 
