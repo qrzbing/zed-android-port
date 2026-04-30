@@ -1,6 +1,7 @@
 #![cfg(target_os = "android")]
 
-use android_activity::{AndroidApp, MainEvent, PollEvent};
+use android_activity::input::{InputEvent, KeyAction, Keycode};
+use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use glyphon::{
     Attrs, Buffer, Cache, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -24,52 +25,121 @@ fn android_main(app: AndroidApp) {
     info!("android_main: bootstrap");
 
     let mut renderer: Option<Renderer> = None;
+    let mut typed = String::from("type on a hardware keyboard...");
+    let mut text_dirty = true;
     let mut quit = false;
 
     while !quit {
         app.poll_events(Some(std::time::Duration::from_millis(16)), |event| match event {
-            PollEvent::Main(main_event) => {
-                info!("main event: {main_event:?}");
-                match main_event {
-                    MainEvent::InitWindow { .. } => {
-                        if let Some(window) = app.native_window() {
-                            match Renderer::new(window) {
-                                Ok(r) => {
-                                    info!("renderer initialized");
-                                    renderer = Some(r);
-                                }
-                                Err(e) => error!("renderer init failed: {e:#}"),
+            PollEvent::Main(main_event) => match main_event {
+                MainEvent::InitWindow { .. } => {
+                    if let Some(window) = app.native_window() {
+                        match Renderer::new(window) {
+                            Ok(r) => {
+                                info!("renderer initialized");
+                                renderer = Some(r);
+                                text_dirty = true;
                             }
+                            Err(e) => error!("renderer init failed: {e:#}"),
                         }
                     }
-                    MainEvent::TerminateWindow { .. } => {
-                        info!("dropping renderer");
-                        renderer = None;
-                    }
-                    MainEvent::WindowResized { .. } => {
-                        if let (Some(r), Some(w)) = (renderer.as_mut(), app.native_window()) {
-                            r.resize(w.width() as u32, w.height() as u32);
-                        }
-                    }
-                    MainEvent::RedrawNeeded { .. } => {
-                        if let Some(r) = renderer.as_mut() {
-                            if let Err(e) = r.render() {
-                                error!("render error: {e:#}");
-                            }
-                        }
-                    }
-                    MainEvent::Destroy => quit = true,
-                    _ => {}
                 }
-            }
+                MainEvent::TerminateWindow { .. } => {
+                    info!("dropping renderer");
+                    renderer = None;
+                }
+                MainEvent::WindowResized { .. } => {
+                    if let (Some(r), Some(w)) = (renderer.as_mut(), app.native_window()) {
+                        r.resize(w.width() as u32, w.height() as u32);
+                    }
+                }
+                MainEvent::RedrawNeeded { .. } => {}
+                MainEvent::Destroy => quit = true,
+                _ => {}
+            },
             _ => {}
         });
+
+        // Drain input events — keypresses update the typed buffer.
+        if let Ok(mut iter) = app.input_events_iter() {
+            loop {
+                let read = iter.next(|input_event| {
+                    if let InputEvent::KeyEvent(key) = input_event {
+                        if key.action() == KeyAction::Down {
+                            let keycode = key.key_code();
+                            let meta = key.meta_state();
+                            let shift = (meta.0 & 0x41) != 0; // META_SHIFT_ON | META_SHIFT_LEFT_ON
+                            match keycode {
+                                Keycode::Del => {
+                                    typed.pop();
+                                    text_dirty = true;
+                                }
+                                Keycode::Enter | Keycode::NumpadEnter => {
+                                    typed.push('\n');
+                                    text_dirty = true;
+                                }
+                                Keycode::Space => {
+                                    typed.push(' ');
+                                    text_dirty = true;
+                                }
+                                _ => {
+                                    if let Some(ch) = printable_char(keycode, shift) {
+                                        typed.push(ch);
+                                        text_dirty = true;
+                                    }
+                                }
+                            }
+                            info!("key down: {:?} shift={} typed_len={}", keycode, shift, typed.len());
+                        }
+                    }
+                    InputStatus::Unhandled
+                });
+                if !read {
+                    break;
+                }
+            }
+        }
+
+        if text_dirty {
+            if let Some(r) = renderer.as_mut() {
+                r.set_text(&typed);
+            }
+            text_dirty = false;
+        }
 
         if let Some(r) = renderer.as_mut() {
             if let Err(e) = r.render() {
                 error!("render error: {e:#}");
             }
         }
+    }
+}
+
+fn printable_char(code: Keycode, shift: bool) -> Option<char> {
+    use Keycode::*;
+    let lower = match code {
+        A => 'a', B => 'b', C => 'c', D => 'd', E => 'e', F => 'f', G => 'g', H => 'h',
+        I => 'i', J => 'j', K => 'k', L => 'l', M => 'm', N => 'n', O => 'o', P => 'p',
+        Q => 'q', R => 'r', S => 's', T => 't', U => 'u', V => 'v', W => 'w', X => 'x',
+        Y => 'y', Z => 'z',
+        Keycode0 => '0', Keycode1 => '1', Keycode2 => '2', Keycode3 => '3', Keycode4 => '4',
+        Keycode5 => '5', Keycode6 => '6', Keycode7 => '7', Keycode8 => '8', Keycode9 => '9',
+        Period => '.', Comma => ',', Slash => '/', Backslash => '\\', Semicolon => ';',
+        Apostrophe => '\'', Grave => '`', Minus => '-', Equals => '=',
+        LeftBracket => '[', RightBracket => ']',
+        _ => return None,
+    };
+    if shift {
+        Some(match lower {
+            '1' => '!', '2' => '@', '3' => '#', '4' => '$', '5' => '%',
+            '6' => '^', '7' => '&', '8' => '*', '9' => '(', '0' => ')',
+            '-' => '_', '=' => '+', '[' => '{', ']' => '}', '\\' => '|',
+            ';' => ':', '\'' => '"', ',' => '<', '.' => '>', '/' => '?',
+            '`' => '~',
+            _ => lower.to_ascii_uppercase(),
+        })
+    } else {
+        Some(lower)
     }
 }
 
@@ -155,19 +225,12 @@ impl Renderer {
             None,
         );
 
-        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(80.0, 100.0));
+        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(56.0, 72.0));
         text_buffer.set_size(
             &mut font_system,
             Some(config.width as f32),
             Some(config.height as f32),
         );
-        text_buffer.set_text(
-            &mut font_system,
-            "Hello, Android!",
-            &Attrs::new().family(Family::Name("Lilex")),
-            Shaping::Advanced,
-        );
-        text_buffer.shape_until_scroll(&mut font_system, false);
 
         Ok(Self {
             _window: window,
@@ -183,6 +246,17 @@ impl Renderer {
             text_renderer,
             text_buffer,
         })
+    }
+
+    fn set_text(&mut self, text: &str) {
+        self.text_buffer.set_text(
+            &mut self.font_system,
+            text,
+            &Attrs::new().family(Family::Name("Lilex")),
+            Shaping::Advanced,
+        );
+        self.text_buffer
+            .shape_until_scroll(&mut self.font_system, false);
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -209,10 +283,10 @@ impl Renderer {
                 label: Some("hello_android encoder"),
             });
 
-        let t = self.frame as f64 / 120.0;
-        let r = t.sin() * 0.5 + 0.5;
-        let g = (t + 2.094).sin() * 0.5 + 0.5;
-        let b = (t + 4.188).sin() * 0.5 + 0.5;
+        let t = self.frame as f64 / 240.0;
+        let r = t.sin() * 0.15 + 0.10;
+        let g = (t + 2.094).sin() * 0.15 + 0.10;
+        let b = (t + 4.188).sin() * 0.15 + 0.15;
 
         self.viewport.update(
             &self.queue,
