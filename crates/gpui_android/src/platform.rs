@@ -131,12 +131,14 @@ impl AndroidPlatform {
                     None => InputStatus::Unhandled,
                 },
                 InputEvent::MotionEvent(motion) => {
-                    match crate::events::translate_motion_event(motion, scale_factor) {
-                        Some(input) => {
+                    let inputs = crate::events::translate_motion_event(motion, scale_factor);
+                    if inputs.is_empty() {
+                        InputStatus::Unhandled
+                    } else {
+                        for input in inputs {
                             window_ptr.handle_input(input);
-                            InputStatus::Handled
                         }
-                        None => InputStatus::Unhandled,
+                        InputStatus::Handled
                     }
                 }
                 _ => InputStatus::Unhandled,
@@ -304,6 +306,20 @@ impl Platform for AndroidPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
+        // Android only supports one window. The second `cx.open_window` call
+        // (e.g. `workspace::open_paths` falling through to `Workspace::new_local`
+        // when there's no existing target) tries to create another VkSurfaceKHR
+        // for the same `ANativeWindow` and panics with
+        // `ERROR_NATIVE_WINDOW_IN_USE_KHR`. Fail cleanly so the caller's
+        // `.log_err()` reports it instead of taking the process down.
+        if self.common.borrow().window.is_some() {
+            return Err(anyhow::anyhow!(
+                "open_window: gpui_android only supports a single window; \
+                 callers should reuse the active window via `requesting_window` \
+                 (and `add_dirs_to_sidebar` / `should_reuse_existing_window`)"
+            ));
+        }
+
         // gpui's `Window::new` calls `platform_window.sprite_atlas()` immediately,
         // so the renderer (and therefore atlas) must already be live by the time
         // we return. On Android we have no surface until `MainEvent::InitWindow`
@@ -367,24 +383,28 @@ impl Platform for AndroidPlatform {
         &self,
         _options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        // Fire ACTION_OPEN_DOCUMENT_TREE via MainActivity. The result
+        // arrives async through the JNI callback in `saf.rs`.
+        log::info!("AndroidPlatform::prompt_for_paths invoked");
         let (tx, rx) = oneshot::channel();
-        tx.send(Err(anyhow::anyhow!(
-            "file picker not yet wired on Android"
-        )))
-        .ok();
+        crate::saf::pick_folder(&self.android_app, tx);
         rx
     }
 
     fn prompt_for_new_path(
         &self,
         _directory: &Path,
-        _suggested_name: Option<&str>,
+        suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+        // ACTION_CREATE_DOCUMENT — the system picker decides the
+        // directory; we only suggest a name. Result arrives via the
+        // same JNI callback.
+        log::info!(
+            "AndroidPlatform::prompt_for_new_path invoked (suggested={:?})",
+            suggested_name
+        );
         let (tx, rx) = oneshot::channel();
-        tx.send(Err(anyhow::anyhow!(
-            "file picker not yet wired on Android"
-        )))
-        .ok();
+        crate::saf::pick_new_path(&self.android_app, suggested_name, tx);
         rx
     }
 

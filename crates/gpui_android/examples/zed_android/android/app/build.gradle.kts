@@ -47,4 +47,6 @@ dependencies {
     implementation("androidx.games:games-activity:3.0.5")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    // ActivityResultLauncher / ActivityResultContracts for SAF picker.
+    implementation("androidx.activity:activity-ktx:1.9.3")
 }

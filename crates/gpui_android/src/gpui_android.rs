@@ -7,6 +7,7 @@ mod display;
 mod events;
 mod keyboard;
 mod platform;
+mod saf;
 mod window;
 
 pub use platform::AndroidPlatform;
