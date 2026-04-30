@@ -45,8 +45,14 @@ fn android_main(app: AndroidApp) {
 fn boot(cx: &mut App) -> Result<()> {
     info!("zed_android: settings + theme + editor init");
     settings::init(cx);
-    theme_settings::init(theme::LoadThemes::JustBase, cx);
+    theme_settings::init(theme::LoadThemes::All(Box::new(assets::Assets)), cx);
     editor::init(cx);
+
+    let registry = theme::ThemeRegistry::global(cx);
+    info!(
+        "zed_android: theme registry has {} themes loaded",
+        registry.list().len()
+    );
 
     // Load the default keymap so backspace/delete/arrows/ctrl-shortcuts route
     // to editor actions. `_allow_partial_failure` skips bindings whose actions
