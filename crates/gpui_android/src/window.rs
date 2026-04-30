@@ -396,17 +396,17 @@ impl PlatformWindow for AndroidWindow {
 
     fn draw(&self, scene: &Scene) {
         let mut state = self.0.state.borrow_mut();
+        let raw_window = state.raw_window;
         let Some(renderer) = state.renderer.as_mut() else {
             return;
         };
 
         if renderer.device_lost() {
-            let raw_window = state.raw_window;
             if raw_window.native_window.is_null() {
                 log::warn!("draw: device lost but no native window to recover against");
                 return;
             }
-            if let Err(err) = state.renderer.as_mut().unwrap().recover(&raw_window) {
+            if let Err(err) = renderer.recover(&raw_window) {
                 log::error!("GPU recovery failed: {err:#}");
             }
             return;
@@ -416,16 +416,15 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        // gpui::Window::new calls this once during construction. Until commit (b)
-        // attaches a real surface and renderer, we have no atlas — this path is
-        // unreachable because open_window currently returns Err before a window
-        // is registered with gpui.
+        // `gpui::Window::new` calls this once during construction. `open_window`
+        // blocks until `attach_surface` succeeds, so the renderer (and its atlas)
+        // is always populated by the time gpui asks for it.
         self.0
             .state
             .borrow()
             .renderer
             .as_ref()
-            .expect("AndroidWindow::sprite_atlas called before surface attached")
+            .expect("sprite_atlas: open_window must attach surface before returning")
             .sprite_atlas()
             .clone()
     }
