@@ -13,6 +13,10 @@ path = "src/gpui_android.rs"
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui.workspace = true
+android-activity = { version = "0.6", features = ["game-activity"] }
 anyhow.workspace = true
+calloop = "0.14.3"
 futures.workspace = true
+libc.workspace = true
 log.workspace = true
+util.workspace = true

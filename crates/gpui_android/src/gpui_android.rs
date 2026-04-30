@@ -1,6 +1,10 @@
 #![cfg(target_os = "android")]
 #![doc = "Android backend for the GPUI Platform trait. Phase 2: stub. Real implementations land in subsequent phases."]
 
+mod dispatcher;
+
+pub(crate) use dispatcher::AndroidDispatcher;
+
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
