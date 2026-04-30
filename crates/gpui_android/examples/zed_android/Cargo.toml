@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "zed_android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["game-activity"] }
+android_logger = "0.13"
+anyhow = "1"
+editor = { path = "../../../editor" }
+gpui = { path = "../../../gpui" }
+gpui_android = { path = "../../" }
+language = { path = "../../../language" }
+log = "0.4"
+multi_buffer = { path = "../../../multi_buffer" }
+# Force RustEmbed to bake assets into the binary even in debug builds —
+# without this, settings/theme assets are looked up from the host filesystem
+# at runtime, which doesn't work on a device.
+rust-embed = { version = "8.11", features = ["debug-embed", "include-exclude"] }
+settings = { path = "../../../settings" }
+theme = { path = "../../../theme" }
+theme_settings = { path = "../../../theme_settings" }
+tree-sitter-rust = "0.24.2"
