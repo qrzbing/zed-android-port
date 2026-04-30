@@ -10,10 +10,12 @@ use std::sync::Arc;
 use android_activity::AndroidApp;
 use anyhow::Result;
 use editor::{Editor, EditorMode};
-use gpui::{App, AppContext as _};
+use gpui::{App, AppContext as _, KeyBinding, actions};
 use language::{Buffer, Language, LanguageConfig};
 use log::{error, info};
 use multi_buffer::MultiBuffer;
+
+actions!(zed_android, [SaveFile]);
 
 const BUNDLED_FONT: &[u8] =
     include_bytes!("../../../../../assets/fonts/lilex/Lilex-Regular.ttf");
@@ -64,9 +66,24 @@ fn boot(cx: &mut App) -> Result<()> {
     });
     info!("zed_android: loaded {} bytes from {TARGET_PATH}", text.len());
 
+    let buffer = cx.new(|cx| Buffer::local(text, cx).with_language(rust.clone(), cx));
+    let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+
+    // Wire ctrl-s → SaveFile. With `project: None` the editor's normal save
+    // path is unwired, so we own the persistence. Logs both the dispatch
+    // (was the action even routed here?) and the write outcome.
+    cx.bind_keys([KeyBinding::new("ctrl-s", SaveFile, None)]);
+    let buffer_for_save = buffer.clone();
+    cx.on_action(move |_: &SaveFile, cx: &mut App| {
+        info!("zed_android: SaveFile action fired");
+        let text = buffer_for_save.read(cx).text();
+        match std::fs::write(TARGET_PATH, &text) {
+            Ok(()) => info!("zed_android: saved {} bytes to {TARGET_PATH}", text.len()),
+            Err(err) => error!("zed_android: save failed: {err:#}"),
+        }
+    });
+
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-        let buffer = cx.new(|cx| Buffer::local(text.clone(), cx).with_language(rust.clone(), cx));
-        let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
         cx.new(|cx| Editor::new(EditorMode::full(), multibuffer, None, window, cx))
     })?;
 
