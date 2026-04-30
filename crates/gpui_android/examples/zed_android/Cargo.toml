@@ -15,12 +15,24 @@ android-activity = { version = "0.6", features = ["game-activity"] }
 android_logger = "0.13"
 anyhow = "1"
 assets = { path = "../../../assets" }
+client = { path = "../../../client" }
+db = { path = "../../../db" }
 editor = { path = "../../../editor" }
+fs = { path = "../../../fs" }
 gpui = { path = "../../../gpui" }
 gpui_android = { path = "../../" }
 language = { path = "../../../language" }
+node_runtime = { path = "../../../node_runtime" }
 log = "0.4"
 multi_buffer = { path = "../../../multi_buffer" }
+paths = { path = "../../../paths" }
+project = { path = "../../../project" }
+workspace = { path = "../../../workspace" }
+release_channel = { path = "../../../release_channel" }
+reqwest_client = { path = "../../../reqwest_client" }
+semver = "1"
+session = { path = "../../../session" }
+uuid = { version = "1.10", features = ["v4"] }
 # Force RustEmbed to bake assets into the binary even in debug builds —
 # without this, settings/theme assets are looked up from the host filesystem
 # at runtime, which doesn't work on a device.
@@ -29,3 +41,10 @@ settings = { path = "../../../settings" }
 theme = { path = "../../../theme" }
 theme_settings = { path = "../../../theme_settings" }
 tree-sitter-rust = "0.24.2"
+
+# Debug builds embed unwind/DWARF tables that overflow llvm-strip's ELF
+# parser at our binary size (2GB+). Drop debug info on Android — backtraces
+# go through `log!` anyway. Keep dev defaults otherwise.
+[profile.dev]
+debug = "line-tables-only"
+strip = "debuginfo"
