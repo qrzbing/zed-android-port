@@ -1,6 +1,7 @@
 #![cfg(target_os = "android")]
 //! Android backend for the GPUI Platform trait.
 
+mod cursor;
 mod dispatcher;
 mod display;
 mod events;

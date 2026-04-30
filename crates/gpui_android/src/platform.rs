@@ -429,7 +429,9 @@ impl Platform for AndroidPlatform {
         ))
     }
 
-    fn set_cursor_style(&self, _style: CursorStyle) {}
+    fn set_cursor_style(&self, style: CursorStyle) {
+        crate::cursor::set_pointer_icon(&self.android_app, style);
+    }
     fn should_auto_hide_scrollbars(&self) -> bool {
         true
     }

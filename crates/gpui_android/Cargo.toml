@@ -16,6 +16,7 @@ gpui.workspace = true
 gpui_wgpu.workspace = true
 android-activity = { version = "0.6", features = ["game-activity"] }
 anyhow.workspace = true
+jni = "0.21"
 calloop = "0.14.3"
 futures.workspace = true
 libc.workspace = true
