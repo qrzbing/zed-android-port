@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use futures::channel::oneshot;
+use ndk::native_window::NativeWindow;
 use raw_window_handle as rwh;
 
 use gpui::{
@@ -75,6 +76,12 @@ pub(crate) struct AndroidWindowState {
     pub(crate) background_appearance: WindowBackgroundAppearance,
     pub(crate) handle: AnyWindowHandle,
     pub(crate) gpu_context: GpuContext,
+    /// Holds an `ANativeWindow_acquire` refcount on the underlying native
+    /// window so the pointer stored in `raw_window` stays valid for the
+    /// lifetime of any Vulkan `VkSurfaceKHR` referencing it. Dropped (and
+    /// thus refcount-decremented) on `detach_surface` and replaced when
+    /// `attach_surface` runs with a fresh window.
+    pub(crate) native_window: Option<NativeWindow>,
 }
 
 #[derive(Clone)]
@@ -84,22 +91,24 @@ pub(crate) struct AndroidWindowStatePtr {
 }
 
 impl AndroidWindowStatePtr {
-    /// Called from the platform run loop on `MainEvent::InitWindow`. Wires the
-    /// new `ANativeWindow` surface into the renderer, creating it on first call
-    /// and replacing the surface on subsequent calls (e.g. after a rotation
-    /// that destroys and recreates the window).
+    /// Called from the platform run loop on `MainEvent::InitWindow` (and from
+    /// `open_window` on first attach). Wires the new `ANativeWindow` surface
+    /// into the renderer, creating it on first call and replacing the surface
+    /// on subsequent calls (e.g. after a rotation that destroys and recreates
+    /// the window).
     ///
     /// On first call, this is also where the shared `WgpuContext` (device,
     /// queue, adapter) gets created — the gpu_context cell starts empty and
     /// `WgpuRenderer::new` populates it.
-    pub(crate) fn attach_surface(
-        &self,
-        native_window: NonNull<c_void>,
-        width: u32,
-        height: u32,
-    ) -> Result<()> {
+    ///
+    /// Takes ownership of `NativeWindow` so the underlying refcount on
+    /// `ANativeWindow*` is held for the life of this surface; the wrapper is
+    /// dropped on `detach_surface` or replaced on subsequent `attach_surface`.
+    pub(crate) fn attach_surface(&self, native_window: NativeWindow) -> Result<()> {
+        let width = native_window.width() as u32;
+        let height = native_window.height() as u32;
         let raw_window = AndroidRawWindow {
-            native_window: native_window.as_ptr(),
+            native_window: native_window.ptr().as_ptr().cast(),
         };
         let config = WgpuSurfaceConfig {
             size: size(
@@ -139,6 +148,10 @@ impl AndroidWindowStatePtr {
             state.renderer = Some(renderer);
             log::info!("AndroidWindow::attach_surface: created renderer ({width}x{height})");
         }
+
+        // Replace the previous wrapper (if any). The drop releases the prior
+        // ANativeWindow refcount; Vulkan's VkSurfaceKHR holds its own ref.
+        state.native_window = Some(native_window);
         Ok(())
     }
 
@@ -155,6 +168,8 @@ impl AndroidWindowStatePtr {
         state.raw_window = AndroidRawWindow {
             native_window: std::ptr::null_mut(),
         };
+        // Drop the wrapper to release our ANativeWindow refcount.
+        state.native_window = None;
         log::info!("AndroidWindow::detach_surface: surface unconfigured");
     }
 
@@ -218,6 +233,7 @@ impl AndroidWindow {
             background_appearance: WindowBackgroundAppearance::Opaque,
             handle,
             gpu_context,
+            native_window: None,
         };
 
         Self(AndroidWindowStatePtr {

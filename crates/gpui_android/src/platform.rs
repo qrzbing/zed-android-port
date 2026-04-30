@@ -99,10 +99,7 @@ impl AndroidPlatform {
                     log::warn!("MainEvent::InitWindow but native_window() returned None");
                     return;
                 };
-                let width = native_window.width() as u32;
-                let height = native_window.height() as u32;
-                let ptr = native_window.ptr().cast();
-                if let Err(e) = window_ptr.attach_surface(ptr, width, height) {
+                if let Err(e) = window_ptr.attach_surface(native_window) {
                     log::error!("attach_surface failed: {e:#}");
                 }
             }
@@ -223,9 +220,41 @@ impl Platform for AndroidPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
+        // gpui's `Window::new` calls `platform_window.sprite_atlas()` immediately,
+        // so the renderer (and therefore atlas) must already be live by the time
+        // we return. On Android we have no surface until `MainEvent::InitWindow`
+        // fires, so block here pumping the Android event loop until a native
+        // window is available, then attach inline.
+        //
+        // poll_events is reentrant-safe — `on_finish_launching` runs before our
+        // outer poll loop in `run()`, so this is the only `poll_events` call
+        // on the stack right now.
+        while self.android_app.native_window().is_none() {
+            if !self.common.borrow().running {
+                return Err(anyhow::anyhow!(
+                    "open_window: app destroyed before surface attached"
+                ));
+            }
+            self.android_app.poll_events(
+                Some(std::time::Duration::from_millis(100)),
+                |event| {
+                    if let android_activity::PollEvent::Main(main_event) = event {
+                        log::trace!("MainEvent during open_window block: {main_event:?}");
+                        self.handle_main_event(main_event);
+                    }
+                },
+            );
+        }
+
         let appearance = self.common.borrow().appearance;
         let gpu_context = self.common.borrow().gpu_context.clone();
         let window = AndroidWindow::new(handle, options, gpu_context, appearance);
+
+        let native_window = self.android_app.native_window().ok_or_else(|| {
+            anyhow::anyhow!("open_window: native_window vanished between poll and attach")
+        })?;
+        window.ptr().attach_surface(native_window)?;
+
         self.common.borrow_mut().window = Some(window.ptr());
         self.common.borrow_mut().active_window = Some(handle);
         Ok(Box::new(window))
