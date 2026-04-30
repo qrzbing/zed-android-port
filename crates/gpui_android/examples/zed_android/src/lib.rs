@@ -64,7 +64,7 @@ fn android_main(app: AndroidApp) {
         std::env::set_var("HOME", &data_path);
     }
 
-    gpui_android::run(app, move |cx: &mut App| {
+    gpui_android::run(app, assets::Assets, move |cx: &mut App| {
         if let Err(err) = boot(cx, &data_path) {
             error!("zed_android: boot failed: {err:#}");
         }

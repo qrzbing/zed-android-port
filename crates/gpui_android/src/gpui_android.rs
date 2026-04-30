@@ -19,11 +19,17 @@ use std::rc::Rc;
 /// the `AndroidPlatform`, hands it to `gpui::Application`, and drives the
 /// run loop. Replaces the desktop/web `gpui_platform::application()` path
 /// because we need to thread the `AndroidApp` through Platform construction.
-pub fn run<F>(android_app: android_activity::AndroidApp, on_finish_launching: F)
+///
+/// `assets` is the source the SVG renderer uses to resolve `icons/...`,
+/// `images/...`, and any other asset paths Zed's UI references. Pass
+/// `assets::Assets` (the bundled RustEmbed source) for the typical case;
+/// without an asset source icons render as blank rectangles.
+pub fn run<A, F>(android_app: android_activity::AndroidApp, assets: A, on_finish_launching: F)
 where
+    A: gpui::AssetSource,
     F: 'static + FnOnce(&mut gpui::App),
 {
     let platform: Rc<dyn gpui::Platform> = Rc::new(AndroidPlatform::new(android_app, false));
-    let app = gpui::Application::with_platform(platform);
+    let app = gpui::Application::with_platform(platform).with_assets(assets);
     app.run(on_finish_launching);
 }
