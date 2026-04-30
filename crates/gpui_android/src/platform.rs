@@ -318,15 +318,11 @@ impl Platform for AndroidPlatform {
                 },
             );
 
-            // Drain main-thread runnables that piled up while we were blocked,
-            // so any work scheduled before this open_window call (e.g. via
-            // background_executor) doesn't sit indefinitely.
-            let receiver = self.common.borrow().main_receiver.clone();
-            for runnable in receiver.try_iter() {
-                if let Ok(runnable) = runnable {
-                    runnable.run();
-                }
-            }
+            // NOTE: do not drain main_receiver here. open_window runs inside
+            // gpui's `cx.update` borrow guard; a runnable that calls
+            // `cx.update(...)` re-enters the borrow and panics ("RefCell
+            // already borrowed"). The outer event loop drains the queue on
+            // the next tick, so queued work picks up fine.
         }
 
         let appearance = self.common.borrow().appearance;
