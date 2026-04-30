@@ -121,6 +121,11 @@ pub fn os_name() -> String {
     {
         "Windows".to_string()
     }
+
+    #[cfg(target_os = "android")]
+    {
+        "Android".to_string()
+    }
 }
 
 /// Note: This might do blocking IO! Only call from background threads
@@ -182,6 +187,13 @@ pub fn os_version() -> String {
         } else {
             "unknown".to_string()
         }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        // TODO: read ro.build.version.release via android-system-properties or JNI.
+        // For now, emit "unknown" so telemetry compiles.
+        "unknown".to_string()
     }
 }
 

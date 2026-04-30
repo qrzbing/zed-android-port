@@ -324,6 +324,7 @@ pub struct TrashedEntry {
     pub original_parent: PathBuf,
 }
 
+#[cfg(not(target_os = "android"))]
 impl From<trash::TrashItem> for TrashedEntry {
     fn from(item: trash::TrashItem) -> Self {
         Self {
@@ -334,6 +335,7 @@ impl From<trash::TrashItem> for TrashedEntry {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl TrashedEntry {
     fn into_trash_item(self) -> trash::TrashItem {
         trash::TrashItem {
@@ -357,6 +359,7 @@ pub enum TrashRestoreError {
     Unknown { description: String },
 }
 
+#[cfg(not(target_os = "android"))]
 impl From<trash::Error> for TrashRestoreError {
     fn from(err: trash::Error) -> Self {
         match err {
@@ -553,7 +556,7 @@ impl FileHandle for std::fs::File {
         Ok(path)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn current_path(&self, _: &Arc<dyn Fs>) -> Result<PathBuf> {
         let fd = self.as_fd();
         let fd_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
@@ -923,6 +926,7 @@ impl Fs for RealFs {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     async fn trash(&self, path: &Path, _options: RemoveOptions) -> Result<TrashedEntry> {
         // We must make the path absolute or trash will make a weird abomination
         // of the zed working directory (not usually the worktree) and whatever
@@ -943,6 +947,11 @@ impl Fs for RealFs {
             .context("Tx dropped or fs.restore panicked")?
             .context("Could not trash file or dir")?
             .into())
+    }
+
+    #[cfg(target_os = "android")]
+    async fn trash(&self, _path: &Path, _options: RemoveOptions) -> Result<TrashedEntry> {
+        anyhow::bail!("trash is not supported on Android — use permanent delete")
     }
 
     async fn open_sync(&self, path: &Path) -> Result<Box<dyn io::Read + Send + Sync>> {
@@ -1424,6 +1433,7 @@ impl Fs for RealFs {
         res
     }
 
+    #[cfg(not(target_os = "android"))]
     async fn restore(
         &self,
         trashed_entry: TrashedEntry,
@@ -1440,6 +1450,16 @@ impl Fs for RealFs {
             .expect("The OS can spawn a threads");
         rx.await.expect("Restore all never panics")?;
         Ok(restored_item_path)
+    }
+
+    #[cfg(target_os = "android")]
+    async fn restore(
+        &self,
+        _trashed_entry: TrashedEntry,
+    ) -> std::result::Result<PathBuf, TrashRestoreError> {
+        Err(TrashRestoreError::Unknown {
+            description: "trash restore is not supported on Android".to_string(),
+        })
     }
 }
 
