@@ -4,6 +4,7 @@
 
     <application
         android:label="hello_android"
+        android:theme="@style/Theme.AppCompat.NoActionBar"
         android:hasCode="true">
 
         <activity
