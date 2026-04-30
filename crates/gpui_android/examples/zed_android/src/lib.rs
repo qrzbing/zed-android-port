@@ -48,6 +48,21 @@ fn boot(cx: &mut App) -> Result<()> {
     theme_settings::init(theme::LoadThemes::JustBase, cx);
     editor::init(cx);
 
+    // Load the default keymap so backspace/delete/arrows/ctrl-shortcuts route
+    // to editor actions. `_allow_partial_failure` skips bindings whose actions
+    // aren't registered yet (vim::*, terminal::*, workspace::* until 8.3) —
+    // we get the editor::* and zed::* subset and the rest land later.
+    match settings::KeymapFile::load_asset_allow_partial_failure(
+        settings::DEFAULT_KEYMAP_PATH,
+        cx,
+    ) {
+        Ok(bindings) => {
+            info!("zed_android: loaded {} key bindings from default keymap", bindings.len());
+            cx.bind_keys(bindings);
+        }
+        Err(err) => error!("zed_android: keymap load failed: {err:#}"),
+    }
+
     cx.text_system()
         .add_fonts(vec![Cow::Borrowed(BUNDLED_FONT)])?;
 
