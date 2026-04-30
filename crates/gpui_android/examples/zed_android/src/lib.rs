@@ -173,7 +173,10 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     client::init(&client, cx);
     Project::init(&client, cx);
     workspace::init(app_state.clone(), cx);
-    info!("zed_android: client/Project/workspace init complete");
+    command_palette::init(cx);
+    search::init(cx);
+    vim::init(cx);
+    info!("zed_android: client/Project/workspace/command_palette/search/vim init complete");
 
     let project = Project::local(
         client.clone(),
@@ -204,6 +207,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     });
 
     let buffer_for_window = buffer_slot.clone();
+    let project_for_window = project.clone();
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
         let buffer =
             cx.new(|cx| Buffer::local(text.clone(), cx).with_language(rust.clone(), cx));
@@ -211,16 +215,11 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
         let editor =
             cx.new(|cx| Editor::new(EditorMode::full(), multibuffer, None, window, cx));
-        let workspace =
-            cx.new(|cx| Workspace::new(None, project.clone(), app_state.clone(), window, cx));
+        let workspace = cx.new(|cx| {
+            Workspace::new(None, project_for_window.clone(), app_state.clone(), window, cx)
+        });
         workspace.update(cx, |workspace, cx| {
-            workspace.add_item_to_active_pane(
-                Box::new(editor),
-                None,
-                false,
-                window,
-                cx,
-            );
+            workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
         });
         workspace
     })?;

@@ -16,6 +16,7 @@ android_logger = "0.13"
 anyhow = "1"
 assets = { path = "../../../assets" }
 client = { path = "../../../client" }
+command_palette = { path = "../../../command_palette" }
 db = { path = "../../../db" }
 editor = { path = "../../../editor" }
 fs = { path = "../../../fs" }
@@ -30,9 +31,11 @@ project = { path = "../../../project" }
 workspace = { path = "../../../workspace" }
 release_channel = { path = "../../../release_channel" }
 reqwest_client = { path = "../../../reqwest_client" }
+search = { path = "../../../search" }
 semver = "1"
 session = { path = "../../../session" }
 uuid = { version = "1.10", features = ["v4"] }
+vim = { path = "../../../vim" }
 # Force RustEmbed to bake assets into the binary even in debug builds —
 # without this, settings/theme assets are looked up from the host filesystem
 # at runtime, which doesn't work on a device.
