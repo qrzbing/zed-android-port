@@ -208,6 +208,15 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         }
     });
 
+    let worktree_path = PathBuf::from("/sdcard/Documents");
+    let worktree_task = project.update(cx, |project, cx| {
+        project.create_worktree(worktree_path.clone(), true, cx)
+    });
+    info!(
+        "zed_android: worktree creation scheduled for {}",
+        worktree_path.display()
+    );
+
     let buffer_for_window = buffer_slot.clone();
     let project_for_window = project.clone();
     cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
@@ -223,8 +232,14 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         workspace.update(cx, |workspace, cx| {
             workspace.add_item_to_active_pane(Box::new(editor), None, false, window, cx);
 
+            // Wait for the worktree before attaching the project panel so
+            // `Panel::starts_open` sees the worktree and opens the dock the
+            // way official Zed does on first launch.
             let weak = cx.weak_entity();
             cx.spawn_in(window, async move |_, cx| {
+                if let Err(err) = worktree_task.await {
+                    error!("zed_android: worktree creation failed: {err:#}");
+                }
                 match project_panel::ProjectPanel::load(weak.clone(), cx.clone()).await {
                     Ok(panel) => {
                         if let Err(err) = weak.update_in(cx, |workspace, window, cx| {
@@ -244,17 +259,5 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     })?;
 
     info!("zed_android: workspace window opened");
-
-    let worktree_path = PathBuf::from("/sdcard/Documents");
-    project
-        .update(cx, |project, cx| {
-            project.create_worktree(worktree_path.clone(), true, cx)
-        })
-        .detach();
-    info!(
-        "zed_android: worktree creation scheduled for {}",
-        worktree_path.display()
-    );
-
     Ok(())
 }
