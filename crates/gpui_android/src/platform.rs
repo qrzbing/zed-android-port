@@ -169,6 +169,19 @@ impl AndroidPlatform {
                 window_ptr.resize_surface(
                     native_window.width() as u32,
                     native_window.height() as u32,
+                    self.compute_scale_factor(),
+                );
+            }
+            MainEvent::ConfigChanged { .. } => {
+                // Density may have changed (rotation, dock/scaling). Refresh
+                // scale_factor and re-emit a resize so layout picks it up.
+                let window_ptr = self.common.borrow().window.clone();
+                let Some(window_ptr) = window_ptr else { return };
+                let Some(native_window) = self.android_app.native_window() else { return };
+                window_ptr.resize_surface(
+                    native_window.width() as u32,
+                    native_window.height() as u32,
+                    self.compute_scale_factor(),
                 );
             }
             MainEvent::RedrawNeeded { .. } => {

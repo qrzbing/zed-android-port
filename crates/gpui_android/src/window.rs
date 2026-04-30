@@ -189,23 +189,35 @@ impl AndroidWindowStatePtr {
         log::info!("AndroidWindow::detach_surface: surface unconfigured");
     }
 
-    /// Called on `MainEvent::WindowResized`. Updates the drawable size on the
-    /// renderer and the cached bounds.
-    pub(crate) fn resize_surface(&self, width: u32, height: u32) {
-        let mut state = self.state.borrow_mut();
-        let scale_factor = state.scale_factor;
-        state.bounds = Bounds {
-            origin: point(px(0.0), px(0.0)),
-            size: size(
-                px(width as f32 / scale_factor),
-                px(height as f32 / scale_factor),
-            ),
+    /// Called on `MainEvent::WindowResized` and `MainEvent::ConfigChanged`.
+    /// Both can change the visible size or DPI (rotation, dock/scaling), so
+    /// the platform layer is expected to recompute scale_factor each call
+    /// rather than reuse the stored one.
+    ///
+    /// Fires the `on_resize` callback that gpui registered so it relays out
+    /// the element tree at the new size + DPI.
+    pub(crate) fn resize_surface(&self, width: u32, height: u32, scale_factor: f32) {
+        let content_size = {
+            let mut state = self.state.borrow_mut();
+            state.scale_factor = scale_factor;
+            state.bounds = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(
+                    px(width as f32 / scale_factor),
+                    px(height as f32 / scale_factor),
+                ),
+            };
+            if let Some(renderer) = state.renderer.as_mut() {
+                renderer.update_drawable_size(size(
+                    DevicePixels(width.max(1) as i32),
+                    DevicePixels(height.max(1) as i32),
+                ));
+            }
+            state.bounds.size
         };
-        if let Some(renderer) = state.renderer.as_mut() {
-            renderer.update_drawable_size(size(
-                DevicePixels(width.max(1) as i32),
-                DevicePixels(height.max(1) as i32),
-            ));
+
+        if let Some(callback) = self.callbacks.borrow_mut().resize.as_mut() {
+            callback(content_size, scale_factor);
         }
     }
 
