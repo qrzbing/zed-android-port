@@ -86,6 +86,17 @@ impl AndroidPlatform {
         }
     }
 
+    /// Read the device's display density and convert to a scale factor.
+    /// Android reports density in dpi where 160 dpi = 1.0x. Tab S9 Ultra
+    /// reports ~336 dpi (~2.1x). Falls back to 1.0 if the density isn't yet
+    /// reported (e.g. very early in startup before the first config arrives).
+    fn compute_scale_factor(&self) -> f32 {
+        match self.android_app.config().density() {
+            Some(dpi) if dpi > 0 => (dpi as f32 / 160.0).max(1.0),
+            _ => 1.0,
+        }
+    }
+
     fn handle_main_event(&self, event: android_activity::MainEvent<'_>) {
         use android_activity::MainEvent;
         match event {
@@ -99,7 +110,8 @@ impl AndroidPlatform {
                     log::warn!("MainEvent::InitWindow but native_window() returned None");
                     return;
                 };
-                if let Err(e) = window_ptr.attach_surface(native_window) {
+                let scale_factor = self.compute_scale_factor();
+                if let Err(e) = window_ptr.attach_surface(native_window, scale_factor) {
                     log::error!("attach_surface failed: {e:#}");
                 }
             }
@@ -244,6 +256,16 @@ impl Platform for AndroidPlatform {
                     }
                 },
             );
+
+            // Drain main-thread runnables that piled up while we were blocked,
+            // so any work scheduled before this open_window call (e.g. via
+            // background_executor) doesn't sit indefinitely.
+            let receiver = self.common.borrow().main_receiver.clone();
+            for runnable in receiver.try_iter() {
+                if let Ok(runnable) = runnable {
+                    runnable.run();
+                }
+            }
         }
 
         let appearance = self.common.borrow().appearance;
@@ -253,7 +275,8 @@ impl Platform for AndroidPlatform {
         let native_window = self.android_app.native_window().ok_or_else(|| {
             anyhow::anyhow!("open_window: native_window vanished between poll and attach")
         })?;
-        window.ptr().attach_surface(native_window)?;
+        let scale_factor = self.compute_scale_factor();
+        window.ptr().attach_surface(native_window, scale_factor)?;
 
         self.common.borrow_mut().window = Some(window.ptr());
         self.common.borrow_mut().active_window = Some(handle);

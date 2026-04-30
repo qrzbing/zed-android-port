@@ -82,6 +82,10 @@ pub(crate) struct AndroidWindowState {
     /// thus refcount-decremented) on `detach_surface` and replaced when
     /// `attach_surface` runs with a fresh window.
     pub(crate) native_window: Option<NativeWindow>,
+    /// After a successful `recover()` the atlas textures have been cleared,
+    /// but gpui's invalidator doesn't know that. The next paint must be
+    /// forced; consumed by `refresh()` via `std::mem::take`.
+    pub(crate) force_render_after_recovery: bool,
 }
 
 #[derive(Clone)]
@@ -104,7 +108,15 @@ impl AndroidWindowStatePtr {
     /// Takes ownership of `NativeWindow` so the underlying refcount on
     /// `ANativeWindow*` is held for the life of this surface; the wrapper is
     /// dropped on `detach_surface` or replaced on subsequent `attach_surface`.
-    pub(crate) fn attach_surface(&self, native_window: NativeWindow) -> Result<()> {
+    ///
+    /// `scale_factor` is the device's display density multiplier (160 dpi = 1.0,
+    /// 320 dpi = 2.0, etc.). Set on first attach so layout uses the correct DPI
+    /// from frame zero.
+    pub(crate) fn attach_surface(
+        &self,
+        native_window: NativeWindow,
+        scale_factor: f32,
+    ) -> Result<()> {
         let width = native_window.width() as u32;
         let height = native_window.height() as u32;
         let raw_window = AndroidRawWindow {
@@ -121,9 +133,13 @@ impl AndroidWindowStatePtr {
 
         let mut state = self.state.borrow_mut();
         state.raw_window = raw_window;
+        state.scale_factor = scale_factor;
         state.bounds = Bounds {
             origin: point(px(0.0), px(0.0)),
-            size: size(px(width as f32), px(height as f32)),
+            size: size(
+                px(width as f32 / scale_factor),
+                px(height as f32 / scale_factor),
+            ),
         };
 
         if state.renderer.is_some() {
@@ -177,9 +193,13 @@ impl AndroidWindowStatePtr {
     /// renderer and the cached bounds.
     pub(crate) fn resize_surface(&self, width: u32, height: u32) {
         let mut state = self.state.borrow_mut();
+        let scale_factor = state.scale_factor;
         state.bounds = Bounds {
             origin: point(px(0.0), px(0.0)),
-            size: size(px(width as f32), px(height as f32)),
+            size: size(
+                px(width as f32 / scale_factor),
+                px(height as f32 / scale_factor),
+            ),
         };
         if let Some(renderer) = state.renderer.as_mut() {
             renderer.update_drawable_size(size(
@@ -197,11 +217,12 @@ impl AndroidWindowStatePtr {
     /// calls during the callback's own paint side-effects would otherwise
     /// double-borrow the callback Box.
     pub(crate) fn refresh(&self) {
+        let force_render = std::mem::take(&mut self.state.borrow_mut().force_render_after_recovery);
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut callback) = callback {
             callback(RequestFrameOptions {
                 require_presentation: false,
-                force_render: false,
+                force_render,
             });
             self.callbacks.borrow_mut().request_frame = Some(callback);
         }
@@ -234,6 +255,7 @@ impl AndroidWindow {
             handle,
             gpu_context,
             native_window: None,
+            force_render_after_recovery: false,
         };
 
         Self(AndroidWindowStatePtr {
@@ -406,8 +428,11 @@ impl PlatformWindow for AndroidWindow {
                 log::warn!("draw: device lost but no native window to recover against");
                 return;
             }
-            if let Err(err) = renderer.recover(&raw_window) {
-                log::error!("GPU recovery failed: {err:#}");
+            match renderer.recover(&raw_window) {
+                Ok(()) => {
+                    state.force_render_after_recovery = true;
+                }
+                Err(err) => log::error!("GPU recovery failed: {err:#}"),
             }
             return;
         }
