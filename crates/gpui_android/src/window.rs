@@ -399,6 +399,19 @@ impl PlatformWindow for AndroidWindow {
         let Some(renderer) = state.renderer.as_mut() else {
             return;
         };
+
+        if renderer.device_lost() {
+            let raw_window = state.raw_window;
+            if raw_window.native_window.is_null() {
+                log::warn!("draw: device lost but no native window to recover against");
+                return;
+            }
+            if let Err(err) = state.renderer.as_mut().unwrap().recover(&raw_window) {
+                log::error!("GPU recovery failed: {err:#}");
+            }
+            return;
+        }
+
         renderer.draw(scene);
     }
 
