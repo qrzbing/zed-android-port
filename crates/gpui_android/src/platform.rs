@@ -121,7 +121,9 @@ impl AndroidPlatform {
                 );
             }
             MainEvent::RedrawNeeded { .. } => {
-                // Commit (c) will route this to the request_frame callback.
+                if let Some(window_ptr) = self.common.borrow().window.clone() {
+                    window_ptr.refresh();
+                }
             }
             MainEvent::Destroy => {
                 self.common.borrow_mut().running = false;
@@ -172,6 +174,14 @@ impl Platform for AndroidPlatform {
                 if let Ok(runnable) = runnable {
                     runnable.run();
                 }
+            }
+
+            // Drive a paint at the poll cadence (~60Hz from the 16ms timeout).
+            // gpui's request_frame callback short-circuits when nothing has
+            // changed, so this is cheap when idle. A future pass should hook
+            // Android's Choreographer for proper vsync alignment.
+            if let Some(window_ptr) = self.common.borrow().window.clone() {
+                window_ptr.refresh();
             }
         }
 

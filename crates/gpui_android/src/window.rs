@@ -173,6 +173,24 @@ impl AndroidWindowStatePtr {
             ));
         }
     }
+
+    /// Drive a paint cycle: invoke the `request_frame` callback that gpui
+    /// registered. The callback walks the element tree, builds a `Scene`, and
+    /// calls back into our `PlatformWindow::draw` to actually submit it.
+    ///
+    /// The take/restore dance mirrors X11's `refresh` — re-entrant `refresh`
+    /// calls during the callback's own paint side-effects would otherwise
+    /// double-borrow the callback Box.
+    pub(crate) fn refresh(&self) {
+        let callback = self.callbacks.borrow_mut().request_frame.take();
+        if let Some(mut callback) = callback {
+            callback(RequestFrameOptions {
+                require_presentation: false,
+                force_render: false,
+            });
+            self.callbacks.borrow_mut().request_frame = Some(callback);
+        }
+    }
 }
 
 pub(crate) struct AndroidWindow(pub(crate) AndroidWindowStatePtr);
@@ -360,8 +378,12 @@ impl PlatformWindow for AndroidWindow {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, _scene: &Scene) {
-        // Wired in commit (c). For now, no surface means no-op.
+    fn draw(&self, scene: &Scene) {
+        let mut state = self.0.state.borrow_mut();
+        let Some(renderer) = state.renderer.as_mut() else {
+            return;
+        };
+        renderer.draw(scene);
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
