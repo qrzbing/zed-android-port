@@ -1,7 +1,10 @@
-use android_activity::input::{KeyAction, KeyEvent, Keycode, MetaState, MotionAction, MotionEvent};
+use android_activity::input::{
+    Axis, KeyAction, KeyEvent, Keycode, MetaState, MotionAction, MotionEvent,
+};
 use gpui::{
     Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, point, px,
 };
 
 /// Convert an Android `KeyEvent` into a gpui `PlatformInput`.
@@ -86,6 +89,24 @@ pub(crate) fn translate_motion_event(
             modifiers,
             click_count: 0,
         })),
+        MotionAction::Scroll => {
+            // Mouse wheel + trackpad two-finger scroll arrives as Vscroll/Hscroll
+            // axes in `lines`. gpui's ScrollDelta::Lines uses the same unit, but
+            // Android reports +Y for "up" (away from user); gpui expects +Y to
+            // scroll content up (the wheel-rotates-toward-you convention), so we
+            // negate Vscroll so trackpad-down scrolls content down.
+            let vscroll = primary.axis_value(Axis::Vscroll);
+            let hscroll = primary.axis_value(Axis::Hscroll);
+            if vscroll == 0.0 && hscroll == 0.0 {
+                return None;
+            }
+            Some(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Lines(point(hscroll, -vscroll)),
+                modifiers,
+                touch_phase: TouchPhase::Moved,
+            }))
+        }
         _ => None,
     }
 }
