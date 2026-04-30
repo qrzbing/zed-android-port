@@ -5,6 +5,7 @@ mod dispatcher;
 mod display;
 mod keyboard;
 mod platform;
+mod window;
 
 pub use platform::AndroidPlatform;
 

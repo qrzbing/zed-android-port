@@ -1,0 +1,303 @@
+use std::cell::RefCell;
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use futures::channel::oneshot;
+use raw_window_handle as rwh;
+
+use gpui::{
+    AnyWindowHandle, Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Pixels, Point,
+    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
+};
+use gpui_wgpu::{GpuContext, WgpuRenderer};
+
+use crate::display::AndroidDisplay;
+
+/// Raw window handle wrapper for Android. Holds a `*mut ANativeWindow` pointer
+/// (obtained from `android_activity::AndroidApp::native_window()`), or null when
+/// the surface is not currently attached (between `TerminateWindow` and the next
+/// `InitWindow`).
+///
+/// `Send + Sync` are required by `WgpuRenderer::new`'s bounds; the pointer is
+/// only ever dereferenced on the main thread, and wgpu uses it synchronously
+/// during surface creation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AndroidRawWindow {
+    pub(crate) native_window: *mut c_void,
+}
+
+unsafe impl Send for AndroidRawWindow {}
+unsafe impl Sync for AndroidRawWindow {}
+
+impl rwh::HasWindowHandle for AndroidRawWindow {
+    fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+        let Some(non_null) = NonNull::new(self.native_window) else {
+            return Err(rwh::HandleError::Unavailable);
+        };
+        let handle = rwh::AndroidNdkWindowHandle::new(non_null);
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl rwh::HasDisplayHandle for AndroidRawWindow {
+    fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        let handle = rwh::AndroidDisplayHandle::new();
+        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Callbacks {
+    pub(crate) request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    pub(crate) input: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
+    pub(crate) active_status_change: Option<Box<dyn FnMut(bool)>>,
+    pub(crate) hovered_status_change: Option<Box<dyn FnMut(bool)>>,
+    pub(crate) resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
+    pub(crate) moved: Option<Box<dyn FnMut()>>,
+    pub(crate) should_close: Option<Box<dyn FnMut() -> bool>>,
+    pub(crate) close: Option<Box<dyn FnOnce()>>,
+    pub(crate) appearance_changed: Option<Box<dyn FnMut()>>,
+}
+
+pub(crate) struct AndroidWindowState {
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) scale_factor: f32,
+    pub(crate) renderer: Option<WgpuRenderer>,
+    pub(crate) raw_window: AndroidRawWindow,
+    pub(crate) display: Rc<dyn PlatformDisplay>,
+    pub(crate) input_handler: Option<PlatformInputHandler>,
+    pub(crate) appearance: WindowAppearance,
+    pub(crate) background_appearance: WindowBackgroundAppearance,
+    pub(crate) handle: AnyWindowHandle,
+    pub(crate) gpu_context: GpuContext,
+}
+
+#[derive(Clone)]
+pub(crate) struct AndroidWindowStatePtr {
+    pub(crate) state: Rc<RefCell<AndroidWindowState>>,
+    pub(crate) callbacks: Rc<RefCell<Callbacks>>,
+}
+
+pub(crate) struct AndroidWindow(pub(crate) AndroidWindowStatePtr);
+
+impl AndroidWindow {
+    pub(crate) fn new(
+        handle: AnyWindowHandle,
+        _params: WindowParams,
+        gpu_context: GpuContext,
+        appearance: WindowAppearance,
+    ) -> Self {
+        let display: Rc<dyn PlatformDisplay> = Rc::new(AndroidDisplay::new());
+        let bounds = display.bounds();
+
+        let state = AndroidWindowState {
+            bounds,
+            scale_factor: 1.0,
+            renderer: None,
+            raw_window: AndroidRawWindow {
+                native_window: std::ptr::null_mut(),
+            },
+            display,
+            input_handler: None,
+            appearance,
+            background_appearance: WindowBackgroundAppearance::Opaque,
+            handle,
+            gpu_context,
+        };
+
+        Self(AndroidWindowStatePtr {
+            state: Rc::new(RefCell::new(state)),
+            callbacks: Rc::new(RefCell::new(Callbacks::default())),
+        })
+    }
+
+    pub(crate) fn ptr(&self) -> AndroidWindowStatePtr {
+        self.0.clone()
+    }
+}
+
+impl rwh::HasWindowHandle for AndroidWindow {
+    fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+        let raw = self.0.state.borrow().raw_window;
+        let Some(non_null) = NonNull::new(raw.native_window) else {
+            return Err(rwh::HandleError::Unavailable);
+        };
+        let handle = rwh::AndroidNdkWindowHandle::new(non_null);
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl rwh::HasDisplayHandle for AndroidWindow {
+    fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        let handle = rwh::AndroidDisplayHandle::new();
+        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl PlatformWindow for AndroidWindow {
+    fn bounds(&self) -> Bounds<Pixels> {
+        self.0.state.borrow().bounds
+    }
+
+    fn is_maximized(&self) -> bool {
+        true
+    }
+
+    fn window_bounds(&self) -> WindowBounds {
+        WindowBounds::Maximized(self.0.state.borrow().bounds)
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        self.0.state.borrow().bounds.size
+    }
+
+    fn resize(&mut self, _size: Size<Pixels>) {}
+
+    fn scale_factor(&self) -> f32 {
+        self.0.state.borrow().scale_factor
+    }
+
+    fn appearance(&self) -> WindowAppearance {
+        self.0.state.borrow().appearance
+    }
+
+    fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+        Some(self.0.state.borrow().display.clone())
+    }
+
+    fn mouse_position(&self) -> Point<Pixels> {
+        Point::default()
+    }
+
+    fn modifiers(&self) -> Modifiers {
+        Modifiers::default()
+    }
+
+    fn capslock(&self) -> Capslock {
+        Capslock::default()
+    }
+
+    fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
+        self.0.state.borrow_mut().input_handler = Some(input_handler);
+    }
+
+    fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
+        self.0.state.borrow_mut().input_handler.take()
+    }
+
+    fn prompt(
+        &self,
+        _level: PromptLevel,
+        _msg: &str,
+        _detail: Option<&str>,
+        _answers: &[PromptButton],
+    ) -> Option<oneshot::Receiver<usize>> {
+        None
+    }
+
+    fn activate(&self) {}
+
+    fn is_active(&self) -> bool {
+        true
+    }
+
+    fn is_hovered(&self) -> bool {
+        false
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.state.borrow().background_appearance
+    }
+
+    fn set_title(&mut self, _title: &str) {}
+
+    fn set_background_appearance(&self, _bg: WindowBackgroundAppearance) {}
+
+    fn minimize(&self) {}
+    fn zoom(&self) {}
+    fn toggle_fullscreen(&self) {}
+
+    fn is_fullscreen(&self) -> bool {
+        true
+    }
+
+    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+        self.0.callbacks.borrow_mut().request_frame = Some(callback);
+    }
+
+    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
+        self.0.callbacks.borrow_mut().input = Some(callback);
+    }
+
+    fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        self.0.callbacks.borrow_mut().active_status_change = Some(callback);
+    }
+
+    fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        self.0.callbacks.borrow_mut().hovered_status_change = Some(callback);
+    }
+
+    fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
+        self.0.callbacks.borrow_mut().resize = Some(callback);
+    }
+
+    fn on_moved(&self, callback: Box<dyn FnMut()>) {
+        self.0.callbacks.borrow_mut().moved = Some(callback);
+    }
+
+    fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.callbacks.borrow_mut().should_close = Some(callback);
+    }
+
+    fn on_hit_test_window_control(
+        &self,
+        _callback: Box<dyn FnMut() -> Option<WindowControlArea>>,
+    ) {
+    }
+
+    fn on_close(&self, callback: Box<dyn FnOnce()>) {
+        self.0.callbacks.borrow_mut().close = Some(callback);
+    }
+
+    fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
+        self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
+    }
+
+    fn draw(&self, _scene: &Scene) {
+        // Wired in commit (c). For now, no surface means no-op.
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        // gpui::Window::new calls this once during construction. Until commit (b)
+        // attaches a real surface and renderer, we have no atlas — this path is
+        // unreachable because open_window currently returns Err before a window
+        // is registered with gpui.
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .as_ref()
+            .expect("AndroidWindow::sprite_atlas called before surface attached")
+            .sprite_atlas()
+            .clone()
+    }
+
+    fn is_subpixel_rendering_supported(&self) -> bool {
+        false
+    }
+
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .as_ref()
+            .map(|r| r.gpu_specs())
+    }
+
+    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
+}

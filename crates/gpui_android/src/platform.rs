@@ -14,10 +14,12 @@ use gpui::{
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow,
     PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance, WindowParams,
 };
+use gpui_wgpu::GpuContext;
 
 use crate::dispatcher::AndroidDispatcher;
 use crate::display::AndroidDisplay;
 use crate::keyboard::AndroidKeyboardLayout;
+use crate::window::{AndroidWindow, AndroidWindowStatePtr};
 
 #[derive(Default)]
 pub(crate) struct PlatformHandlers {
@@ -38,6 +40,11 @@ pub(crate) struct AndroidCommon {
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) active_window: Option<AnyWindowHandle>,
+    pub(crate) gpu_context: GpuContext,
+    /// The single live AndroidWindow. Android only supports one window per
+    /// activity for our purposes; lifecycle events from the run loop are
+    /// dispatched to whatever's stored here.
+    pub(crate) window: Option<AndroidWindowStatePtr>,
     pub(crate) running: bool,
 }
 
@@ -58,6 +65,8 @@ impl AndroidCommon {
             callbacks: PlatformHandlers::default(),
             main_receiver,
             active_window: None,
+            gpu_context: Rc::new(RefCell::new(None)),
+            window: None,
             running: true,
         }
     }
@@ -161,10 +170,15 @@ impl Platform for AndroidPlatform {
 
     fn open_window(
         &self,
-        _handle: AnyWindowHandle,
-        _options: WindowParams,
+        handle: AnyWindowHandle,
+        options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        Err(anyhow::anyhow!("Phase 7.4: AndroidWindow not yet implemented"))
+        let appearance = self.common.borrow().appearance;
+        let gpu_context = self.common.borrow().gpu_context.clone();
+        let window = AndroidWindow::new(handle, options, gpu_context, appearance);
+        self.common.borrow_mut().window = Some(window.ptr());
+        self.common.borrow_mut().active_window = Some(handle);
+        Ok(Box::new(window))
     }
 
     fn window_appearance(&self) -> WindowAppearance {
