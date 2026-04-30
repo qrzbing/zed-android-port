@@ -1,11 +1,18 @@
 #![cfg(target_os = "android")]
 
 use android_activity::{AndroidApp, MainEvent, PollEvent};
+use glyphon::{
+    Attrs, Buffer, Cache, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
+    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+};
 use log::{error, info};
 use ndk::native_window::NativeWindow;
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
+
+const BUNDLED_FONT: &[u8] =
+    include_bytes!("../../../../../assets/fonts/lilex/Lilex-Regular.ttf");
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -73,6 +80,13 @@ struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     frame: u32,
+
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    viewport: Viewport,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
+    text_buffer: Buffer,
 }
 
 impl Renderer {
@@ -82,7 +96,8 @@ impl Renderer {
             ..Default::default()
         });
 
-        let raw_window = RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(window.ptr().cast()));
+        let raw_window =
+            RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(window.ptr().cast()));
         let raw_display = RawDisplayHandle::Android(AndroidDisplayHandle::new());
 
         let surface = unsafe {
@@ -96,19 +111,16 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
-        }))
-        .ok_or_else(|| anyhow::anyhow!("no compatible wgpu adapter"))?;
+        }))?;
         info!("wgpu adapter: {:?}", adapter.get_info());
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("hello_android device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("hello_android device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::downlevel_defaults(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -130,6 +142,33 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        let mut font_system = FontSystem::new();
+        font_system.db_mut().load_font_data(BUNDLED_FONT.to_vec());
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        let mut text_atlas = TextAtlas::new(&device, &queue, &cache, format);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+
+        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(80.0, 100.0));
+        text_buffer.set_size(
+            &mut font_system,
+            Some(config.width as f32),
+            Some(config.height as f32),
+        );
+        text_buffer.set_text(
+            &mut font_system,
+            "Hello, Android!",
+            &Attrs::new().family(Family::Name("Lilex")),
+            Shaping::Advanced,
+        );
+        text_buffer.shape_until_scroll(&mut font_system, false);
+
         Ok(Self {
             _window: window,
             surface,
@@ -137,6 +176,12 @@ impl Renderer {
             queue,
             config,
             frame: 0,
+            font_system,
+            swash_cache,
+            viewport,
+            text_atlas,
+            text_renderer,
+            text_buffer,
         })
     }
 
@@ -147,6 +192,10 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        self.text_buffer
+            .set_size(&mut self.font_system, Some(width as f32), Some(height as f32));
+        self.text_buffer
+            .shape_until_scroll(&mut self.font_system, false);
     }
 
     fn render(&mut self) -> anyhow::Result<()> {
@@ -165,9 +214,41 @@ impl Renderer {
         let g = (t + 2.094).sin() * 0.5 + 0.5;
         let b = (t + 4.188).sin() * 0.5 + 0.5;
 
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: self.config.width,
+                height: self.config.height,
+            },
+        );
+        self.text_renderer
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                [TextArea {
+                    buffer: &self.text_buffer,
+                    left: 80.0,
+                    top: 80.0,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: self.config.width as i32,
+                        bottom: self.config.height as i32,
+                    },
+                    default_color: TextColor::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash_cache,
+            )
+            .map_err(|e| anyhow::anyhow!("text prepare: {e:?}"))?;
+
         {
-            let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear pass"),
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear+text pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -180,6 +261,9 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            self.text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut rpass)
+                .map_err(|e| anyhow::anyhow!("text render: {e:?}"))?;
         }
 
         self.queue.submit(Some(encoder.finish()));
