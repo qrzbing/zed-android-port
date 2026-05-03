@@ -1,8 +1,10 @@
 use std::{
     cell::RefCell,
+    ffi::c_void,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use android_activity::AndroidApp;
@@ -21,6 +23,66 @@ use crate::dispatcher::AndroidDispatcher;
 use crate::display::AndroidDisplay;
 use crate::keyboard::AndroidKeyboardLayout;
 use crate::window::{AndroidWindow, AndroidWindowStatePtr};
+
+/// AChoreographer FFI — NDK API 24+. We avoid going through Java's
+/// android.view.Choreographer because we'd need a JNI hop on every
+/// vsync; the NDK exposes the same scheduler natively. Linked from
+/// libandroid.so which Android already keeps mapped.
+#[link(name = "android")]
+unsafe extern "C" {
+    fn AChoreographer_getInstance() -> *mut c_void;
+    fn AChoreographer_postFrameCallback64(
+        choreographer: *mut c_void,
+        callback: ChoreographerFrameCallback,
+        data: *mut c_void,
+    );
+}
+
+type ChoreographerFrameCallback =
+    unsafe extern "C" fn(frame_time_nanos: i64, data: *mut c_void);
+
+/// Set by the Choreographer callback (called once per vsync on the
+/// main thread's looper, so no synchronization beyond the atomic).
+/// Drained at the top of each event-loop tick to decide whether to
+/// call window.refresh().
+static FRAME_PENDING: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" fn frame_callback(_frame_time_nanos: i64, _data: *mut c_void) {
+    FRAME_PENDING.store(true, Ordering::Release);
+    // Re-post for the next vsync so we get a continuous stream of
+    // frame callbacks. Stopping this stream means the next tick won't
+    // get a vsync wake-up; we always want to be ready to render.
+    unsafe {
+        let c = AChoreographer_getInstance();
+        if !c.is_null() {
+            AChoreographer_postFrameCallback64(
+                c,
+                frame_callback,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+}
+
+/// Register the first Choreographer frame callback on the calling
+/// thread (must have a Looper attached — android-activity's main
+/// thread does). Subsequent callbacks self-re-post inside
+/// `frame_callback` so we keep getting vsync ticks for the app's
+/// lifetime.
+fn install_choreographer_callback() {
+    unsafe {
+        let c = AChoreographer_getInstance();
+        if c.is_null() {
+            log::warn!(
+                "AChoreographer_getInstance returned null; vsync sync \
+                 disabled, falling back to poll-timeout-driven refresh"
+            );
+            return;
+        }
+        AChoreographer_postFrameCallback64(c, frame_callback, std::ptr::null_mut());
+    }
+    log::info!("AndroidPlatform: Choreographer frame callback registered");
+}
 
 #[derive(Default)]
 pub(crate) struct PlatformHandlers {
@@ -228,20 +290,25 @@ impl Platform for AndroidPlatform {
         on_finish_launching();
         log::info!("AndroidPlatform::run: entering event loop");
 
+        // Hook AChoreographer for vsync-aligned rendering. The callback
+        // is delivered on this thread's looper as part of the same
+        // event stream android-activity polls, so vsync arrivals
+        // unblock `poll_events` naturally — we don't need to drive
+        // refresh from a tight timeout.
+        install_choreographer_callback();
+
         while self.common.borrow().running {
-            // Block until: timeout, waker, or a main-event from android-activity.
-            //
-            // 8ms timeout = ~120Hz polling, matches Tab S9 Ultra's display
-            // refresh rate. gpui's `window.refresh()` short-circuits when
-            // nothing is dirty, so the extra wake-ups when idle just check
-            // the dirty bit and return. The reason to poll-tighter than
-            // strictly needed: scrolling, animations, and cursor blink all
-            // want to update at the display's max rate; 16ms drops every
-            // other vsync on a 120Hz panel. A future pass should switch
-            // to a Choreographer FrameCallback for true vsync sync —
-            // event-based instead of fixed-interval.
+            // 100ms is the upper bound (idle / unfocused). Any of:
+            //   - input event
+            //   - vsync (`frame_callback` runs as a looper task, sets
+            //     FRAME_PENDING)
+            //   - an enqueued waker (background-thread runnable)
+            //   - main-thread event from android-activity
+            // returns earlier. With the Choreographer driving us, this
+            // loop ticks at the panel's refresh rate (60Hz / 90Hz /
+            // 120Hz / etc.) when active and falls to ~10Hz idle.
             self.android_app.poll_events(
-                Some(std::time::Duration::from_millis(8)),
+                Some(std::time::Duration::from_millis(100)),
                 |event| match event {
                     android_activity::PollEvent::Wake => {}
                     android_activity::PollEvent::Timeout => {}
@@ -269,12 +336,16 @@ impl Platform for AndroidPlatform {
             // stall touch.
             self.drain_input_events();
 
-            // Drive a paint at the poll cadence (~60Hz from the 16ms timeout).
-            // gpui's request_frame callback short-circuits when nothing has
-            // changed, so this is cheap when idle. A future pass should hook
-            // Android's Choreographer for proper vsync alignment.
-            if let Some(window_ptr) = self.common.borrow().window.clone() {
-                window_ptr.refresh();
+            // Refresh on vsync (FRAME_PENDING set by Choreographer
+            // callback) or after main-thread events that may have
+            // changed state. gpui's window.refresh() short-circuits
+            // when nothing is dirty, so calling on every iteration is
+            // cheap; gating on FRAME_PENDING saves the dirty-bit check
+            // when we know nothing's happened.
+            if FRAME_PENDING.swap(false, Ordering::AcqRel) {
+                if let Some(window_ptr) = self.common.borrow().window.clone() {
+                    window_ptr.refresh();
+                }
             }
         }
 
