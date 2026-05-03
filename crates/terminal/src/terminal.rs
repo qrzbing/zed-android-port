@@ -127,6 +127,52 @@ pub fn insert_zed_terminal_env(
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
+
+    // Android: alacritty's pty spawn replaces the inherited env entirely
+    // with the explicit map, so any TERMUX_* / PREFIX / HOME / PATH we
+    // set from `lib.rs` via `std::env::set_var` would be invisible to
+    // bash. Copy the relevant subset over so the integrated terminal
+    // sees the same Termux runtime our LSP / process-spawn code does.
+    // The dpkg patches and the apt Post-Invoke hooks all read these.
+    //
+    // Also set `LD_PRELOAD` to `libtermux-exec.so` — Termux's own
+    // `bin/login` does this. termux-exec hooks `execve` to translate
+    // hardcoded `/data/data/com.termux/...` paths in upstream maintainer
+    // script shebangs (e.g. `#!/data/data/com.termux/files/usr/bin/bash`)
+    // to our prefix, so dpkg can run them. Without this, `pkg install`
+    // of any upstream package whose preinst/postinst has a hardcoded
+    // shebang fails with EACCES because the kernel can't resolve the
+    // shebang interpreter at the com.termux path that doesn't exist
+    // for our UID.
+    #[cfg(target_os = "android")]
+    {
+        for key in [
+            "TERMUX_APP__PACKAGE_NAME",
+            "TERMUX__PREFIX",
+            "TERMUX__ROOTFS",
+            "TERMUX__HOME",
+            "PREFIX",
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "SHELL",
+            "LANG",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                env.entry(key.to_string()).or_insert(value);
+            }
+        }
+        // Use the canonical /data/data form for LD_PRELOAD; the bionic
+        // linker treats /data/data/<pkg> and /data/user/0/<pkg> as
+        // different namespaces. Bootstrap binaries' RUNPATH uses
+        // /data/data form, so libtermux-exec is loaded into the same
+        // namespace.
+        env.entry("LD_PRELOAD".to_string()).or_insert_with(|| {
+            "/data/data/dev.zed.zed_android/files/usr/lib/\
+             libtermux-exec.so"
+                .to_string()
+        });
+    }
 }
 
 ///Upward flowing events, for changing the title and such
