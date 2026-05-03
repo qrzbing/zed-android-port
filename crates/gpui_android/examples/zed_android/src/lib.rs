@@ -95,6 +95,20 @@ fn android_main(app: AndroidApp) {
             std::env::set_var("TERM", "xterm-256color");
             std::env::set_var("LANG", "en_US.UTF-8");
             std::env::set_var("COLORTERM", "truecolor");
+            // Point HTTPS-using subprocesses (cargo, npm, curl, …) at
+            // Termux's pre-shipped CA bundle. Without this, rust-
+            // analyzer's `cargo metadata` dies with "unable to get
+            // local issuer certificate" the first time cargo updates
+            // the crates.io index, since cargo's curl has no fallback
+            // location for a CA bundle on Android. SSL_CERT_FILE is
+            // honored by openssl-rs + rustls + curl; CURL_CA_BUNDLE
+            // covers older curl-built tooling that ignores the openssl
+            // env var.
+            let cert_path = prefix.join("etc/tls/cert.pem");
+            if cert_path.is_file() {
+                std::env::set_var("SSL_CERT_FILE", &cert_path);
+                std::env::set_var("CURL_CA_BUNDLE", &cert_path);
+            }
             if bash_present {
                 let prefix_bin = prefix.join("bin");
                 let existing = std::env::var_os("PATH").unwrap_or_default();

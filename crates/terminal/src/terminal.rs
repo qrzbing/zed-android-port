@@ -162,6 +162,22 @@ pub fn insert_zed_terminal_env(
                 env.entry(key.to_string()).or_insert(value);
             }
         }
+        // CA bundle for tools that go over HTTPS (cargo fetching
+        // crates.io, npm fetching the registry, curl, etc.). Termux
+        // ships a pre-populated bundle at $PREFIX/etc/tls/cert.pem;
+        // the standard env var rust/openssl-rs/curl/most-toolings
+        // honor is SSL_CERT_FILE. Without this, `cargo metadata` from
+        // rust-analyzer dies with "unable to get local issuer
+        // certificate" on first crates.io index update.
+        if let Ok(prefix) = std::env::var("PREFIX") {
+            let cert_path = format!("{prefix}/etc/tls/cert.pem");
+            if std::path::Path::new(&cert_path).exists() {
+                env.entry("SSL_CERT_FILE".to_string())
+                    .or_insert(cert_path.clone());
+                env.entry("CURL_CA_BUNDLE".to_string())
+                    .or_insert(cert_path);
+            }
+        }
         // Use the canonical /data/data form for LD_PRELOAD; the bionic
         // linker treats /data/data/<pkg> and /data/user/0/<pkg> as
         // different namespaces. Bootstrap binaries' RUNPATH uses
