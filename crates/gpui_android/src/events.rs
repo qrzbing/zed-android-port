@@ -10,18 +10,23 @@ use gpui::{
     ScrollWheelEvent, TouchPhase, point, px,
 };
 
-/// Press-and-hold beyond this is treated as the touch equivalent of
-/// right-click — what the project panel and similar elements listen for
-/// via `on_secondary_mouse_down` to deploy their context menu.
-const LONG_PRESS: Duration = Duration::from_millis(500);
+/// Two-finger tap = right-click. The second finger must come down within
+/// this window of the first (and the first must not have drifted into a
+/// drag) for the gesture to register as a secondary click. VNC clients
+/// and tablet-OS conventions both use the two-finger model rather than
+/// long-press because single-finger long-press collides with text
+/// selection (which is also a "hold then release" gesture).
+const TWO_FINGER_WINDOW: Duration = Duration::from_millis(300);
 
-/// Pixels (logical) the finger may drift while held without losing the
-/// long-press qualification. Larger than gpui's drag threshold so a still
-/// finger with normal jitter still counts.
-const LONG_PRESS_SLOP: f64 = 12.0;
+/// Pixels (logical) the primary finger may drift before we treat the
+/// gesture as a drag and stop accepting a 2nd-finger right-click.
+const TWO_FINGER_SLOP: f64 = 12.0;
 
 thread_local! {
     static PRIMARY_DOWN: Cell<Option<(Instant, Point<gpui::Pixels>)>> = const { Cell::new(None) };
+    /// Set when a two-finger tap fired Right-click. The subsequent
+    /// `Up`/`PointerUp` events for the gesture should NOT emit Up(Left).
+    static RIGHT_CLICK_FIRED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Output of `translate_motion_event`. Touch interactions can need to
@@ -61,11 +66,17 @@ pub(crate) fn translate_key_event(event: &KeyEvent) -> Option<PlatformInput> {
 }
 
 /// Convert an Android `MotionEvent` (touch / mouse / stylus) into one or
-/// more gpui `PlatformInput`s. The primary pointer maps to left-mouse for
-/// taps/drags; a finger held in place for `LONG_PRESS` resolves to a
-/// synthetic right-mouse sequence so listeners that hook
-/// `on_secondary_mouse_down` (project panel context menu, tab close menu,
-/// etc.) get their callback on touch.
+/// more gpui `PlatformInput`s. Touch model:
+///   - **Single-finger tap / drag** → left mouse click / drag (selection
+///     in editor & terminal works as expected)
+///   - **Two-finger tap** → right click — the standard tablet/VNC pattern
+///     for invoking `on_secondary_mouse_down` (project panel context menu,
+///     terminal context menu, tab close menu, etc.) without colliding
+///     with text selection
+///   - **Long single-finger press** → just keeps the left button held;
+///     no synthetic right-click. (Earlier versions did long-press →
+///     right-click; that interfered with text selection because the
+///     selection-and-context-menu gestures look identical.)
 ///
 /// Coordinates arrive from Android in physical pixels; gpui expects
 /// logical, so we divide by the active scale_factor here.
@@ -83,10 +94,36 @@ pub(crate) fn translate_motion_event(
     );
     let modifiers = modifiers_from_meta(event.meta_state());
 
+    // For mouse / trackpad input, Android pre-resolves multi-finger
+    // gestures and physical buttons into `button_state`. A two-finger
+    // tap on the Galaxy Book Cover trackpad arrives here as a single
+    // pointer with `BUTTON_SECONDARY` set; physical right-click on a
+    // USB mouse arrives the same way. Honor it directly so the user
+    // doesn't have to do anything funny on a trackpad.
+    let secondary_button = event.button_state().secondary();
+
     let mut out = MotionInputs::new();
     match event.action() {
-        MotionAction::Down | MotionAction::PointerDown => {
+        MotionAction::Down => {
+            if secondary_button {
+                // Trackpad two-finger tap or mouse right-click. Skip
+                // the touch-style two-finger detection — Android did it
+                // for us. Don't latch PRIMARY_DOWN; we don't want a
+                // subsequent Up to emit Up(Left).
+                RIGHT_CLICK_FIRED.with(|cell| cell.set(true));
+                out.push(PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Right,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }));
+                return out;
+            }
+            // First finger down. Latch position+time and emit Down(Left)
+            // immediately for instant click feedback.
             PRIMARY_DOWN.with(|cell| cell.set(Some((Instant::now(), position))));
+            RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
             // `first_mouse: false` because there's no window-focus concept on
             // Android; the app is always focused when it receives input.
             // Setting `true` would make every click look like a focus-the-
@@ -102,38 +139,69 @@ pub(crate) fn translate_motion_event(
                 first_mouse: false,
             }));
         }
-        MotionAction::Up | MotionAction::PointerUp => {
-            let down_state = PRIMARY_DOWN.with(|cell| cell.take());
-            let was_long_press = down_state
+        MotionAction::PointerDown => {
+            // Additional finger touched. If the primary finger is still
+            // freshly-down within TWO_FINGER_WINDOW and hasn't drifted
+            // (i.e. user did a true two-finger tap, not a finger added
+            // mid-drag), cancel the in-flight left click and synthesize
+            // a right-click sequence at the primary's position.
+            let primary_state = PRIMARY_DOWN.with(|cell| cell.get());
+            let qualifies = primary_state
                 .map(|(t, p)| {
-                    t.elapsed() >= LONG_PRESS
-                        && (position - p).magnitude() <= LONG_PRESS_SLOP
+                    t.elapsed() < TWO_FINGER_WINDOW
+                        && (position - p).magnitude() <= TWO_FINGER_SLOP
                 })
                 .unwrap_or(false);
-            if was_long_press {
-                // Cancel the buffered left-click without firing on_click,
-                // then synthesize a right-button press at the same spot so
-                // `on_secondary_mouse_down` deploys the context menu.
+            if qualifies {
+                let primary_pos = primary_state.map(|(_, p)| p).unwrap_or(position);
+                // Cancel the left-click without firing on_click...
                 out.push(PlatformInput::MouseUp(MouseUpEvent {
                     button: MouseButton::Left,
-                    position,
+                    position: primary_pos,
                     modifiers,
                     click_count: 0,
                 }));
+                // ...then synthesize a right-click at the primary's spot.
                 out.push(PlatformInput::MouseDown(MouseDownEvent {
                     button: MouseButton::Right,
-                    position,
+                    position: primary_pos,
                     modifiers,
                     click_count: 1,
                     first_mouse: false,
                 }));
                 out.push(PlatformInput::MouseUp(MouseUpEvent {
                     button: MouseButton::Right,
-                    position,
+                    position: primary_pos,
                     modifiers,
                     click_count: 1,
                 }));
-            } else {
+                RIGHT_CLICK_FIRED.with(|cell| cell.set(true));
+                PRIMARY_DOWN.with(|cell| cell.set(None));
+            }
+        }
+        MotionAction::Up => {
+            // Last finger up (or mouse button release). If a right-click
+            // sequence was emitted on Down (touch two-finger or trackpad/
+            // mouse secondary), close it with Up(Right). Otherwise close
+            // the normal Up(Left).
+            let fired = RIGHT_CLICK_FIRED.with(|cell| cell.take());
+            let had_primary = PRIMARY_DOWN.with(|cell| cell.take()).is_some();
+            if fired {
+                // Pair the Down(Right) we emitted earlier with Up(Right)
+                // so on_secondary_mouse_down sees a complete click. For
+                // the touch two-finger path we already emitted both Down
+                // and Up of Right at PointerDown time and `had_primary`
+                // is false there; we only need this branch for trackpad/
+                // mouse secondary button releases.
+                if !had_primary {
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Right,
+                        position,
+                        modifiers,
+                        click_count: 1,
+                    }));
+                }
+            } else if had_primary {
                 out.push(PlatformInput::MouseUp(MouseUpEvent {
                     button: MouseButton::Left,
                     position,
@@ -142,13 +210,19 @@ pub(crate) fn translate_motion_event(
                 }));
             }
         }
+        MotionAction::PointerUp => {
+            // A non-last finger lifted. The two-finger gesture (if any)
+            // already resolved at PointerDown; nothing to emit here.
+        }
         MotionAction::Move => {
-            // A move past the long-press slop disqualifies the gesture from
-            // being a long-press (it's a drag instead), so forget the
-            // primary-down latch.
+            // Track drift so the two-finger window logic sees an
+            // up-to-date "moved past slop" state (we don't strictly need
+            // this since PointerDown checks distance from the original
+            // anchor, but keeping the latch consistent simplifies
+            // reasoning).
             PRIMARY_DOWN.with(|cell| {
                 if let Some((t, p)) = cell.get() {
-                    if (position - p).magnitude() > LONG_PRESS_SLOP {
+                    if (position - p).magnitude() > TWO_FINGER_SLOP {
                         cell.set(None);
                     } else {
                         cell.set(Some((t, p)));
@@ -170,6 +244,7 @@ pub(crate) fn translate_motion_event(
         }
         MotionAction::Cancel => {
             PRIMARY_DOWN.with(|cell| cell.set(None));
+            RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
             out.push(PlatformInput::MouseUp(MouseUpEvent {
                 button: MouseButton::Left,
                 position,
