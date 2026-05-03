@@ -178,6 +178,9 @@ impl Render for MenuBar {
             );
         }
 
+        // The visibility-toggle chevron now lives on the title bar
+        // below us — single-tap toggles, two-finger / right-click opens
+        // the Settings/Keymap/Themes/… dropdown. See `title_bar.rs`.
         h_flex()
             .w_full()
             .h_6()
@@ -186,19 +189,6 @@ impl Render for MenuBar {
             .items_center()
             .bg(cx.theme().colors().title_bar_background)
             .children(buttons)
-            .child(div().flex_1())
-            .child(
-                IconButton::new("zed-android-menubar-hide", IconName::ChevronUp)
-                    .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::for_action_title(
-                        "Hide Application Menu (Ctrl+Alt+M to restore)",
-                        &ToggleAppMenuBar,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.hidden = true;
-                        cx.notify();
-                    })),
-            )
             .into_any_element()
     }
 }

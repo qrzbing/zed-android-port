@@ -3,7 +3,9 @@
 //! workspace stack and shows the WelcomePage on first launch (no auto-
 //! opened project) — matches official Zed's first-run behaviour.
 
+mod header;
 mod menu_bar;
+mod title_bar;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -520,9 +522,22 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         // can be hidden via the chevron-up button or the
         // `ToggleAppMenuBar` action (Ctrl+Alt+M).
         let weak_workspace = cx.weak_entity();
-        let menu_bar = cx.new(|inner_cx| menu_bar::MenuBar::new(weak_workspace, inner_cx));
+        let menu_bar = cx.new(|inner_cx| menu_bar::MenuBar::new(weak_workspace.clone(), inner_cx));
         menu_bar::register(&menu_bar);
-        workspace.set_titlebar_item(menu_bar.into(), window, cx);
+        // Title bar sits below the menu bar with the project name,
+        // Restricted Mode trust badge, and settings chevron. The
+        // chevron's tap toggles `menu_bar.hidden`; right-click /
+        // two-finger tap opens the Settings/Keymap/Themes/Icon
+        // Themes/Extensions dropdown.
+        let title_bar = cx.new(|inner_cx| {
+            title_bar::TitleBar::new(
+                weak_workspace.clone(),
+                menu_bar.downgrade(),
+                inner_cx,
+            )
+        });
+        let header = cx.new(|_| header::Header::new(menu_bar, title_bar));
+        workspace.set_titlebar_item(header.into(), window, cx);
 
         // Mirror production's `initialize_panels`: every newly-constructed
         // workspace asynchronously loads each panel and attaches it.
