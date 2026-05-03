@@ -282,6 +282,13 @@ impl TyLspAdapter {
     const ARCH_SERVER_NAME: &str = "pc-windows-msvc";
 }
 
+// See note on RustLspAdapter — Android stub for compile-time only.
+#[cfg(target_os = "android")]
+impl TyLspAdapter {
+    const GITHUB_ASSET_KIND: AssetKind = AssetKind::TarGz;
+    const ARCH_SERVER_NAME: &str = "unknown-linux-gnu";
+}
+
 impl TyLspAdapter {
     const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("ty");
 
@@ -2425,6 +2432,13 @@ impl RuffLspAdapter {
 impl RuffLspAdapter {
     const GITHUB_ASSET_KIND: AssetKind = AssetKind::Zip;
     const ARCH_SERVER_NAME: &str = "pc-windows-msvc";
+}
+
+// See note on RustLspAdapter — Android stub for compile-time only.
+#[cfg(target_os = "android")]
+impl RuffLspAdapter {
+    const GITHUB_ASSET_KIND: AssetKind = AssetKind::TarGz;
+    const ARCH_SERVER_NAME: &str = "unknown-linux-gnu";
 }
 
 impl RuffLspAdapter {

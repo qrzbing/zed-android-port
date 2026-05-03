@@ -1,11 +1,15 @@
 package dev.zed.zed_android
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.google.androidgamesdk.GameActivity
 
 /// SAF flows go through legacy `startActivityForResult` instead of
@@ -75,6 +79,45 @@ class MainActivity : GameActivity() {
         }
     }
 
+    /// Returns 1 if both READ + WRITE are already granted, 0 if a runtime
+    /// dialog has been posted. Caller fires this once on boot and treats
+    /// the call as best-effort: if the user denies, file-system reads of
+    /// `/storage/emulated/0/...` will EACCES at the syscall layer with a
+    /// clean error.
+    @Suppress("unused") // called from Rust via JNI
+    fun requestStoragePermissions(): Int {
+        val needed = listOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        ).filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isEmpty()) {
+            Log.i(TAG, "requestStoragePermissions: already granted")
+            return 1
+        }
+        Log.i(TAG, "requestStoragePermissions: prompting for ${needed.joinToString(",")}")
+        runOnUiThread {
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_STORAGE_PERMS)
+        }
+        return 0
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_STORAGE_PERMS) {
+            return
+        }
+        val results = permissions.zip(grantResults.toTypedArray()).joinToString(",") { (perm, granted) ->
+            "${perm.removePrefix("android.permission.")}=${if (granted == PackageManager.PERMISSION_GRANTED) "OK" else "DENIED"}"
+        }
+        Log.i(TAG, "onRequestPermissionsResult: $results")
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQ_OPEN_TREE && requestCode != REQ_CREATE_DOCUMENT) {
@@ -106,5 +149,6 @@ class MainActivity : GameActivity() {
         private const val TAG = "zed_android_saf"
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
+        private const val REQ_STORAGE_PERMS = 0xA3
     }
 }

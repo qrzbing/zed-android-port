@@ -1,6 +1,7 @@
 #![cfg(target_os = "android")]
 //! Android backend for the GPUI Platform trait.
 
+mod clipboard;
 mod cursor;
 mod dispatcher;
 mod display;
@@ -8,6 +9,8 @@ mod events;
 mod keyboard;
 mod platform;
 mod saf;
+pub mod storage;
+pub mod termux_bootstrap;
 mod window;
 
 pub use platform::AndroidPlatform;

@@ -68,6 +68,18 @@ impl RustLspAdapter {
     const ARCH_SERVER_NAME: &str = "pc-windows-msvc";
 }
 
+// Android is bionic, not glibc — the upstream rust-analyzer GitHub
+// release has no aarch64-linux-android asset. The L2f gate in
+// DynLspInstaller short-circuits the download path on Android so these
+// constants exist only to satisfy `&str` / `AssetKind` references at
+// compile time. If the gate ever regresses, the resulting URL 404s
+// loudly enough to spot.
+#[cfg(target_os = "android")]
+impl RustLspAdapter {
+    const GITHUB_ASSET_KIND: AssetKind = AssetKind::Gz;
+    const ARCH_SERVER_NAME: &str = "unknown-linux";
+}
+
 const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("rust-analyzer");
 
 #[cfg(target_os = "linux")]

@@ -465,13 +465,25 @@ impl LocalLspStore {
             });
         let update_binary_status = wait_until_worktree_trust.is_none();
 
+        // Android ships LSP servers via the bundled Termux runtime
+        // (`pkg install rust-analyzer`, etc.) — never via Zed's GitHub
+        // download path, since that path serves glibc-linked Linux binaries
+        // that don't run on bionic. Setting `allow_binary_download=false`
+        // makes the language adapter return Err immediately when no
+        // PATH-resolved binary exists, instead of spamming "No cached
+        // rust-analyzer binary found" + 404'ing GitHub on every buffer
+        // open.
+        #[cfg(target_os = "android")]
+        let allow_binary_download = false;
+        #[cfg(not(target_os = "android"))]
+        let allow_binary_download = true;
         let binary = self.get_language_server_binary(
             worktree_abs_path.clone(),
             adapter.clone(),
             settings,
             toolchain.clone(),
             delegate.clone(),
-            true,
+            allow_binary_download,
             wait_until_worktree_trust,
             cx,
         );

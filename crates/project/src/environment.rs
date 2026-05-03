@@ -320,6 +320,21 @@ async fn load_directory_shell_environment(
         return Ok(HashMap::default());
     }
 
+    // On Android we don't spawn a login shell to capture environment.
+    // `bash -l` invokes Termux's profile scripts that try to launch
+    // `/system/bin/app_process64` (Android's JVM executor) which fails
+    // with EPERM on dalvik-cache, cascades into JVM-stack overflow, and
+    // SIGABRTs the whole app via CheckJNI's pending-exception guard.
+    // Our app's parent env (set in android_main) is the source of truth
+    // for everything we care about — PATH, HOME, PREFIX, etc.
+    #[cfg(target_os = "android")]
+    {
+        let _ = (shell, load_direnv, tx);
+        let _ = abs_path;
+        return Ok(std::env::vars().collect());
+    }
+
+    #[cfg_attr(target_os = "android", allow(unreachable_code))]
     let meta = smol::fs::metadata(&abs_path).await.with_context(|| {
         tx.unbounded_send(format!("Failed to open {}", abs_path.display()))
             .ok();

@@ -6,5 +6,9 @@ android/build/
 android/app/build/
 android/app/src/main/jniLibs/
 android/local.properties
+# 158MB bootstrap rebuilt on Vultr and SCP'd in. Tracked by sha256
+# inside `crates/gpui_android/src/termux_bootstrap.rs` BOOTSTRAP_VERSION,
+# not by git.
+android/app/src/main/assets/bootstrap-aarch64.zip
 *.iml
 .DS_Store

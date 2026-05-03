@@ -1,14 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.vulkan.version" android:required="false"/>
+
+    <!--
+      READ_EXTERNAL_STORAGE + WRITE_EXTERNAL_STORAGE are the legacy storage
+      grants. They're still real permissions (dangerous, runtime-prompted)
+      at targetSdk=28; the Settings dialog or our requestStoragePermissions()
+      JNI call gates them. MANAGE_EXTERNAL_STORAGE was dropped — that's an
+      API 30+ scoped-storage escape hatch that has no effect at targetSdk=28.
+      `requestLegacyExternalStorage` was also dropped — it's an API 29 opt-in
+      flag that's a no-op for us.
+    -->
+    <!-- Required for any HTTP/HTTPS — Zed's HTTP client, plus all Termux
+         subprocesses (apt, pkg, curl, git, npm, etc.). Implicit pre-API 23,
+         explicit after. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
 
     <application
         android:label="zed_android"
         android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:hasCode="true"
-        android:requestLegacyExternalStorage="true">
+        android:hasCode="true">
 
         <activity
             android:name=".MainActivity"

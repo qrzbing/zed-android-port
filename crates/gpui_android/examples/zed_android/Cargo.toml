@@ -17,19 +17,53 @@ anyhow = "1"
 assets = { path = "../../../assets" }
 client = { path = "../../../client" }
 command_palette = { path = "../../../command_palette" }
+csv_preview = { path = "../../../csv_preview" }
 db = { path = "../../../db" }
+diagnostics = { path = "../../../diagnostics" }
 editor = { path = "../../../editor" }
+encoding_selector = { path = "../../../encoding_selector" }
+feedback = { path = "../../../feedback" }
+file_finder = { path = "../../../file_finder" }
 fs = { path = "../../../fs" }
+futures = "0.3"
+git_ui = { path = "../../../git_ui" }
+go_to_line = { path = "../../../go_to_line" }
 gpui = { path = "../../../gpui" }
 gpui_android = { path = "../../" }
+image_viewer = { path = "../../../image_viewer" }
+inspector_ui = { path = "../../../inspector_ui" }
+json_schema_store = { path = "../../../json_schema_store" }
+keymap_editor = { path = "../../../keymap_editor" }
 language = { path = "../../../language" }
+language_model = { path = "../../../language_model" }
+language_selector = { path = "../../../language_selector" }
+language_tools = { path = "../../../language_tools" }
+languages = { path = "../../../languages", features = ["load-grammars"] }
+line_ending_selector = { path = "../../../line_ending_selector" }
+markdown_preview = { path = "../../../markdown_preview" }
 node_runtime = { path = "../../../node_runtime" }
+onboarding = { path = "../../../onboarding" }
+outline = { path = "../../../outline" }
+outline_panel = { path = "../../../outline_panel" }
 log = "0.4"
 multi_buffer = { path = "../../../multi_buffer" }
 paths = { path = "../../../paths" }
 project = { path = "../../../project" }
 project_panel = { path = "../../../project_panel" }
+project_symbols = { path = "../../../project_symbols" }
+recent_projects = { path = "../../../recent_projects" }
+settings_profile_selector = { path = "../../../settings_profile_selector" }
 settings_ui = { path = "../../../settings_ui" }
+snippet_provider = { path = "../../../snippet_provider" }
+snippets_ui = { path = "../../../snippets_ui" }
+svg_preview = { path = "../../../svg_preview" }
+tab_switcher = { path = "../../../tab_switcher" }
+tasks_ui = { path = "../../../tasks_ui" }
+terminal = { path = "../../../terminal" }
+terminal_view = { path = "../../../terminal_view" }
+theme_selector = { path = "../../../theme_selector" }
+toolchain_selector = { path = "../../../toolchain_selector" }
+which_key = { path = "../../../which_key" }
 workspace = { path = "../../../workspace" }
 release_channel = { path = "../../../release_channel" }
 reqwest_client = { path = "../../../reqwest_client" }
@@ -38,6 +72,7 @@ semver = "1"
 session = { path = "../../../session" }
 uuid = { version = "1.10", features = ["v4"] }
 vim = { path = "../../../vim" }
+zed_actions = { path = "../../../zed_actions" }
 # Force RustEmbed to bake assets into the binary even in debug builds —
 # without this, settings/theme assets are looked up from the host filesystem
 # at runtime, which doesn't work on a device.
@@ -45,6 +80,7 @@ rust-embed = { version = "8.11", features = ["debug-embed", "include-exclude"] }
 settings = { path = "../../../settings" }
 theme = { path = "../../../theme" }
 theme_settings = { path = "../../../theme_settings" }
+ui = { path = "../../../ui" }
 
 # Debug builds embed unwind/DWARF tables that overflow llvm-strip's ELF
 # parser at our binary size (2GB+). Drop debug info on Android — backtraces
