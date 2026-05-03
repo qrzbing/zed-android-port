@@ -230,8 +230,18 @@ impl Platform for AndroidPlatform {
 
         while self.common.borrow().running {
             // Block until: timeout, waker, or a main-event from android-activity.
+            //
+            // 8ms timeout = ~120Hz polling, matches Tab S9 Ultra's display
+            // refresh rate. gpui's `window.refresh()` short-circuits when
+            // nothing is dirty, so the extra wake-ups when idle just check
+            // the dirty bit and return. The reason to poll-tighter than
+            // strictly needed: scrolling, animations, and cursor blink all
+            // want to update at the display's max rate; 16ms drops every
+            // other vsync on a 120Hz panel. A future pass should switch
+            // to a Choreographer FrameCallback for true vsync sync —
+            // event-based instead of fixed-interval.
             self.android_app.poll_events(
-                Some(std::time::Duration::from_millis(16)),
+                Some(std::time::Duration::from_millis(8)),
                 |event| match event {
                     android_activity::PollEvent::Wake => {}
                     android_activity::PollEvent::Timeout => {}
@@ -457,9 +467,11 @@ impl Platform for AndroidPlatform {
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        None
+        crate::clipboard::read(&self.android_app)
     }
-    fn write_to_clipboard(&self, _item: ClipboardItem) {}
+    fn write_to_clipboard(&self, item: ClipboardItem) {
+        crate::clipboard::write(&self.android_app, item);
+    }
 
     fn write_credentials(
         &self,
