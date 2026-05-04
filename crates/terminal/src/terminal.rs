@@ -162,6 +162,19 @@ pub fn insert_zed_terminal_env(
                 env.entry(key.to_string()).or_insert(value);
             }
         }
+        // Override HOME for the terminal subprocess. The Rust process
+        // intentionally points HOME at data_path (= /data/data/.../files)
+        // so upstream zed's `dirs::home_dir().expect(...)` calls don't
+        // panic in Project::local / git / paths code (Phase 8 notes).
+        // Bash inheriting that HOME makes `~/projects` resolve to
+        // /data/data/.../files/projects (doesn't exist) instead of
+        // /data/data/.../files/home/projects (= TERMUX__HOME/projects,
+        // where lib.rs creates the dir). Aligning HOME with TERMUX__HOME
+        // for the subshell matches Termux convention and makes
+        // `cd ~/projects`, `~/storage/shared`, etc. all just work.
+        if let Ok(termux_home) = std::env::var("TERMUX__HOME") {
+            env.insert("HOME".to_string(), termux_home);
+        }
         // CA bundle for tools that go over HTTPS (cargo fetching
         // crates.io, npm fetching the registry, curl, etc.). Termux
         // ships a pre-populated bundle at $PREFIX/etc/tls/cert.pem;
