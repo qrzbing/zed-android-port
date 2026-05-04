@@ -5,6 +5,7 @@ mod clipboard;
 mod cursor;
 mod dispatcher;
 mod display;
+pub mod dns_bridge;
 mod events;
 mod keyboard;
 mod platform;

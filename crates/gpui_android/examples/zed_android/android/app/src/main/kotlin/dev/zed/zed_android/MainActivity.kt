@@ -2,8 +2,10 @@ package dev.zed.zed_android
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -101,6 +103,22 @@ class MainActivity : GameActivity() {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_STORAGE_PERMS)
         }
         return 0
+    }
+
+    /// Returns Android's currently-active DNS server IPs as a comma-joined
+    /// string. The Rust side writes them to /sdcard/.zed/r in resolv.conf
+    /// format so Bun-compiled CLIs (whose c-ares is patched to read from
+    /// /sdcard/.zed/r) can do DNS without proot. Falls back to empty
+    /// string if no active network — caller layers in public-DNS defaults.
+    @Suppress("unused") // called from Rust via JNI
+    fun getActiveDnsServers(): String {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return ""
+        val network = cm.activeNetwork ?: return ""
+        val props = cm.getLinkProperties(network) ?: return ""
+        return props.dnsServers
+            .mapNotNull { it.hostAddress }
+            .joinToString(",")
     }
 
     override fun onRequestPermissionsResult(
