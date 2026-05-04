@@ -706,7 +706,28 @@ fn install_npm_launcher_generator(prefix: &Path) -> Result<()> {
              # Skip non-ELF (JSON, .so without exec bit, etc.).\n    \
              \"$PREFIX/bin/readelf\" -h \"$bin\" >/dev/null 2>&1 || return 0\n    \
              patch_musl_interp \"$bin\"\n    \
-             patch_resolv_conf \"$bin\"\n\
+             patch_resolv_conf \"$bin\"\n    \
+             # For musl-static binaries: write a tiny wrapper at\n    \
+             # $PREFIX/bin/<basename> that strips LD_PRELOAD before exec.\n    \
+             # Reason: lib.rs sets LD_PRELOAD=libtermux-exec.so for the\n    \
+             # whole process tree (bash/Node/etc inherit it for shebang\n    \
+             # path-rewriting on com.termux paths). libtermux-exec is\n    \
+             # bionic-linked; loading it into a musl process fails on\n    \
+             # __system_property_get, __register_atfork, FORTIFY _chk\n    \
+             # symbols that musl doesn't provide. The wrapper invokes the\n    \
+             # patched binary directly (skipping any JS dispatcher) so\n    \
+             # the env strip applies to the musl process from its first\n    \
+             # exec — same shape as the old proot wrapper had `env -u\n    \
+             # LD_PRELOAD` for the same reason, just minus the proot.\n    \
+             interp=$(\"$PREFIX/bin/readelf\" -l \"$bin\" 2>/dev/null | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
+             case \"$interp\" in\n        \
+                 \"$PREFIX/lib/ld-musl-aarch64.so.1\")\n            \
+                     name=$(basename -- \"$bin\")\n            \
+                     want=\"#!$PREFIX/bin/sh\n\
+exec env -u LD_PRELOAD \\\"$bin\\\" \\\"\\$@\\\"\"\n            \
+                     write_if_changed \"$PREFIX/bin/$name\" \"$want\"\n            \
+                     ;;\n    \
+             esac\n\
          }}\n\
          \n\
          handle_link() {{\n    \
