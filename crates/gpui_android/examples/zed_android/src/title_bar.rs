@@ -8,19 +8,22 @@
 //! We render this inside the workspace's single `titlebar_item` slot
 //! by stacking on top of the menu bar — see `header.rs`.
 
+use std::path::PathBuf;
+
 use gpui::{
-    Action, Anchor, App, Context, DismissEvent, Entity, FocusHandle, Focusable,
+    Action, Anchor, App, AppContext, Context, DismissEvent, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
     Render, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred, div,
     prelude::FluentBuilder,
 };
+use log::{error, info};
 use project::trusted_worktrees::TrustedWorktrees;
 use theme::ActiveTheme;
 use ui::{
     Button, ButtonCommon, ButtonStyle, Clickable, Color, ContextMenu, Icon, IconButton, IconName,
     IconPosition, IconSize, Label, LabelCommon, LabelSize, TintColor, Tooltip, h_flex,
 };
-use workspace::Workspace;
+use workspace::{MultiWorkspace, Workspace};
 
 use crate::menu_bar::MenuBar;
 
@@ -50,6 +53,139 @@ impl TitleBar {
             settings_menu: None,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Worktree root path, if a single visible worktree is open. Used by the
+    /// noexec banner to statvfs the actual filesystem and decide whether to
+    /// nag the user about builds-won't-run.
+    fn worktree_abs_path(&self, cx: &Context<Self>) -> Option<PathBuf> {
+        let workspace = self.workspace.upgrade()?;
+        let project = workspace.read(cx).project().read(cx);
+        let mut visible = project.visible_worktrees(cx);
+        let first = visible.next()?;
+        Some(first.read(cx).abs_path().to_path_buf())
+    }
+
+    fn render_noexec_banner(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let abs_path = self.worktree_abs_path(cx)?;
+        if !gpui_android::storage::is_noexec_path(&abs_path) {
+            return None;
+        }
+        let basename = abs_path.file_name()?.to_string_lossy().to_string();
+        let tooltip_text =
+            format!("Project lives on shared storage (FUSE noexec) — \
+                    cargo / go / make / native build tools will EACCES on run. \
+                    Tap to copy into ~/projects/{basename} where exec works.");
+        let click_path = abs_path.clone();
+        Some(
+            Button::new("zed-android-noexec-banner", "Builds won't run · Move")
+                .style(ButtonStyle::Tinted(TintColor::Warning))
+                .label_size(LabelSize::Small)
+                .color(Color::Warning)
+                .start_icon(
+                    Icon::new(IconName::Warning)
+                        .size(IconSize::Small)
+                        .color(Color::Warning),
+                )
+                .tooltip(move |_, cx| Tooltip::simple(tooltip_text.as_str(), cx))
+                .on_click(move |_, _, cx| {
+                    Self::start_move_to_local(click_path.clone(), cx);
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Copy the project at `src` into `~/projects/<basename>` and open the
+    /// imported copy. Original on shared storage is left untouched. Async
+    /// because copy is on background_spawn and the open afterwards is async
+    /// too. Errors log to logcat; we don't currently surface a UI toast.
+    fn start_move_to_local(src: PathBuf, cx: &mut App) {
+        let projects_root = match gpui_android::storage::projects_dir() {
+            Some(p) => p,
+            None => {
+                error!(
+                    "noexec-banner: TERMUX__HOME unset; can't compute \
+                     ~/projects destination, refusing to move"
+                );
+                return;
+            }
+        };
+        let basename = match src.file_name() {
+            Some(n) => n.to_owned(),
+            None => {
+                error!(
+                    "noexec-banner: src {} has no basename, refusing to move",
+                    src.display()
+                );
+                return;
+            }
+        };
+        let mut dst = projects_root.join(&basename);
+        if dst.exists() {
+            let stem = basename.to_string_lossy().to_string();
+            let mut suffix = 1usize;
+            loop {
+                let candidate = projects_root.join(format!(
+                    "{stem}-imported{}",
+                    if suffix == 1 {
+                        String::new()
+                    } else {
+                        format!("-{suffix}")
+                    }
+                ));
+                if !candidate.exists() {
+                    dst = candidate;
+                    break;
+                }
+                suffix += 1;
+            }
+        }
+        info!(
+            "noexec-banner: copying {} -> {}",
+            src.display(),
+            dst.display()
+        );
+        cx.spawn(async move |cx| {
+            let dst_for_copy = dst.clone();
+            let src_for_copy = src.clone();
+            let copy_result = cx
+                .background_spawn(async move {
+                    gpui_android::storage::copy_tree(&src_for_copy, &dst_for_copy)
+                })
+                .await;
+            match copy_result {
+                Ok(bytes) => info!(
+                    "noexec-banner: copied {bytes} bytes to {}",
+                    dst.display()
+                ),
+                Err(err) => {
+                    error!("noexec-banner: copy failed: {err:#}");
+                    return;
+                }
+            }
+            let mw = cx.update(|cx| {
+                cx.active_window()
+                    .and_then(|w| w.downcast::<MultiWorkspace>())
+            });
+            let Some(mw) = mw else {
+                error!("noexec-banner: no active MultiWorkspace to open into");
+                return;
+            };
+            let task = mw.update(cx, |mw, window, cx| {
+                mw.open_project(
+                    vec![dst],
+                    workspace::OpenMode::Activate,
+                    window,
+                    cx,
+                )
+            });
+            if let Ok(task) = task {
+                if let Err(err) = task.await {
+                    error!("noexec-banner: open_project failed: {err:#}");
+                }
+            }
+        })
+        .detach();
     }
 
     fn render_restricted_mode(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -185,6 +321,7 @@ impl Focusable for TitleBar {
 impl Render for TitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let restricted = self.render_restricted_mode(cx);
+        let noexec = self.render_noexec_banner(cx);
         let project_name = self.render_project_name(cx);
         let chevron = self.render_chevron(cx);
 
@@ -196,6 +333,7 @@ impl Render for TitleBar {
             .items_center()
             .bg(cx.theme().colors().title_bar_background)
             .children(restricted)
+            .children(noexec)
             .children(project_name)
             .child(div().flex_1())
             .child(chevron)
