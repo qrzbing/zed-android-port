@@ -474,16 +474,16 @@ fn install_npm_launcher_generator(prefix: &Path) -> Result<()> {
                  *) return 0 ;;\n    \
              esac\n    \
              # Skip non-ELF (scripts, JSON, etc.).\n    \
-             \"$PREFIX/bin/readelf\" -h -- \"$target\" >/dev/null 2>&1 || return 0\n    \
-             interp=$(\"$PREFIX/bin/readelf\" -l -- \"$target\" 2>/dev/null \\\n                 | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
+             \"$PREFIX/bin/readelf\" -h \"$target\" >/dev/null 2>&1 || return 0\n    \
+             interp=$(\"$PREFIX/bin/readelf\" -l \"$target\" 2>/dev/null \\\n                 | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
              # Repoint musl interpreter if it points at the canonical /lib\n    \
              # path (Android has no /lib; the linker actually lives at\n    \
              # $PREFIX/lib/ld-musl-aarch64.so.1).\n    \
              case \"$interp\" in\n        \
                  /lib/ld-musl-aarch64.so.1)\n            \
                      if [ -x \"$PREFIX/bin/patchelf\" ]; then\n                \
-                         \"$PREFIX/bin/patchelf\" --set-interpreter \\\n                     \"$PREFIX/lib/ld-musl-aarch64.so.1\" -- \"$target\" 2>/dev/null || true\n                \
-                         \"$PREFIX/bin/patchelf\" --set-rpath \\\n                     \"$PREFIX/lib\" -- \"$target\" 2>/dev/null || true\n                \
+                         \"$PREFIX/bin/patchelf\" --set-interpreter \\\n                     \"$PREFIX/lib/ld-musl-aarch64.so.1\" \"$target\" 2>/dev/null || true\n                \
+                         \"$PREFIX/bin/patchelf\" --set-rpath \\\n                     \"$PREFIX/lib\" \"$target\" 2>/dev/null || true\n                \
                          interp=\"$PREFIX/lib/ld-musl-aarch64.so.1\"\n            \
                      fi\n            \
                      ;;\n    \
@@ -542,14 +542,14 @@ exit 1\"\n        \
              # Skip wrappers we already generated.\n    \
              head -c 2 -- \"$bin\" 2>/dev/null | grep -q '#!' && return 0\n    \
              # Must be an ELF.\n    \
-             \"$PREFIX/bin/readelf\" -h -- \"$bin\" >/dev/null 2>&1 || return 0\n    \
-             interp=$(\"$PREFIX/bin/readelf\" -l -- \"$bin\" 2>/dev/null \\\n                 | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
+             \"$PREFIX/bin/readelf\" -h \"$bin\" >/dev/null 2>&1 || return 0\n    \
+             interp=$(\"$PREFIX/bin/readelf\" -l \"$bin\" 2>/dev/null \\\n                 | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
              # Repoint musl interpreter inline (same as classify_and_wrap).\n    \
              case \"$interp\" in\n        \
                  /lib/ld-musl-aarch64.so.1)\n            \
                      if [ -x \"$PREFIX/bin/patchelf\" ]; then\n                \
-                         \"$PREFIX/bin/patchelf\" --set-interpreter \\\n                     \"$PREFIX/lib/ld-musl-aarch64.so.1\" -- \"$bin\" 2>/dev/null || true\n                \
-                         \"$PREFIX/bin/patchelf\" --set-rpath \\\n                     \"$PREFIX/lib\" -- \"$bin\" 2>/dev/null || true\n            \
+                         \"$PREFIX/bin/patchelf\" --set-interpreter \\\n                     \"$PREFIX/lib/ld-musl-aarch64.so.1\" \"$bin\" 2>/dev/null || true\n                \
+                         \"$PREFIX/bin/patchelf\" --set-rpath \\\n                     \"$PREFIX/lib\" \"$bin\" 2>/dev/null || true\n            \
                      fi\n            \
                      ;;\n    \
              esac\n    \
