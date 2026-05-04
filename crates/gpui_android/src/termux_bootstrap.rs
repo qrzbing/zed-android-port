@@ -324,7 +324,37 @@ pub fn apply_runtime_patches(data_path: &Path) -> Result<()> {
     install_npm_launcher_generator(&prefix)?;
     install_npm_wrapper(&prefix)?;
     cleanup_legacy_claude_wrapper(&prefix);
+    run_launcher_generator(&prefix);
     Ok(())
+}
+
+/// Fire the launcher generator helper script once at boot. Idempotent —
+/// no-ops if every npm-installed binary is already correctly wrapped.
+/// We invoke it post-cleanup so any chain we just unwound (binary
+/// restored to its original name) gets a single clean `<bin> -> wrapper
+/// + <bin>.real -> binary` wrap immediately, instead of waiting for the
+/// next npm or apt op to fire the hook.
+fn run_launcher_generator(prefix: &Path) {
+    let helper = prefix.join("etc/apt/zed-launcher-gen.sh");
+    if !helper.is_file() {
+        return;
+    }
+    match std::process::Command::new(&helper)
+        .env("PREFIX", prefix)
+        .output()
+    {
+        Ok(out) if out.status.success() => log::info!(
+            "termux_bootstrap: launcher generator ran at boot (exit 0)"
+        ),
+        Ok(out) => log::warn!(
+            "termux_bootstrap: launcher generator exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(err) => log::warn!(
+            "termux_bootstrap: spawn launcher generator: {err:#}"
+        ),
+    }
 }
 
 /// Remove leftover state from the now-obsolete zed-setup-claude path.
@@ -359,51 +389,74 @@ fn cleanup_legacy_claude_wrapper(prefix: &Path) {
         }
     }
 
-    // Unwind any stacked .real-chains we accidentally produced before
-    // dropping zed-setup-claude. zed-setup-claude's wrapper at
-    // $PREFIX/bin/claude pointed at claude-code/bin/claude.exe (which it
-    // had cp'd the real binary into). Each subsequent run of the
-    // launcher generator's deep-walk wrapped the wrapper, leaving:
-    //   claude.exe        -> shell wrapper (latest)
-    //   claude.exe.real   -> shell wrapper (previous run)
-    //   claude.exe.real.real -> the original 240MB ELF
-    // Walk every node_modules dir for `<name>.real.real` files; if found,
-    // those are the original binaries and the .real / non-.real entries
-    // above them are stacked wrappers. Restore: rm wrappers, mv .real.real
-    // back to the original name. Subsequent npm install + launcher gen
-    // run will produce a clean single-level wrap.
+    // Unwind any stacked .real-chains the launcher generator produced
+    // before its `find` filter excluded `*.real`. Each run of the deep
+    // walk used to find the previously-renamed binary, wrap it again,
+    // and shift the chain one level deeper:
+    //   claude              -> wrapper -> claude.real
+    //   claude.real         -> wrapper -> claude.real.real
+    //   claude.real.real    -> wrapper -> claude.real.real.real
+    //   ... claude.real{N}  -> 241 MB ELF (the actual binary)
+    //
+    // For every `<base>` that has any `<base>.real*` siblings, find the
+    // deepest `.real`-suffixed file (the real ELF), delete every shell
+    // wrapper between it and the un-suffixed base, rename the ELF back
+    // to `<base>`. The next launcher-gen run sees a clean `<base>` and
+    // wraps it to a single level of `<base> -> <base>.real`.
     if let Ok(walker) = std::process::Command::new("find")
         .arg(prefix.join("lib/node_modules"))
-        .args(["-name", "*.real.real", "-type", "f"])
+        .args(["-name", "*.real", "-type", "f"])
         .output()
     {
+        let mut stripped_bases = std::collections::HashSet::new();
         for line in walker.stdout.split(|&b| b == b'\n') {
             if line.is_empty() {
                 continue;
             }
-            let real_real = match std::str::from_utf8(line) {
+            let p = match std::str::from_utf8(line) {
                 Ok(s) => Path::new(s).to_path_buf(),
                 Err(_) => continue,
             };
-            // foo.exe.real.real → original = foo.exe
-            let s = real_real.to_string_lossy();
-            let original = match s.strip_suffix(".real.real") {
-                Some(o) => Path::new(o).to_path_buf(),
-                None => continue,
-            };
-            let real = real_real.with_extension(""); // strips trailing .real
-            let _ = std::fs::remove_file(&original);
-            let _ = std::fs::remove_file(&real);
-            if let Err(err) = std::fs::rename(&real_real, &original) {
+            let s = p.to_string_lossy();
+            let mut base_str = s.as_ref();
+            while let Some(stripped) = base_str.strip_suffix(".real") {
+                base_str = stripped;
+            }
+            if !stripped_bases.insert(base_str.to_string()) {
+                continue;
+            }
+            let base = Path::new(base_str).to_path_buf();
+            let mut deepest = base.clone();
+            let mut probe_str = base_str.to_string();
+            loop {
+                let next = format!("{probe_str}.real");
+                if !Path::new(&next).is_file() {
+                    break;
+                }
+                deepest = Path::new(&next).to_path_buf();
+                probe_str = next;
+            }
+            if deepest == base {
+                continue;
+            }
+            let deepest_str = deepest.to_string_lossy().into_owned();
+            let mut wrapper_str = base_str.to_string();
+            while wrapper_str != deepest_str {
+                if Path::new(&wrapper_str).is_file() {
+                    let _ = std::fs::remove_file(Path::new(&wrapper_str));
+                }
+                wrapper_str = format!("{wrapper_str}.real");
+            }
+            if let Err(err) = std::fs::rename(&deepest, &base) {
                 log::warn!(
                     "termux_bootstrap: restore {} <- {}: {err:#}",
-                    original.display(),
-                    real_real.display()
+                    base.display(),
+                    deepest.display()
                 );
             } else {
                 log::info!(
                     "termux_bootstrap: restored stacked-wrapper binary at {}",
-                    original.display()
+                    base.display()
                 );
             }
         }
@@ -680,7 +733,7 @@ exec env -u LD_PRELOAD \\\"$PREFIX/bin/proot\\\" -b \\\"$PREFIX/etc/resolv.conf:
          # find -executable picks ELFs and shebang scripts; wrap_inplace\n\
          # filters scripts via head -c 2 + readelf checks. Skipping by\n\
          # name patterns to avoid touching node, node-gyp, npm internals.\n\
-         find \"$PREFIX/lib/node_modules\" -type f -perm -u+x \\\n             ! -name '*.js' ! -name '*.cjs' ! -name '*.mjs' ! -name '*.json' \\\n             ! -name 'node' ! -name 'corepack' \\\n             2>/dev/null | while IFS= read -r bin; do\n    \
+         find \"$PREFIX/lib/node_modules\" -type f -perm -u+x \\\n             ! -name '*.js' ! -name '*.cjs' ! -name '*.mjs' ! -name '*.json' \\\n             ! -name 'node' ! -name 'corepack' \\\n             ! -name '*.real' \\\n             2>/dev/null | while IFS= read -r bin; do\n    \
              wrap_inplace_if_needed \"$bin\"\n\
          done\n\
          exit 0\n"
