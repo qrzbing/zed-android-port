@@ -29,6 +29,7 @@ replacement.
 | [Noexec banner with one-tap Move action](noexec-banner-move.md) | Active | When users open from /sdcard anyway, fix in one tap |
 | [Trust grants restored from WorkspaceDb at boot](trust-restore-from-db.md) | Active | Production main.rs does this; we forgot |
 | [Welcome-page Workspace/External split](welcome-page-split.md) | Active | Two `rust` projects from different storage tiers were indistinguishable |
+| [SAF picker integration](saf-picker-integration.md) | Active | gpui's prompt_for_paths needs Android Storage Access Framework + path-decoding gymnastics |
 | [Tier 2 root storage (bind-mount /mnt/pass_through)](deferred-tier2-root-storage.md) | Deferred | Wait for in-app settings UI |
 | [`CARGO_TARGET_DIR` stopgap](reverted-cargo-target-dir.md) | Reverted | Per-tool env redirect didn't generalize |
 
@@ -42,6 +43,7 @@ replacement.
 | [Apt dpkg pin](apt-dpkg-pin.md) | Active | Stop upstream apt from clobbering our patched dpkg |
 | [Musl-aarch64 linker bundled in APK](musl-linker-bundle.md) | Active | Bun-compiled binaries reference `/lib/ld-musl-aarch64.so.1`; Android has no /lib |
 | [Storage permission JNI shim](storage-permission-jni.md) | Active | `READ/WRITE_EXTERNAL_STORAGE` are runtime-prompted at targetSdk≤28 |
+| [Termux env propagation into bash](termux-env-propagation-to-bash.md) | Active | alacritty's pty replaces inherited env; we copy TERMUX_*/PREFIX/PATH/LD_PRELOAD over explicitly |
 
 ## Node / npm / CLI tools
 
@@ -62,6 +64,8 @@ replacement.
 | [.gitconfig safe.directory = *](gitconfig-safe-directory.md) | Active | libgit2 dubious-ownership check fires for media_rw-owned /sdcard repos |
 | [Activity-recreation idempotency](activity-recreation-idempotency.md) | Active | `android_main` re-enters; everything must be re-entrant |
 | [SELinux context canary log](selinux-canary.md) | Active | Detect if `targetSdk` regresses by checking `untrusted_app_27` domain |
+| [MultiWorkspace wrapper + load keymap last](multiworkspace-keymap-order.md) | Active | Workspace KeyContext + boot-order rules make keybindings actually fire |
+| [Create worktree before attaching project panel](worktree-before-panel-attach.md) | Active | ProjectPanel::starts_open() needs the worktree present before add_panel runs |
 
 ## UI / input
 
@@ -71,6 +75,20 @@ replacement.
 | [Two-finger tap → right click](two-finger-rightclick.md) | Active | Touchscreens don't have a right mouse button |
 | [JVM stack overflow on clipboard](jvm-clipboard-stack-overflow.md) | Active | Android's 988KB android_main thread can't handle clipboard JNI synchronously |
 | [Soft-keyboard / IME bridge](deferred-soft-keyboard.md) | Deferred | Hardware keyboard works; touch IME bridge is its own engineering problem |
+| [first_mouse=false on Android touches](first-mouse-tagging.md) | Active | macOS-style first-click-focuses-the-window logic was no-op'ing every touch handler |
+| [UI mode → window appearance](ui-mode-system-appearance.md) | Active | Hardcoded Light made dark-mode-following themes always pick One Light |
+| [AssetSource threaded through gpui_android::run](assetsource-icons.md) | Active | Without it, every icon rendered as a blank rectangle |
+| [PointerIcon JNI cursor mapping](pointer-icon-cursor-mapping.md) | Active | set_cursor_style was a no-op; mouse hover never showed I-beam, resize handles, etc. |
+
+## Window / render
+
+| Workaround | Status | Why it exists |
+|---|---|---|
+| [`platform.rs` no-drain RefCell pattern](refcell-drain-platform-bug.md) | Active | Draining main_receiver inside `open_window` panics on RefCell re-entry |
+| [Block open_window until ANativeWindow ready](open-window-blocks-on-anativewindow.md) | Active | Renderer races against surface creation if we don't wait |
+| [Construct buffer inside open_window](construct-buffer-inside-open-window.md) | Active | Sibling of refcell-drain; buffer constructor needs to live under the same borrow |
+| [wgpu device-lost recovery](wgpu-device-lost-recovery.md) | Active | Android GPU driver loses context under memory pressure; need explicit drop+recreate |
+| [Force a paint after surface attach](force-paint-after-surface-attach.md) | Active | Fresh swapchain doesn't get an invalidation event; force one explicit paint |
 
 ## Build / packaging
 
@@ -78,7 +96,8 @@ replacement.
 |---|---|---|
 | [Debug-strip oversized .so](debug-strip-oversized-so.md) | Active | llvm-strip chokes on >2 GB ELF; profile.dev workaround |
 | [audio + livekit + call cfg-gates](android-cfg-gates.md) | Active | These crates don't compile against bionic; mock fallbacks already exist |
-| [`platform.rs` no-drain RefCell pattern](refcell-drain-platform-bug.md) | Active | Draining main_receiver inside `open_window` panics on RefCell re-entry |
+| [Load bundled themes via LoadThemes::All](load-themes-all.md) | Active | Default lazy-load left the theme picker empty on Android |
+| [Load default Linux keymap on boot](load-default-linux-keymap.md) | Active | Android KeyEvents look closer to Linux than macOS — pick the right keymap |
 
 ## Adding a new workaround
 
