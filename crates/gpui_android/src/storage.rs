@@ -19,6 +19,7 @@
 //! requires a Settings deep-link rather than a runtime dialog; at
 //! `targetSdk=28` it has no effect anyway.
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use android_activity::AndroidApp;
@@ -63,4 +64,211 @@ fn request_inner(android_app: &AndroidApp) -> Result<i32> {
         .context("MainActivity.requestStoragePermissions")?
         .i()?;
     Ok(result)
+}
+
+/// Termux-style `~/storage/` curated symlinks into shared storage.
+///
+/// Mirrors what `termux-setup-storage` does in stock Termux: makes the common
+/// /storage/emulated/0 subdirs available under $HOME/storage/<name> so users
+/// can `cd ~/storage/downloads`, edit a file, save it back. /storage/emulated/0
+/// is FUSE-mounted noexec, so this is browse / read / write only — never the
+/// place to compile or run from. Workspaces live in $HOME/projects (created
+/// alongside the symlinks) where exec is allowed.
+///
+/// Idempotent: rechecks every symlink target on each call. Ignores entries that
+/// already point at the right place. Re-creates any that don't (covers the
+/// case where /storage layout changed between launches, e.g. SD card swap).
+pub fn setup_user_symlinks(termux_home: &Path) {
+    let storage_dir = termux_home.join("storage");
+    if let Err(err) = std::fs::create_dir_all(&storage_dir) {
+        log::warn!(
+            "storage: create {}: {err:#}",
+            storage_dir.display()
+        );
+        return;
+    }
+
+    let primary = Path::new("/storage/emulated/0");
+    let curated: &[(&str, PathBuf)] = &[
+        ("shared", primary.to_path_buf()),
+        ("dcim", primary.join("DCIM")),
+        ("downloads", primary.join("Download")),
+        ("documents", primary.join("Documents")),
+        ("movies", primary.join("Movies")),
+        ("music", primary.join("Music")),
+        ("pictures", primary.join("Pictures")),
+        ("podcasts", primary.join("Podcasts")),
+    ];
+    for (name, target) in curated {
+        ensure_symlink(&storage_dir.join(name), target);
+    }
+
+    if let Ok(entries) = std::fs::read_dir("/storage") {
+        let mut external_idx = 1;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Skip the user-emulated mount and the per-process self link —
+            // they're not a removable volume. Real SD cards / OTG drives show
+            // up as /storage/<UUID> (e.g. /storage/1DB9-0830).
+            if name_str == "emulated" || name_str == "self" {
+                continue;
+            }
+            let target = entry.path();
+            ensure_symlink(
+                &storage_dir.join(format!("external-{external_idx}")),
+                &target,
+            );
+            external_idx += 1;
+        }
+    }
+}
+
+/// Canonical local-projects root: `<termux_home>/projects`.
+///
+/// We read `TERMUX__HOME` (set by lib.rs at boot to `data_path/home`) rather
+/// than `$HOME`, because lib.rs sets `$HOME` to `data_path` itself for
+/// compatibility with code that expects HOME to point at the app's data
+/// root, while Termux's profile scripts rewrite `$HOME` inside bash to
+/// `data_path/home`. Reading `TERMUX__HOME` gives the same path bash sees,
+/// so the directory we mkdir / symlink / `~/projects/<name>` references all
+/// agree. Falls back to `data_path/home` only if the env var is missing,
+/// which means lib.rs hasn't run yet — caller should avoid that path.
+pub fn projects_dir() -> Option<PathBuf> {
+    std::env::var_os("TERMUX__HOME").map(|v| PathBuf::from(v).join("projects"))
+}
+
+/// True if the filesystem `path` lives on is mounted with `noexec`. Returns
+/// false on any error (couldn't statvfs, path missing, etc.) — false positives
+/// are harmful (we'd nag users about a path that's actually fine), false
+/// negatives are recoverable (user hits the EACCES we tried to predict).
+///
+/// Used by the title-bar banner: when a worktree's root sits on a noexec
+/// mount (almost always /storage/emulated/0/* under Android's FUSE wrapper),
+/// builds will EACCES at execve time. We surface this preemptively with a
+/// "Move to ~/projects/" action.
+pub fn is_noexec_path(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_c = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path_c.as_ptr(), &mut buf) } != 0 {
+        return false;
+    }
+    (buf.f_flag & libc::ST_NOEXEC) != 0
+}
+
+/// Best-effort recursive copy from `src` to `dst`. Used by the
+/// "Import from sdcard" action — copies a project from /storage/emulated/0
+/// (FUSE noexec) to ~/projects/<name> (app-private, exec-allowed) so cargo /
+/// go / make / native build chains can actually run the resulting binaries.
+///
+/// Symlinks in the source are recreated as symlinks (not followed). Files
+/// preserve mode bits. Errors on individual entries are logged and skipped
+/// — a half-imported tree is more useful than a hard failure midway through.
+/// Returns the total bytes successfully copied.
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<u64> {
+    if !src.is_dir() {
+        anyhow::bail!("copy_tree: source {} is not a directory", src.display());
+    }
+    std::fs::create_dir_all(dst)
+        .with_context(|| format!("create_dir_all {}", dst.display()))?;
+    let mut bytes = 0u64;
+    let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src.to_path_buf(), dst.to_path_buf())];
+    while let Some((cur_src, cur_dst)) = stack.pop() {
+        let entries = match std::fs::read_dir(&cur_src) {
+            Ok(e) => e,
+            Err(err) => {
+                log::warn!(
+                    "storage: read_dir {}: {err:#}, skipping subtree",
+                    cur_src.display()
+                );
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            let entry_src = entry.path();
+            let entry_dst = cur_dst.join(entry.file_name());
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(err) => {
+                    log::warn!(
+                        "storage: file_type {}: {err:#}, skipping",
+                        entry_src.display()
+                    );
+                    continue;
+                }
+            };
+            if file_type.is_symlink() {
+                match std::fs::read_link(&entry_src) {
+                    Ok(target) => {
+                        let _ = std::fs::remove_file(&entry_dst);
+                        if let Err(err) =
+                            std::os::unix::fs::symlink(&target, &entry_dst)
+                        {
+                            log::warn!(
+                                "storage: symlink {} -> {}: {err:#}",
+                                entry_dst.display(),
+                                target.display()
+                            );
+                        }
+                    }
+                    Err(err) => log::warn!(
+                        "storage: read_link {}: {err:#}",
+                        entry_src.display()
+                    ),
+                }
+            } else if file_type.is_dir() {
+                if let Err(err) = std::fs::create_dir_all(&entry_dst) {
+                    log::warn!(
+                        "storage: mkdir {}: {err:#}",
+                        entry_dst.display()
+                    );
+                    continue;
+                }
+                stack.push((entry_src, entry_dst));
+            } else if file_type.is_file() {
+                match std::fs::copy(&entry_src, &entry_dst) {
+                    Ok(n) => bytes += n,
+                    Err(err) => log::warn!(
+                        "storage: copy {} -> {}: {err:#}",
+                        entry_src.display(),
+                        entry_dst.display()
+                    ),
+                }
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn ensure_symlink(link: &Path, target: &Path) {
+    match std::fs::read_link(link) {
+        Ok(existing) if existing == target => return,
+        Ok(_) => {
+            // Symlink points somewhere else — refresh it.
+            let _ = std::fs::remove_file(link);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            // Path exists but isn't a symlink (regular file/dir). Don't
+            // clobber — log and move on. User can `rm` it themselves if
+            // they want us to manage it.
+            log::warn!(
+                "storage: {} exists and isn't a symlink — leaving alone",
+                link.display()
+            );
+            return;
+        }
+    }
+    if let Err(err) = std::os::unix::fs::symlink(target, link) {
+        log::warn!(
+            "storage: symlink {} -> {} failed: {err:#}",
+            link.display(),
+            target.display()
+        );
+    }
 }

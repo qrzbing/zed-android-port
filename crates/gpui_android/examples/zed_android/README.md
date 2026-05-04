@@ -160,6 +160,64 @@ A few things tripped us along the way that aren't obvious:
   `on_secondary_mouse_down` (project panel context menu, tab close
   menu, etc.) get their callback.
 
+## Storage workflow
+
+Android partitions storage in a way that has direct consequences for a code
+editor with an integrated terminal. Two facts shape everything below:
+
+1. `/storage/emulated/0` (the user-visible "Internal storage") is
+   FUSE-mounted with `noexec`. You can read, write, browse, and edit files
+   there fine, but the kernel refuses to `execve()` anything that lives on
+   it — `cargo run` against a binary in `/storage/emulated/0/projects/foo/
+   target/debug/foo` returns `EACCES (Permission denied, os error 13)`.
+2. `/data/data/dev.zed.zed_android/files` (app-private storage) is
+   exec-mounted. At our pinned `targetSdk=28`, `execve()` and `dlopen()`
+   work natively here — same place Termux runs everything from.
+
+So projects live in app-private storage. Shared storage is for browsing,
+single-file edits, and exporting back to the PC.
+
+### Tier 1 — default
+
+- `~/projects/<name>` is the workspace root. `cargo new`, `git clone`,
+  `mkdir foo && cd foo && cargo init` all just work — exec is allowed,
+  builds run, native modules dlopen cleanly.
+- `~/storage/<name>` is a Termux-style curated symlink into shared storage:
+
+  | symlink              | target                               |
+  | -------------------- | ------------------------------------ |
+  | `~/storage/shared`     | `/storage/emulated/0` (full sdcard) |
+  | `~/storage/downloads`  | `/storage/emulated/0/Download`      |
+  | `~/storage/dcim`       | `/storage/emulated/0/DCIM`          |
+  | `~/storage/documents`  | `/storage/emulated/0/Documents`     |
+  | `~/storage/movies`     | `/storage/emulated/0/Movies`        |
+  | `~/storage/music`      | `/storage/emulated/0/Music`         |
+  | `~/storage/pictures`   | `/storage/emulated/0/Pictures`      |
+  | `~/storage/podcasts`   | `/storage/emulated/0/Podcasts`      |
+  | `~/storage/external-N` | `/storage/<UUID>` (SD card / OTG)   |
+
+  Use these for "open / edit / save a single file" workflows. Don't
+  treat them as a workspace root — see Tier 1 above.
+- **File → Import from sdcard…** runs the SAF folder picker, recursively
+  copies the picked tree into `~/projects/<basename>`, and opens the
+  imported copy. The original on shared storage stays untouched.
+- If you do open a project rooted on shared storage anyway, the title
+  bar shows a yellow **"Builds won't run · Move"** chip. Tap it to copy
+  the project into `~/projects/<name>` and reopen there.
+
+### Tier 2 — root (deferred)
+
+Planned: a settings toggle that detects root, asks once, and `mount
+--bind`s `/mnt/pass_through/0/emulated` (the underlying f2fs, exec-mounted)
+over `~/sdcard-exec/`. Lets advanced users keep multi-GB projects on
+shared storage and still build natively. Not implemented yet — waiting
+on the in-app settings UI.
+
+### Tier 3 — manual
+
+`cd ~/storage/shared/projects/foo && mv ../foo ~/projects/`. Same
+end state as the title-bar chip, no UI involved.
+
 ## Caveats
 
 - Tree-shake is brutal: the .so is ~400 MB stripped for debug builds,

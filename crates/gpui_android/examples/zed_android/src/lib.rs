@@ -20,11 +20,23 @@ use fs::{Fs, RealFs};
 use node_runtime::NodeRuntime;
 use project::Project;
 use session::{AppSession, Session};
-use gpui::{App, AppContext as _, UpdateGlobal as _};
+use gpui::{App, AppContext as _, UpdateGlobal as _, actions};
 use log::{error, info};
 use settings::Settings as _;
 use workspace::{AppState, MultiWorkspace, Workspace, WorkspaceStore};
 use reqwest_client::ReqwestClient;
+
+actions!(
+    zed_android,
+    [
+        /// Pick a tree from shared storage, recursively copy it to
+        /// ~/projects/<name>, and open the local copy. Source on /sdcard
+        /// is left untouched. The local copy lives on app-private storage
+        /// where exec is allowed, so cargo / go / make / native build
+        /// tools all run natively without any noexec workaround.
+        ImportFromSdcard
+    ]
+);
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
     gpui::WindowOptions::default()
@@ -209,6 +221,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // and short-circuits before even applying the in-memory mutation —
     // so toggles look like no-ops.
     let termux_home = data_path.join("home");
+    let projects_dir = termux_home.join("projects");
     for path in [
         paths::config_dir(),
         paths::database_dir(),
@@ -216,11 +229,22 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         paths::temp_dir(),
         paths::languages_dir(),
         &termux_home,
+        // Default landing dir for the project picker. Lives on app-private
+        // storage where execve and dlopen work natively, so cargo / go /
+        // make / native-npm / native-pip all just run. SAF-picked projects
+        // get imported here; nothing executable ever runs from /sdcard.
+        &projects_dir,
     ] {
         if let Err(err) = std::fs::create_dir_all(path) {
             error!("zed_android: create_dir_all({}): {err:#}", path.display());
         }
     }
+    // Termux-style ~/storage/* curated symlinks into shared storage. Lets
+    // users browse / open / save individual files from /sdcard via
+    // ~/storage/{shared,downloads,dcim,...} without ever treating those
+    // paths as a workspace root (which would hit the FUSE noexec wall on
+    // any compile-and-run flow). Idempotent on re-launch.
+    gpui_android::storage::setup_user_symlinks(&termux_home);
 
     // Pre-trust every repo. Files under /storage/emulated/0 are owned by
     // media_rw (UID 1023) but we run as the app's per-app UID, so libgit2's
@@ -372,11 +396,29 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // Register the TrustedWorktrees global. git_store reads it via
     // `try_get_global` when a repo is added; without it, `is_trusted`
     // defaults to false, which routes every repo into the
-    // dubious-ownership UI in git_panel.rs:4862. Production initialises
-    // this from `WorkspaceDb::fetch_trusted_worktrees()`; we start with an
-    // empty set and rely on `trust_all_worktrees=true` from the user
-    // settings plumb below to short-circuit the check entirely.
-    project::trusted_worktrees::init(std::collections::HashMap::default(), cx);
+    // dubious-ownership UI in git_panel.rs:4862.
+    //
+    // Mirror production zed/src/main.rs:450-457 — fetch the persisted
+    // trust grants from `WorkspaceDb::fetch_trusted_worktrees()` so a
+    // user's prior "Trust" choice survives across launches and
+    // reinstalls. Previously we passed `HashMap::default()` here, which
+    // wiped the in-memory trust map every boot even though the SQLite
+    // db was preserving it correctly — every relaunch re-prompted the
+    // restricted-mode trust dialog. Fall back to empty on fetch failure
+    // (typically only happens if the db schema upgrade is mid-flight).
+    let db_trusted_paths =
+        match workspace::WorkspaceDb::global(cx).fetch_trusted_worktrees() {
+            Ok(paths) => paths,
+            Err(err) => {
+                error!(
+                    "zed_android: fetch_trusted_worktrees failed at boot: \
+                     {err:#} — starting with empty trust map; user will \
+                     be re-prompted for any previously trusted projects"
+                );
+                std::collections::HashMap::default()
+            }
+        };
+    project::trusted_worktrees::init(db_trusted_paths, cx);
     Project::init(&client, cx);
     diagnostics::init(cx);
     workspace::init(app_state.clone(), cx);
@@ -639,6 +681,113 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             if let Ok(task) = task {
                 if let Err(err) = task.await {
                     error!("zed_android: open_project failed: {err:#}");
+                }
+            }
+        })
+        .detach();
+    });
+
+    let projects_root = termux_home.join("projects");
+    cx.on_action(move |_: &ImportFromSdcard, cx: &mut App| {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        let projects_root = projects_root.clone();
+        cx.spawn(async move |cx| {
+            let picked = match paths.await {
+                Ok(Ok(Some(p))) if !p.is_empty() => p,
+                Ok(Ok(None)) | Ok(Ok(Some(_))) => return,
+                Ok(Err(err)) => {
+                    error!(
+                        "zed_android: ImportFromSdcard picker failed: {err:#}"
+                    );
+                    return;
+                }
+                Err(_) => return,
+            };
+            let src = picked.into_iter().next().expect("non-empty picked");
+            let basename = match src.file_name() {
+                Some(n) => n.to_owned(),
+                None => {
+                    error!(
+                        "zed_android: ImportFromSdcard: picked path {} has no file name",
+                        src.display()
+                    );
+                    return;
+                }
+            };
+            let mut dst = projects_root.join(&basename);
+            // Don't clobber an existing project with the same name.
+            // Suffix `-imported`, `-imported-2`, etc. so the user keeps
+            // their previous import and the new one lands cleanly.
+            if dst.exists() {
+                let stem = basename.to_string_lossy().to_string();
+                let mut suffix = 1usize;
+                loop {
+                    let candidate = projects_root.join(format!(
+                        "{stem}-imported{}",
+                        if suffix == 1 {
+                            String::new()
+                        } else {
+                            format!("-{suffix}")
+                        }
+                    ));
+                    if !candidate.exists() {
+                        dst = candidate;
+                        break;
+                    }
+                    suffix += 1;
+                }
+            }
+            info!(
+                "zed_android: ImportFromSdcard: copying {} -> {}",
+                src.display(),
+                dst.display()
+            );
+            let dst_for_copy = dst.clone();
+            let copy_result = cx
+                .background_spawn(async move {
+                    gpui_android::storage::copy_tree(&src, &dst_for_copy)
+                })
+                .await;
+            match copy_result {
+                Ok(bytes) => info!(
+                    "zed_android: ImportFromSdcard: copied {bytes} bytes to {}",
+                    dst.display()
+                ),
+                Err(err) => {
+                    error!(
+                        "zed_android: ImportFromSdcard: copy failed: {err:#}"
+                    );
+                    return;
+                }
+            }
+            let mw = cx.update(|cx| {
+                cx.active_window()
+                    .and_then(|w| w.downcast::<MultiWorkspace>())
+            });
+            let Some(mw) = mw else {
+                error!(
+                    "zed_android: ImportFromSdcard: no active MultiWorkspace"
+                );
+                return;
+            };
+            let task = mw.update(cx, |mw, window, cx| {
+                mw.open_project(
+                    vec![dst],
+                    workspace::OpenMode::Activate,
+                    window,
+                    cx,
+                )
+            });
+            if let Ok(task) = task {
+                if let Err(err) = task.await {
+                    error!(
+                        "zed_android: ImportFromSdcard: open_project failed: {err:#}"
+                    );
                 }
             }
         })

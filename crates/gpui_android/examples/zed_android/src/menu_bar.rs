@@ -229,6 +229,10 @@ fn app_menu_definitions() -> Vec<MenuDefinition> {
                         "Open…",
                         Box::new(workspace::Open::default()),
                     ),
+                    MenuEntry::Action(
+                        "Import from sdcard…",
+                        Box::new(crate::ImportFromSdcard),
+                    ),
                     MenuEntry::Separator,
                     MenuEntry::Action(
                         "Save",
