@@ -323,9 +323,113 @@ pub fn apply_runtime_patches(data_path: &Path) -> Result<()> {
     patch_node_platform_now(&prefix);
     install_npm_launcher_generator(&prefix)?;
     install_npm_wrapper(&prefix)?;
-    install_claude_setup_script(&prefix)?;
-    auto_fix_claude_if_broken(&prefix);
+    cleanup_legacy_claude_wrapper(&prefix);
     Ok(())
+}
+
+/// Remove leftover state from the now-obsolete zed-setup-claude path.
+///
+/// Until L4 landed, claude was set up by a per-tool script that wrote a
+/// proot wrapper at $PREFIX/bin/claude pointing at the JS dispatcher
+/// (claude-code/bin/claude.exe). The deep-walk launcher generator now
+/// wraps claude correctly at the real binary's path inside the
+/// optional-dep package directory. Both wrappers active = double proot
+/// (one wrapping node + JS dispatch, one wrapping the real binary)
+/// which made `claude` take 1+ minute to start.
+///
+/// Idempotent: removes the legacy wrapper script if present so the next
+/// `npm install -g @anthropic-ai/claude-code` (or post-install hook
+/// firing on the existing tree) lets npm restore its own bin symlink,
+/// which the launcher generator then leaves alone (claude.exe is JS, not
+/// ELF — generator's classify_and_wrap returns early). Also removes the
+/// zed-setup-claude script itself so users who did `pkg upgrade` of
+/// nodejs/claude-code on stale state don't re-trigger the old path.
+fn cleanup_legacy_claude_wrapper(prefix: &Path) {
+    let setup_script = prefix.join("bin/zed-setup-claude");
+    if setup_script.is_file() {
+        if let Err(err) = std::fs::remove_file(&setup_script) {
+            log::warn!(
+                "termux_bootstrap: remove zed-setup-claude script: {err:#}"
+            );
+        } else {
+            log::info!(
+                "termux_bootstrap: removed obsolete zed-setup-claude script at {}",
+                setup_script.display()
+            );
+        }
+    }
+
+    // Unwind any stacked .real-chains we accidentally produced before
+    // dropping zed-setup-claude. zed-setup-claude's wrapper at
+    // $PREFIX/bin/claude pointed at claude-code/bin/claude.exe (which it
+    // had cp'd the real binary into). Each subsequent run of the
+    // launcher generator's deep-walk wrapped the wrapper, leaving:
+    //   claude.exe        -> shell wrapper (latest)
+    //   claude.exe.real   -> shell wrapper (previous run)
+    //   claude.exe.real.real -> the original 240MB ELF
+    // Walk every node_modules dir for `<name>.real.real` files; if found,
+    // those are the original binaries and the .real / non-.real entries
+    // above them are stacked wrappers. Restore: rm wrappers, mv .real.real
+    // back to the original name. Subsequent npm install + launcher gen
+    // run will produce a clean single-level wrap.
+    if let Ok(walker) = std::process::Command::new("find")
+        .arg(prefix.join("lib/node_modules"))
+        .args(["-name", "*.real.real", "-type", "f"])
+        .output()
+    {
+        for line in walker.stdout.split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let real_real = match std::str::from_utf8(line) {
+                Ok(s) => Path::new(s).to_path_buf(),
+                Err(_) => continue,
+            };
+            // foo.exe.real.real → original = foo.exe
+            let s = real_real.to_string_lossy();
+            let original = match s.strip_suffix(".real.real") {
+                Some(o) => Path::new(o).to_path_buf(),
+                None => continue,
+            };
+            let real = real_real.with_extension(""); // strips trailing .real
+            let _ = std::fs::remove_file(&original);
+            let _ = std::fs::remove_file(&real);
+            if let Err(err) = std::fs::rename(&real_real, &original) {
+                log::warn!(
+                    "termux_bootstrap: restore {} <- {}: {err:#}",
+                    original.display(),
+                    real_real.display()
+                );
+            } else {
+                log::info!(
+                    "termux_bootstrap: restored stacked-wrapper binary at {}",
+                    original.display()
+                );
+            }
+        }
+    }
+
+    // Always drop $PREFIX/bin/claude regardless of marker — it's npm's
+    // territory and any leftover wrapper here is from the obsolete
+    // zed-setup-claude path. Next `npm install -g @anthropic-ai/claude-
+    // code` (or any npm op now that the wrapper fires the launcher
+    // generator) will recreate the symlink, the deep-walk will wrap the
+    // optional-dep binary correctly, and the JS dispatch in claude.exe
+    // (left alone because it's not ELF) will spawn the deep-walk wrapper.
+    let bin_claude = prefix.join("bin/claude");
+    if let Ok(meta) = std::fs::symlink_metadata(&bin_claude) {
+        if !meta.file_type().is_symlink() {
+            if let Err(err) = std::fs::remove_file(&bin_claude) {
+                log::warn!(
+                    "termux_bootstrap: remove $PREFIX/bin/claude: {err:#}"
+                );
+            } else {
+                log::info!(
+                    "termux_bootstrap: removed legacy $PREFIX/bin/claude wrapper"
+                );
+            }
+        }
+    }
 }
 
 /// Replace `$PREFIX/bin/npm` symlink with a shell shim that forwards args
