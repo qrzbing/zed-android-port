@@ -1,9 +1,13 @@
-# Claude Bun-binary patchelf + proot wrapper
+# Claude Bun-binary patchelf + proot wrapper (superseded)
 
-**Status:** Active (will be subsumed by generic launcher generator once
-node_modules deep-walk lands)
-**Phase / Commit:** Phase 8 / L2g
-**Files:** `crates/gpui_android/src/termux_bootstrap.rs` (`install_claude_setup_script`, `auto_fix_claude_if_broken`)
+**Status:** Superseded by [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md) +
+[npm-intercept.md](npm-intercept.md). Kept here for archaeology — the
+historical claude-specific path explains why we even needed the wrapper
+machinery, and what symptoms tell you a regression has dragged us back
+toward this shape.
+**Phase / Commit:** Phase 8 / L2g (commits since reverted: see L4e
+`544ec57e85`, then L4g `ce613cb8fe`)
+**Files (original — now removed):** `crates/gpui_android/src/termux_bootstrap.rs::install_claude_setup_script`, `auto_fix_claude_if_broken`
 
 ## Problem
 
@@ -75,17 +79,26 @@ detected as the small JS stub:
 - env -u LD_PRELOAD omitted → process exits with libtermux-exec
   symbol-not-found errors before it even runs.
 
-## What replaces this (planned)
+## What replaced this
 
-The L4 launcher generator (see [npm-intercept.md](npm-intercept.md))
-classifies any npm-installed binary by interpreter + hardcoded-path scan and
-emits the right wrapper. Once it's extended to walk `node_modules/`
-recursively (currently only walks `$PREFIX/bin/*` symlinks, which point at
-the JS stub for claude not the real binary), this entire script becomes
-redundant — claude becomes "just another npm install".
+The combo of L4f (JNI DNS bridge) + L4g (hex-patch /etc/resolv.conf):
+the binary's `.rodata` is patched to read from `/sdcard/.zed/r`
+instead of `/etc/resolv.conf`, and a tiny env-strip wrapper at
+`$PREFIX/bin/<name>` strips LD_PRELOAD before exec. No proot, no JS
+dispatcher round-trip, no per-tool zed-setup-claude script.
+
+The same machinery picks up codex and any future Bun-compiled npm CLI
+without per-tool effort — the launcher generator's deep-walk
+classifier finds the binary, hex-patches it, writes the env-strip
+wrapper. The dead code (`install_claude_setup_script`,
+`auto_fix_claude_if_broken`) was removed.
 
 ## See also
 
+- [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md) — the
+  replacement
+- [jni-dns-bridge.md](jni-dns-bridge.md)
+- [sdcard-dot-zed-namespace.md](sdcard-dot-zed-namespace.md)
 - [npm-intercept.md](npm-intercept.md)
 - [node-platform-patch.md](node-platform-patch.md)
 - [musl-linker-bundle.md](musl-linker-bundle.md)

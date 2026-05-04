@@ -51,8 +51,11 @@ replacement.
 |---|---|---|
 | [Node binary `NODE_PLATFORM` patch](node-platform-patch.md) | Active | Termux Node is built `--dest-os=android`; npm picks wrong optional deps |
 | [npm intercept stack (wrapper + launcher generator)](npm-intercept.md) | Active | Generic per-binary classification kills `zed-setup-X` per-tool sprawl |
-| [Claude Bun-binary patchelf + proot wrapper](claude-bun-binary-patchelf.md) | Active | Bun static-musl with hardcoded `/etc/resolv.conf`, needs proot |
-| [LD_PRELOAD `libzed-compat.so` path-redirect shim](deferred-ld-preload-shim.md) | Deferred | Replaces proot for *dynamic* binaries; needs build-time C compile |
+| [Hex-patch `/etc/resolv.conf` → `/sdcard/.zed/r`](hex-patch-resolv-conf.md) | Active | Bun-compiled CLIs' static-musl c-ares can't be LD_PRELOAD'd; rewrite the rodata literal so it opens our writable file instead |
+| [JNI DNS bridge → `/sdcard/.zed/r`](jni-dns-bridge.md) | Active | Populates the file the hex-patch points at, sourced from Android's actual ConnectivityManager DNS |
+| [`/sdcard/.zed/` namespace](sdcard-dot-zed-namespace.md) | Active | Why `/sdcard` (byte-width constraint) and why `.zed/` (hidden, namespaced) for the patched paths |
+| [Claude Bun-binary patchelf + proot wrapper](claude-bun-binary-patchelf.md) | Superseded | Original claude-specific zed-setup-claude path. Replaced by hex-patch above. Kept for archaeology. |
+| [LD_PRELOAD `libzed-compat.so` path-redirect shim](deferred-ld-preload-shim.md) | Dropped | Doesn't apply to static-musl (no PLT/GOT); replaced by hex-patch |
 
 ## Runtime env
 
