@@ -69,6 +69,7 @@ struct MenuDefinition {
 enum MenuEntry {
     Action(&'static str, Box<dyn Action>),
     Separator,
+    Submenu(&'static str, fn() -> Vec<MenuEntry>),
 }
 
 impl MenuBar {
@@ -137,33 +138,11 @@ impl Render for MenuBar {
                                 if let Some(ref handle) = active_focus {
                                     menu = menu.context(handle.clone());
                                 }
-                                for entry in items() {
-                                    match entry {
-                                        MenuEntry::Action(label, action) => {
-                                            let dispatch_via = active_focus.clone();
-                                            let action_for_handler = action.boxed_clone();
-                                            menu = menu.entry(
-                                                label,
-                                                Some(action),
-                                                move |window, cx| {
-                                                    let action = action_for_handler.boxed_clone();
-                                                    if let Some(ref handle) = dispatch_via {
-                                                        handle.dispatch_action(
-                                                            action.as_ref(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    } else {
-                                                        window.dispatch_action(action, cx);
-                                                    }
-                                                },
-                                            );
-                                        }
-                                        MenuEntry::Separator => {
-                                            menu = menu.separator();
-                                        }
-                                    }
-                                }
+                                menu = build_menu_entries(
+                                    menu,
+                                    items(),
+                                    active_focus.clone(),
+                                );
                                 menu
                             }))
                         }
@@ -193,142 +172,343 @@ impl Render for MenuBar {
     }
 }
 
-/// Mirrors production's `app_menus()` minus entries whose actions live
-/// in crates we don't yet ship (terminal_view, debugger, collab_panel,
-/// recent_projects, etc.). Add them here as those crates land in the
-/// example's deps; the rest stays unchanged.
+fn build_menu_entries(
+    mut menu: ContextMenu,
+    entries: Vec<MenuEntry>,
+    active_focus: Option<gpui::FocusHandle>,
+) -> ContextMenu {
+    for entry in entries {
+        match entry {
+            MenuEntry::Separator => {
+                menu = menu.separator();
+            }
+            MenuEntry::Action(label, action) => {
+                let dispatch_via = active_focus.clone();
+                let action_for_handler = action.boxed_clone();
+                menu = menu.entry(label, Some(action), move |window, cx| {
+                    let action = action_for_handler.boxed_clone();
+                    if let Some(ref handle) = dispatch_via {
+                        handle.dispatch_action(action.as_ref(), window, cx);
+                    } else {
+                        window.dispatch_action(action, cx);
+                    }
+                });
+            }
+            MenuEntry::Submenu(label, items_fn) => {
+                let active_focus = active_focus.clone();
+                menu = menu.submenu(label, move |sub_menu, _window, _cx| {
+                    build_menu_entries(sub_menu, items_fn(), active_focus.clone())
+                });
+            }
+        }
+    }
+    menu
+}
+
+/// Mirrors production's `app_menus()` (crates/zed/src/zed/app_menus.rs)
+/// minus entries whose actions live in crates we don't ship on Android
+/// (auto_update, debugger, collab_panel, install_cli, etc.). The
+/// nested Settings submenu under Zed mirrors production verbatim — the
+/// handlers it dispatches to are registered globally by
+/// settings_ui::init / keymap_editor::init / theme_selector::init in
+/// our boot chain (lib.rs).
 fn app_menu_definitions() -> Vec<MenuDefinition> {
     vec![
         MenuDefinition {
             title: "Zed",
-            items: || {
-                vec![
-                    MenuEntry::Action("Open Settings", Box::new(zed_actions::OpenSettings)),
-                    MenuEntry::Action("Open Keymap", Box::new(zed_actions::OpenKeymap)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Welcome",
-                        Box::new(workspace::welcome::ShowWelcome),
-                    ),
-                    MenuEntry::Action(
-                        "Onboarding",
-                        Box::new(zed_actions::OpenOnboarding),
-                    ),
-                    MenuEntry::Separator,
-                    MenuEntry::Action("Quit", Box::new(zed_actions::Quit)),
-                ]
-            },
+            items: zed_menu_items,
         },
         MenuDefinition {
             title: "File",
-            items: || {
-                vec![
-                    MenuEntry::Action("New File", Box::new(workspace::NewFile)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Open…",
-                        Box::new(workspace::Open::default()),
-                    ),
-                    MenuEntry::Action(
-                        "Import from sdcard…",
-                        Box::new(crate::ImportFromSdcard),
-                    ),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Save",
-                        Box::new(workspace::Save { save_intent: None }),
-                    ),
-                    MenuEntry::Action("Save As…", Box::new(workspace::SaveAs)),
-                    MenuEntry::Action(
-                        "Save All",
-                        Box::new(workspace::SaveAll { save_intent: None }),
-                    ),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Close Editor",
-                        Box::new(workspace::CloseActiveItem::default()),
-                    ),
-                ]
-            },
+            items: file_menu_items,
         },
         MenuDefinition {
             title: "Edit",
-            items: || {
-                vec![
-                    MenuEntry::Action("Undo", Box::new(editor::actions::Undo)),
-                    MenuEntry::Action("Redo", Box::new(editor::actions::Redo)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action("Cut", Box::new(editor::actions::Cut)),
-                    MenuEntry::Action("Copy", Box::new(editor::actions::Copy)),
-                    MenuEntry::Action("Paste", Box::new(editor::actions::Paste)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Find in Buffer…",
-                        Box::new(zed_actions::buffer_search::Deploy::find()),
-                    ),
-                    MenuEntry::Action(
-                        "Find in Project…",
-                        Box::new(workspace::DeploySearch::default()),
-                    ),
-                ]
-            },
+            items: edit_menu_items,
         },
         MenuDefinition {
             title: "Selection",
-            items: || {
-                vec![
-                    MenuEntry::Action("Select All", Box::new(editor::actions::SelectAll)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Add Cursor Above",
-                        Box::new(editor::actions::AddSelectionAbove::default()),
-                    ),
-                    MenuEntry::Action(
-                        "Add Cursor Below",
-                        Box::new(editor::actions::AddSelectionBelow::default()),
-                    ),
-                    MenuEntry::Action("Select Line", Box::new(editor::actions::SelectLine)),
-                ]
-            },
+            items: selection_menu_items,
         },
         MenuDefinition {
             title: "View",
-            items: || {
-                vec![
-                    MenuEntry::Action("Toggle Left Dock", Box::new(workspace::ToggleLeftDock)),
-                    MenuEntry::Action("Toggle Right Dock", Box::new(workspace::ToggleRightDock)),
-                    MenuEntry::Action(
-                        "Toggle Bottom Dock",
-                        Box::new(workspace::ToggleBottomDock),
-                    ),
-                    MenuEntry::Action("Toggle All Docks", Box::new(workspace::ToggleAllDocks)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Project Panel",
-                        Box::new(zed_actions::project_panel::ToggleFocus),
-                    ),
-                    MenuEntry::Action(
-                        "Outline Panel",
-                        Box::new(outline_panel::ToggleFocus),
-                    ),
-                    MenuEntry::Separator,
-                    MenuEntry::Action("Diagnostics", Box::new(diagnostics::Deploy)),
-                ]
-            },
+            items: view_menu_items,
         },
         MenuDefinition {
             title: "Go",
-            items: || {
-                vec![
-                    MenuEntry::Action("Back", Box::new(workspace::GoBack)),
-                    MenuEntry::Action("Forward", Box::new(workspace::GoForward)),
-                    MenuEntry::Separator,
-                    MenuEntry::Action(
-                        "Command Palette…",
-                        Box::new(zed_actions::command_palette::Toggle),
-                    ),
-                ]
-            },
+            items: go_menu_items,
         },
+    ]
+}
+
+fn zed_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Submenu("Settings", zed_settings_submenu_items),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Extensions",
+            Box::new(zed_actions::Extensions::default()),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Welcome",
+            Box::new(workspace::welcome::ShowWelcome),
+        ),
+        MenuEntry::Action(
+            "Onboarding",
+            Box::new(zed_actions::OpenOnboarding),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Quit", Box::new(zed_actions::Quit)),
+    ]
+}
+
+/// Settings submenu nested under Zed — mirrors production
+/// `crates/zed/src/zed/app_menus.rs:69-87`. The file/default-variant
+/// entries (Open Settings File, Open Default Settings, etc.) are
+/// commented out for now: production handles them via cx.on_action in
+/// `crates/zed/src/zed.rs`, which we don't init. They'll come back
+/// once we register equivalent local handlers that call
+/// `workspace::create_and_open_local_file` against `paths::settings_file()`,
+/// `paths::keymap_file()`, etc.
+fn zed_settings_submenu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action("Open Settings", Box::new(zed_actions::OpenSettings)),
+        MenuEntry::Action(
+            "Open Project Settings",
+            Box::new(zed_actions::OpenProjectSettings),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Open Keymap", Box::new(zed_actions::OpenKeymap)),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Select Theme…",
+            Box::new(zed_actions::theme_selector::Toggle::default()),
+        ),
+        MenuEntry::Action(
+            "Select Icon Theme…",
+            Box::new(zed_actions::icon_theme_selector::Toggle::default()),
+        ),
+    ]
+}
+
+fn file_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action("New File", Box::new(workspace::NewFile)),
+        MenuEntry::Separator,
+        MenuEntry::Action("Open…", Box::new(workspace::Open::default())),
+        MenuEntry::Action(
+            "Open Recent…",
+            Box::new(zed_actions::OpenRecent {
+                create_new_window: false,
+            }),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Add Folder to Project…",
+            Box::new(workspace::AddFolderToProject),
+        ),
+        MenuEntry::Action(
+            "Import from sdcard…",
+            Box::new(crate::ImportFromSdcard),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Save", Box::new(workspace::Save { save_intent: None })),
+        MenuEntry::Action("Save As…", Box::new(workspace::SaveAs)),
+        MenuEntry::Action(
+            "Save All",
+            Box::new(workspace::SaveAll { save_intent: None }),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Close Editor",
+            Box::new(workspace::CloseActiveItem::default()),
+        ),
+        MenuEntry::Action("Close Project", Box::new(workspace::CloseProject)),
+    ]
+}
+
+fn edit_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action("Undo", Box::new(editor::actions::Undo)),
+        MenuEntry::Action("Redo", Box::new(editor::actions::Redo)),
+        MenuEntry::Separator,
+        MenuEntry::Action("Cut", Box::new(editor::actions::Cut)),
+        MenuEntry::Action("Copy", Box::new(editor::actions::Copy)),
+        MenuEntry::Action("Copy and Trim", Box::new(editor::actions::CopyAndTrim)),
+        MenuEntry::Action("Paste", Box::new(editor::actions::Paste)),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Find in Buffer…",
+            Box::new(zed_actions::buffer_search::Deploy::find()),
+        ),
+        MenuEntry::Action(
+            "Find in Project…",
+            Box::new(workspace::DeploySearch::default()),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Toggle Line Comment",
+            Box::new(editor::actions::ToggleComments::default()),
+        ),
+    ]
+}
+
+fn selection_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action("Select All", Box::new(editor::actions::SelectAll)),
+        MenuEntry::Action(
+            "Expand Selection",
+            Box::new(editor::actions::SelectLargerSyntaxNode),
+        ),
+        MenuEntry::Action(
+            "Shrink Selection",
+            Box::new(editor::actions::SelectSmallerSyntaxNode),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Add Cursor Above",
+            Box::new(editor::actions::AddSelectionAbove::default()),
+        ),
+        MenuEntry::Action(
+            "Add Cursor Below",
+            Box::new(editor::actions::AddSelectionBelow::default()),
+        ),
+        MenuEntry::Action(
+            "Select Next Occurrence",
+            Box::new(editor::actions::SelectNext {
+                replace_newest: false,
+            }),
+        ),
+        MenuEntry::Action(
+            "Select Previous Occurrence",
+            Box::new(editor::actions::SelectPrevious {
+                replace_newest: false,
+            }),
+        ),
+        MenuEntry::Action(
+            "Select All Occurrences",
+            Box::new(editor::actions::SelectAllMatches),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Move Line Up", Box::new(editor::actions::MoveLineUp)),
+        MenuEntry::Action("Move Line Down", Box::new(editor::actions::MoveLineDown)),
+        MenuEntry::Action(
+            "Duplicate Selection",
+            Box::new(editor::actions::DuplicateLineDown),
+        ),
+    ]
+}
+
+fn view_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action(
+            "Zoom In",
+            Box::new(zed_actions::IncreaseBufferFontSize { persist: false }),
+        ),
+        MenuEntry::Action(
+            "Zoom Out",
+            Box::new(zed_actions::DecreaseBufferFontSize { persist: false }),
+        ),
+        MenuEntry::Action(
+            "Reset Zoom",
+            Box::new(zed_actions::ResetBufferFontSize { persist: false }),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Toggle Left Dock", Box::new(workspace::ToggleLeftDock)),
+        MenuEntry::Action("Toggle Right Dock", Box::new(workspace::ToggleRightDock)),
+        MenuEntry::Action(
+            "Toggle Bottom Dock",
+            Box::new(workspace::ToggleBottomDock),
+        ),
+        MenuEntry::Action("Toggle All Docks", Box::new(workspace::ToggleAllDocks)),
+        MenuEntry::Submenu("Editor Layout", view_editor_layout_submenu_items),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Project Panel",
+            Box::new(zed_actions::project_panel::ToggleFocus),
+        ),
+        MenuEntry::Action(
+            "Outline Panel",
+            Box::new(outline_panel::ToggleFocus),
+        ),
+        MenuEntry::Action(
+            "Terminal Panel",
+            Box::new(terminal_view::terminal_panel::ToggleFocus),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action("Diagnostics", Box::new(diagnostics::Deploy)),
+    ]
+}
+
+fn view_editor_layout_submenu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action(
+            "Split Up",
+            Box::new(workspace::SplitUp::default()),
+        ),
+        MenuEntry::Action(
+            "Split Down",
+            Box::new(workspace::SplitDown::default()),
+        ),
+        MenuEntry::Action(
+            "Split Left",
+            Box::new(workspace::SplitLeft::default()),
+        ),
+        MenuEntry::Action(
+            "Split Right",
+            Box::new(workspace::SplitRight::default()),
+        ),
+    ]
+}
+
+fn go_menu_items() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::Action("Back", Box::new(workspace::GoBack)),
+        MenuEntry::Action("Forward", Box::new(workspace::GoForward)),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Command Palette…",
+            Box::new(zed_actions::command_palette::Toggle),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Go to File…",
+            Box::new(workspace::ToggleFileFinder::default()),
+        ),
+        MenuEntry::Action(
+            "Go to Symbol in Editor…",
+            Box::new(zed_actions::outline::ToggleOutline),
+        ),
+        MenuEntry::Action(
+            "Go to Line/Column…",
+            Box::new(editor::actions::ToggleGoToLine),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Go to Definition",
+            Box::new(editor::actions::GoToDefinition),
+        ),
+        MenuEntry::Action(
+            "Go to Declaration",
+            Box::new(editor::actions::GoToDeclaration),
+        ),
+        MenuEntry::Action(
+            "Go to Type Definition",
+            Box::new(editor::actions::GoToTypeDefinition),
+        ),
+        MenuEntry::Action(
+            "Find All References",
+            Box::new(editor::actions::FindAllReferences::default()),
+        ),
+        MenuEntry::Separator,
+        MenuEntry::Action(
+            "Next Problem",
+            Box::new(editor::actions::GoToDiagnostic::default()),
+        ),
+        MenuEntry::Action(
+            "Previous Problem",
+            Box::new(editor::actions::GoToPreviousDiagnostic::default()),
+        ),
     ]
 }
