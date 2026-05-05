@@ -64,5 +64,26 @@
             android:documentLaunchMode="always"
             android:taskAffinity="dev.zed.zed_android.extra"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen"/>
+
+        <!--
+          Exposes Zed's home dir as a SAF root so other apps can browse
+          / share files from `~` via the system DocumentsUI picker. Same
+          pattern Termux uses. `android.permission.MANAGE_DOCUMENTS` is
+          system-only — only the system's DocumentsUI can talk to us
+          directly; user-level apps reach our root by selecting it in the
+          picker. `grantUriPermissions=true` lets the picker hand a
+          time-limited URI grant to whatever app the user picks the file
+          for.
+        -->
+        <provider
+            android:name=".ZedDocumentsProvider"
+            android:authorities="dev.zed.zed_android.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER"/>
+            </intent-filter>
+        </provider>
     </application>
 </manifest>

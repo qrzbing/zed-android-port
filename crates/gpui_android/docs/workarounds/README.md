@@ -110,6 +110,7 @@ replacement.
 | [`ActivityOptions.setLaunchBounds`](activity-options-launch-bounds.md) | Active | Pass gpui's `WindowParams.bounds` to the OS so freeform windows open at the requested size |
 | [`with_active_or_new_workspace` falls back to existing on Android](with-active-or-new-workspace-android-fallback.md) | Active | When Settings is the active window, theme picker / command palette / recent projects routed through `with_active_or_new_workspace` were spawning duplicate Workspace ExtraWindowActivities; redirect to the existing primary instead |
 | [`activate()` via `AppTask.moveToFront`](activate-extra-activity-move-to-front.md) | Active | `Window::activate_window()` was a no-op stub on Android; settings_ui's existing-window dedup needed it to surface a backgrounded Settings instead of re-opening |
+| [`ZedDocumentsProvider` exposes `~` as a SAF root](zed-documents-provider.md) | Active | Other apps couldn't browse / share files from `/data/data/<pkg>/files/home` via the system picker; ported Termux's provider shape with custom dev MIME map + search skip list + provider-pre-Activity `mkdirs` guard |
 | [Notify `on_active_status_change` for cursor blink](notify-active-status-change.md) | Active | Editor's `cx.observe_window_activation` observer must fire to call `BlinkManager::enable`, otherwise search-bar cursor renders statically until first input |
 
 ## Build / packaging
