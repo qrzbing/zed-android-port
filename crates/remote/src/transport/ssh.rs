@@ -847,6 +847,20 @@ impl SshRemoteConnection {
 
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Nightly => Ok(None),
+            // Android Zed clients are always custom local builds whose
+            // version doesn't match anything published — same shape as
+            // Nightly from this code path's perspective. We always want
+            // to download the latest CDN binary regardless of what the
+            // ReleaseChannel global says, because there's only one ship
+            // target (the APK) and channel branching has no meaning.
+            // Treating Dev-on-Android the same as Nightly here lets us
+            // keep ReleaseChannel::Dev (so app data dir / settings.json
+            // / recent_projects don't namespace-shift) while still
+            // letting Open Remote download remote_server. Non-Android
+            // Dev clients keep the original bail — they're presumed to
+            // be Zed devs running `cargo run`, who can pre-stage a
+            // remote_server binary on the remote or build from source.
+            ReleaseChannel::Dev if cfg!(target_os = "android") => Ok(None),
             ReleaseChannel::Dev => {
                 anyhow::bail!(
                     "ZED_BUILD_REMOTE_SERVER is not set and no remote server exists at ({:?})",

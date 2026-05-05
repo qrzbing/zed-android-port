@@ -36,13 +36,21 @@ remote_server for the target's triple. Fix: set
 Path: `crates/remote/src/transport/ssh.rs:850-855`. After (A) is
 disabled, the SSH transport hits the
 `ReleaseChannel::Dev → bail!` branch — Dev channel hard-refuses CDN
-download by design. Fix: set `ZED_RELEASE_CHANNEL=nightly` so the
-match arm becomes `wanted_version = None` and Zed downloads the
-latest-on-CDN binary regardless of the client version. Caveat: Zed's
-data dir is namespaced by channel, so flipping it makes settings.json
-/ recent_projects / ssh_connections look "fresh" on first launch (the
-Dev-channel data is still on disk, just not loaded). Trade-off
-acknowledged.
+download by design. **Fix (static-funnel patch):** add a `Dev if
+cfg!(target_os = "android")` arm right above the `Dev` bail that
+returns `Ok(None)` — same as Nightly. The Android port is always a
+custom local build (channel branching has no meaning when there's
+one ship target = the APK), so we treat Dev-on-Android the same as
+Nightly for the URL-resolution path.
+
+Earlier iterations of this doc set `ZED_RELEASE_CHANNEL=nightly` at
+boot to flip the runtime channel and avoid the bail. That worked but
+namespaced Zed's data dir per channel — settings.json / recent
+projects / ssh_connections all looked "fresh" on first launch
+because they'd been saved under the Dev-channel namespace. The
+direct match-arm patch keeps the Dev-channel data dir, no rollover
+maintenance, no env-var dance. Non-Android Dev clients keep the
+original bail.
 
 ### C. "auto-update not initialized"
 
@@ -108,7 +116,6 @@ After that the args block can come out of settings.json.
 
 ```rust
 std::env::set_var("ZED_BUILD_REMOTE_SERVER", "never");      // (A)
-std::env::set_var("ZED_RELEASE_CHANNEL", "nightly");        // (B)
 std::env::set_var(                                          // (C, suppress polling)
     "ZED_UPDATE_EXPLANATION",
     "Updates ship via the APK; reinstall to upgrade.",
@@ -122,6 +129,11 @@ landed in `transport/ssh.rs`, but kept for hygiene — it ensures any
 non-SSH subprocess we spawn (cargo invocations, language servers run
 locally, etc.) doesn't see a path that's about to break on the next
 shell startup re-source.
+
+For (B), a separate static patch in `transport/ssh.rs` adds a
+`Dev if cfg!(target_os = "android")` match arm above the existing
+`Dev` bail; no env-var manipulation needed at boot. Channel stays at
+whatever ReleaseChannel inferred, so the app data dir stays put.
 
 ## What the upstream Zed code change does
 

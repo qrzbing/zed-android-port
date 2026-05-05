@@ -132,17 +132,18 @@ fn android_main(app: AndroidApp) {
             // clean while local Termux shells still get their shim via the
             // bash profile.
             std::env::remove_var("LD_PRELOAD");
-            // Run as Nightly channel so the SSH transport's Dev-channel
-            // hard-bail at `crates/remote/src/transport/ssh.rs:850-855`
-            // ("ZED_BUILD_REMOTE_SERVER is not set and no remote server
-            // exists at …") doesn't fire. Nightly's branch returns
-            // `wanted_version = None`, which lets Zed download the
-            // latest-on-CDN remote_server without pinning a specific
-            // version — appropriate for our locally-built client whose
-            // version doesn't match anything published. Stable / Preview
-            // would require a strict version match against the global
-            // AppVersion which we don't ship to a release CDN.
-            std::env::set_var("ZED_RELEASE_CHANNEL", "nightly");
+            // (We deliberately do NOT flip ZED_RELEASE_CHANNEL to
+            // "nightly" anymore. Channel switching namespaces Zed's
+            // app data dir, which would shadow settings.json / recent
+            // projects / ssh_connections set under whatever channel
+            // the user already had data in. The Dev-channel hard-bail
+            // at `crates/remote/src/transport/ssh.rs:850-855` is
+            // patched directly — Dev-on-Android resolves
+            // `wanted_version = None` same as Nightly, so the CDN
+            // download path works regardless of channel. There's only
+            // one ship target for our APK and the channel distinction
+            // has no meaning here, so the upstream branch becomes a
+            // static no-op rather than a runtime decision.)
             // Point HTTPS-using subprocesses (cargo, npm, curl, …) at
             // Termux's pre-shipped CA bundle. Without this, rust-
             // analyzer's `cargo metadata` dies with "unable to get
