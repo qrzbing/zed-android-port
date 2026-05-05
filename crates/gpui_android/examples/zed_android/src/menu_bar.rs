@@ -264,22 +264,40 @@ fn zed_menu_items() -> Vec<MenuEntry> {
 }
 
 /// Settings submenu nested under Zed — mirrors production
-/// `crates/zed/src/zed/app_menus.rs:69-87`. The file/default-variant
-/// entries (Open Settings File, Open Default Settings, etc.) are
-/// commented out for now: production handles them via cx.on_action in
-/// `crates/zed/src/zed.rs`, which we don't init. They'll come back
-/// once we register equivalent local handlers that call
-/// `workspace::create_and_open_local_file` against `paths::settings_file()`,
-/// `paths::keymap_file()`, etc.
+/// `crates/zed/src/zed/app_menus.rs:69-87`. All ten entries the user
+/// listed: file/default-variant handlers landed in `editor` and
+/// `workspace` (see `editor::init_bundled_file_actions`,
+/// `workspace::init_settings_file_actions`,
+/// `editor::open_project_settings_file`).
 fn zed_settings_submenu_items() -> Vec<MenuEntry> {
     vec![
         MenuEntry::Action("Open Settings", Box::new(zed_actions::OpenSettings)),
         MenuEntry::Action(
+            "Open Settings File",
+            Box::new(zed_actions::OpenSettingsFile),
+        ),
+        MenuEntry::Action(
             "Open Project Settings",
             Box::new(zed_actions::OpenProjectSettings),
         ),
+        MenuEntry::Action(
+            "Open Project Settings File",
+            Box::new(zed_actions::OpenProjectSettingsFile),
+        ),
+        MenuEntry::Action(
+            "Open Default Settings",
+            Box::new(zed_actions::OpenDefaultSettings),
+        ),
         MenuEntry::Separator,
         MenuEntry::Action("Open Keymap", Box::new(zed_actions::OpenKeymap)),
+        MenuEntry::Action(
+            "Open Keymap File",
+            Box::new(zed_actions::OpenKeymapFile),
+        ),
+        MenuEntry::Action(
+            "Open Default Key Bindings",
+            Box::new(zed_actions::OpenDefaultKeymap),
+        ),
         MenuEntry::Separator,
         MenuEntry::Action(
             "Select Theme…",

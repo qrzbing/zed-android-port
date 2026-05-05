@@ -10869,6 +10869,84 @@ fn load_legacy_panel_size(
     Some(size)
 }
 
+/// Open one of the user-config JSON files in the active workspace,
+/// creating it with `default_content` if it doesn't yet exist on disk.
+/// Used for `OpenSettingsFile` (`paths::settings_file()`) and
+/// `OpenKeymapFile` (`paths::keymap_file()`) — both follow the same
+/// shape: a known absolute path, a default-content thunk for the
+/// first-time-creation case, and a worktree-creation step that
+/// dedicates one worktree to the config dir so LSP servers don't
+/// thrash on every settings/keymap close+open.
+///
+/// Moved here from `crates/zed/src/zed.rs` so other entrypoints (like
+/// the Android port at `crates/gpui_android/examples/zed_android`) can
+/// reach it without pulling the full `zed` binary crate as a dep
+/// (which transitively brings livekit / call / agent_ui — all
+/// Android-incompatible).
+pub fn open_settings_file(
+    abs_path: &'static std::path::Path,
+    default_content: impl FnOnce() -> Rope + Send + 'static,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    cx.spawn_in(window, async move |workspace, cx| {
+        let (worktree_creation_task, settings_open_task) = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.with_local_or_wsl_workspace(window, cx, move |workspace, window, cx| {
+                    let project = workspace.project().clone();
+                    let worktree_creation_task = cx.spawn_in(window, async move |_, cx| {
+                        let config_dir = project
+                            .update(cx, |project, cx| {
+                                project.try_windows_path_to_wsl(paths::config_dir().as_path(), cx)
+                            })
+                            .await?;
+                        project
+                            .update(cx, |project, cx| {
+                                project.find_or_create_worktree(&config_dir, false, cx)
+                            })
+                            .await
+                    });
+                    let settings_open_task =
+                        create_and_open_local_file(abs_path, window, cx, default_content);
+                    (worktree_creation_task, settings_open_task)
+                })
+            })?
+            .await?;
+        let _ = worktree_creation_task.await?;
+        let _ = settings_open_task.await?;
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
+}
+
+/// Register handlers for the file-variant settings actions (Open Settings
+/// File, Open Keymap File). Both production zed::init and any
+/// alternative entrypoint (Android port) call this so the dispatch
+/// surface stays identical. Idempotent at the cx.on_action level —
+/// re-registering replaces the previous handler.
+pub fn init_settings_file_actions(cx: &mut App) {
+    cx.on_action(|_: &zed_actions::OpenKeymapFile, cx| {
+        with_active_or_new_workspace(cx, |_, window, cx| {
+            open_settings_file(
+                paths::keymap_file(),
+                || settings::initial_keymap_content().as_ref().into(),
+                window,
+                cx,
+            );
+        });
+    });
+    cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
+        with_active_or_new_workspace(cx, |_, window, cx| {
+            open_settings_file(
+                paths::settings_file(),
+                || settings::initial_user_settings_content().as_ref().into(),
+                window,
+                cx,
+            );
+        });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};

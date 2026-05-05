@@ -485,6 +485,8 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     recent_projects::init(cx);
     which_key::init(cx);
     settings_ui::init(cx);
+    workspace::init_settings_file_actions(cx);
+    editor::init_bundled_file_actions(cx);
     terminal_view::init(cx);
     // Onboarding reads `AllAgentServersSettings` from the SettingsStore;
     // `SettingsStore::get` panics if the type isn't registered, so register
@@ -523,6 +525,8 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // bottom-bar buttons for free.
     cx.observe_new(|workspace: &mut Workspace, window, cx| {
         let Some(window) = window else { return };
+
+        workspace.register_action(editor::open_project_settings_file);
 
         // Status bar items, mirroring production zed/src/zed.rs:537-586.
         // Skipped: edit_prediction_ui (AI), activity_indicator (collab),
