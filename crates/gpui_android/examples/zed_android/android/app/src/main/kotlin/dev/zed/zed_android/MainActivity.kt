@@ -12,6 +12,9 @@ import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.androidgamesdk.GameActivity
 
 /// SAF flows go through legacy `startActivityForResult` instead of
@@ -32,6 +35,24 @@ import com.google.androidgamesdk.GameActivity
 class MainActivity : GameActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge: tell the OS we want to draw behind status / nav bars
+        // and the cutout area, so gpui's surface gets the full display
+        // bounds. Without this, GameActivity respects system insets and the
+        // ANativeWindow we render into is shorter than the screen — visible
+        // as letterboxing under the status bar / above the nav bar on
+        // 1080x2340 phones (Mi 10) and notch-cropping on tablets.
+        //
+        // We also hide the system bars by default and set
+        // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE so a downward swipe
+        // temporarily reveals the status bar (notifications) without
+        // leaving the editor — same UX a native desktop editor gives on
+        // Wayland/macOS.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat
+                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
     }
 
     @Suppress("unused") // called from Rust via JNI

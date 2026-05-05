@@ -6,6 +6,9 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /// Host for a single secondary gpui window. Spawned by Rust via JNI
 /// `startActivity(Intent(...))` from `multi_window::launch_extra_activity`,
@@ -47,6 +50,19 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Edge-to-edge to match MainActivity. On phone (non-freeform) this
+        // makes the secondary surface fill the screen end-to-end. On
+        // freeform-windowing devices the OS-managed chrome (close X, drag
+        // bar) renders on its own decoration layer above this Activity, so
+        // hiding system bars here doesn't strip the chrome — only the
+        // status / nav strips that don't belong to the freeform window.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat
+                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
 
         extraWindowId = intent.getLongExtra(EXTRA_WINDOW_ID, -1L)
         if (extraWindowId < 0L) {
