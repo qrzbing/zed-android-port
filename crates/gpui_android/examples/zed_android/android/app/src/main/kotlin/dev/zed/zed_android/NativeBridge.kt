@@ -57,7 +57,10 @@ object NativeBridge {
 
     /// MotionEvent fields marshaled into primitive arrays (we can't share
     /// `MotionEvent` across the JNI boundary). Pointer indices are
-    /// `0..pointerCount-1`.
+    /// `0..pointerCount-1`. `vscroll`/`hscroll` carry the
+    /// `MotionEvent.AXIS_VSCROLL`/`AXIS_HSCROLL` values for `ACTION_SCROLL`
+    /// events (mouse wheel, trackpad two-finger scroll); zero on touch /
+    /// hover / button events.
     external fun nativeOnExtraTouchEvent(
         windowId: Long,
         actionMasked: Int,
@@ -65,6 +68,8 @@ object NativeBridge {
         metaState: Int,
         buttonState: Int,
         eventTimeMillis: Long,
+        vscroll: Float,
+        hscroll: Float,
         xs: FloatArray,
         ys: FloatArray,
         pointerIds: IntArray,

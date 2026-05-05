@@ -1,5 +1,6 @@
 package dev.zed.zed_android
 
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.view.MotionEvent
@@ -88,13 +89,32 @@ class ExtraWindowActivity : AppCompatActivity() {
         NativeBridge.nativeOnExtraActivityCreated(extraWindowId, this)
 
         val id = extraWindowId
-        surfaceView = SurfaceView(this).apply {
+        surfaceView = ScrollableSurfaceView(this).apply {
             holder.setFormat(android.graphics.PixelFormat.RGBA_8888)
             holder.addCallback(SurfaceCallback(id))
             // Forward touches to native via JNI. Returning true claims the
             // gesture so it doesn't bubble up to the OS chrome (which would
             // try to re-route to the drag handle).
             setOnTouchListener { _, event ->
+                forwardTouchEvent(id, event)
+                true
+            }
+            // ACTION_HOVER_ENTER / ACTION_HOVER_MOVE / ACTION_HOVER_EXIT
+            // (mouse moving over the surface without a button pressed) come
+            // through OnHoverListener — NOT OnTouchListener. Without this,
+            // gpui never sees a `MouseMove { pressed_button: None }`, which
+            // is what scrollbar-on-hover, link previews, and any
+            // hover-only UI affordance is gated on.
+            setOnHoverListener { _, event ->
+                forwardTouchEvent(id, event)
+                true
+            }
+            // ACTION_SCROLL (mouse wheel + trackpad two-finger scroll) and
+            // mouse button events on SOURCE_MOUSE come through
+            // OnGenericMotionListener. Without this, scrolling with a
+            // hardware mouse / trackpad over a settings/secondary window
+            // is a no-op.
+            setOnGenericMotionListener { _, event ->
                 forwardTouchEvent(id, event)
                 true
             }
@@ -148,6 +168,13 @@ class ExtraWindowActivity : AppCompatActivity() {
             ys[i] = event.getY(i)
             ids[i] = event.getPointerId(i)
         }
+        // ACTION_SCROLL (mouse wheel + trackpad two-finger scroll) carries
+        // its delta on the AXIS_VSCROLL / AXIS_HSCROLL axes — getX/Y return
+        // the pointer position, not the scroll amount. Read both axes
+        // unconditionally; they're zero on non-scroll events and the Rust
+        // translator only consumes them under the Scroll action arm.
+        val vscroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val hscroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
         NativeBridge.nativeOnExtraTouchEvent(
             id,
             event.actionMasked,
@@ -155,6 +182,8 @@ class ExtraWindowActivity : AppCompatActivity() {
             event.metaState,
             event.buttonState,
             event.eventTime,
+            vscroll,
+            hscroll,
             xs,
             ys,
             ids,
@@ -165,4 +194,28 @@ class ExtraWindowActivity : AppCompatActivity() {
         private const val TAG = "zed_android_extra"
         const val EXTRA_WINDOW_ID = "dev.zed.zed_android.window_id"
     }
+}
+
+/// `SurfaceView` subclass that advertises itself as scrollable to the
+/// Android input subsystem. Android's input dispatcher decides whether
+/// to synthesize an `ACTION_SCROLL` event from a trackpad two-finger
+/// gesture by walking up from the pointer's hit-test target and asking
+/// each `View` whether it `canScrollVertically()` / `canScrollHorizontally()`.
+/// A bare `SurfaceView` returns `false` for both — the OS then falls
+/// back to delivering the gesture as a single-pointer fake-mouse drag
+/// (Down with `button_state=0` then Move ×N then Up), which gpui then
+/// (correctly, given the input it sees) interprets as a click+drag.
+///
+/// Returning `true` for both axes flips Android's behavior: trackpad
+/// two-finger swipes get translated to `ACTION_SCROLL` with VSCROLL /
+/// HSCROLL axes set, which the existing primary + extra translators
+/// already consume. Mouse wheel still delivers `ACTION_SCROLL` directly
+/// (independent of this override).
+///
+/// Why this is on a custom subclass and not on the SurfaceView fields
+/// directly: `View.canScrollVertically` is a `protected open fun` —
+/// can only be overridden, not set, so we need a class.
+private class ScrollableSurfaceView(context: Context) : SurfaceView(context) {
+    override fun canScrollVertically(direction: Int): Boolean = true
+    override fun canScrollHorizontally(direction: Int): Boolean = true
 }

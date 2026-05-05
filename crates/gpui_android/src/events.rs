@@ -27,6 +27,31 @@ thread_local! {
     /// Set when a two-finger tap fired Right-click. The subsequent
     /// `Up`/`PointerUp` events for the gesture should NOT emit Up(Left).
     static RIGHT_CLICK_FIRED: Cell<bool> = const { Cell::new(false) };
+    /// Last centroid (avg of all active pointer positions, in raw pixel
+    /// coords pre-scale-divide) of an ongoing multi-touch gesture, used to
+    /// synthesize a `ScrollWheelEvent` from `ACTION_MOVE` deltas. Samsung
+    /// Book Cover Keyboard's trackpad — and presumably other Android
+    /// trackpads — sends two-finger scroll as raw multi-pointer
+    /// `ACTION_MOVE` events on `SOURCE_TOUCHSCREEN`, NOT as
+    /// `ACTION_SCROLL`. Same shape VNC + X11 hit on Android. The OS
+    /// expects the app to recognize the gesture and synthesize the scroll
+    /// itself. `None` when no multi-touch gesture is in flight.
+    static MULTI_TOUCH_CENTROID: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
+    /// Mirror for the extra-window translator (`translate_extra_motion_event`).
+    /// Separate cell so a gesture in one window doesn't leak its prev-frame
+    /// state into the other.
+    static EXTRA_MULTI_TOUCH_CENTROID: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
+}
+
+/// Centroid (mean position) of all active pointers. Used as the reference
+/// point for multi-touch scroll delta computation — averages out small
+/// per-finger jitter and naturally lifts/drops as fingers join / leave the
+/// gesture.
+fn pointer_centroid(positions: &[(f32, f32, i32)]) -> (f32, f32) {
+    let n = positions.len() as f32;
+    let sum_x: f32 = positions.iter().map(|(x, _, _)| *x).sum();
+    let sum_y: f32 = positions.iter().map(|(_, y, _)| *y).sum();
+    (sum_x / n, sum_y / n)
 }
 
 /// Output of `translate_motion_event`. Touch interactions can need to
@@ -183,7 +208,8 @@ pub(crate) fn translate_motion_event(
             // Last finger up (or mouse button release). If a right-click
             // sequence was emitted on Down (touch two-finger or trackpad/
             // mouse secondary), close it with Up(Right). Otherwise close
-            // the normal Up(Left).
+            // the normal Up(Left). End any multi-touch scroll gesture.
+            MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
             let fired = RIGHT_CLICK_FIRED.with(|cell| cell.take());
             let had_primary = PRIMARY_DOWN.with(|cell| cell.take()).is_some();
             if fired {
@@ -213,8 +239,61 @@ pub(crate) fn translate_motion_event(
         MotionAction::PointerUp => {
             // A non-last finger lifted. The two-finger gesture (if any)
             // already resolved at PointerDown; nothing to emit here.
+            // Drop the multi-touch scroll centroid so the next MOVE
+            // doesn't compute a delta against a stale frame (the
+            // remaining pointers' centroid has just jumped).
+            MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
         }
         MotionAction::Move => {
+            // Multi-touch drag (two+ fingers moving across the surface).
+            // Synthesize a ScrollWheelEvent from the centroid delta —
+            // Samsung Book Cover trackpad fires two-finger scroll as
+            // multi-pointer ACTION_MOVE, not ACTION_SCROLL, and we have
+            // to recognize the gesture ourselves. See the
+            // `MULTI_TOUCH_CENTROID` thread-local doc for context.
+            if event.pointer_count() >= 2 {
+                let mut sum_x = 0.0f32;
+                let mut sum_y = 0.0f32;
+                for i in 0..event.pointer_count() {
+                    let p = event.pointer_at_index(i);
+                    sum_x += p.x();
+                    sum_y += p.y();
+                }
+                let n = event.pointer_count() as f32;
+                let cur = (sum_x / n, sum_y / n);
+                let prev = MULTI_TOUCH_CENTROID.with(|cell| cell.replace(Some(cur)));
+                // First multi-touch frame in the gesture. Cancel any
+                // in-flight Left press from the original single-finger
+                // Down so gpui doesn't see a stuck button while we
+                // emit scrolls. click_count=0 means "not a click".
+                if prev.is_none() {
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers,
+                        click_count: 0,
+                    }));
+                    PRIMARY_DOWN.with(|cell| cell.set(None));
+                    RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
+                }
+                if let Some((lx, ly)) = prev {
+                    let dx = cur.0 - lx;
+                    let dy = cur.1 - ly;
+                    if dx != 0.0 || dy != 0.0 {
+                        out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(
+                                px(dx / scale_factor),
+                                px(dy / scale_factor),
+                            )),
+                            modifiers,
+                            touch_phase: TouchPhase::Moved,
+                        }));
+                    }
+                }
+                return out;
+            }
+            MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
             // Track drift so the two-finger window logic sees an
             // up-to-date "moved past slop" state (we don't strictly need
             // this since PointerDown checks distance from the original
@@ -245,6 +324,7 @@ pub(crate) fn translate_motion_event(
         MotionAction::Cancel => {
             PRIMARY_DOWN.with(|cell| cell.set(None));
             RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
+            MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
             out.push(PlatformInput::MouseUp(MouseUpEvent {
                 button: MouseButton::Left,
                 position,
@@ -284,23 +364,33 @@ const JAVA_ACTION_MOVE: i32 = 2;
 const JAVA_ACTION_CANCEL: i32 = 3;
 const JAVA_ACTION_POINTER_DOWN: i32 = 5;
 const JAVA_ACTION_POINTER_UP: i32 = 6;
+const JAVA_ACTION_HOVER_MOVE: i32 = 7;
+const JAVA_ACTION_SCROLL: i32 = 8;
+
+/// `MotionEvent.BUTTON_SECONDARY` — set when the user clicks the right
+/// mouse button or does a two-finger tap on a touchpad.
+const ANDROID_BUTTON_SECONDARY: i32 = 1 << 1;
 
 /// Touch-translator for events arriving on extra `SurfaceView`s (i.e.
 /// secondary gpui windows hosted by `multi_window`). The primary path uses
 /// [`translate_motion_event`] which consumes android-activity's NDK-backed
 /// `MotionEvent`; this one takes the raw fields we marshal across the JNI
-/// boundary in `MainActivity.forwardTouchEvent`.
+/// boundary in `ExtraWindowActivity.forwardTouchEvent`.
 ///
-/// Intentionally simpler than the primary translator: single-finger only
-/// (DOWN→Left/UP→Left/MOVE with Left held). Multi-finger gestures
-/// (two-finger right-click, scroll) on extra windows aren't yet wired —
-/// the production Settings window is mostly tap+scroll-via-buttons so
-/// this is enough to drive it interactively.
+/// Handles the same input vocabulary as the primary translator: touch
+/// DOWN/MOVE/UP, mouse hover, mouse-wheel + trackpad two-finger scroll,
+/// and physical secondary-button (right-click) on mouse / trackpad.
+/// Multi-touch right-click synthesis (two-finger tap → secondary) is NOT
+/// mirrored here — Settings / Keymap / Themes don't surface a context
+/// menu, so the extra cost wouldn't pay off until we ship a window that
+/// actually wants it.
 pub(crate) fn translate_extra_motion_event(
     action_masked: i32,
     _action_index: i32,
     meta_state: i32,
-    _button_state: i32,
+    button_state: i32,
+    vscroll: f32,
+    hscroll: f32,
     positions: &[(f32, f32, i32)],
     scale_factor: f32,
 ) -> MotionInputs {
@@ -310,12 +400,22 @@ pub(crate) fn translate_extra_motion_event(
     let (raw_x, raw_y, _id) = positions[0];
     let position = point(px(raw_x / scale_factor), px(raw_y / scale_factor));
     let modifiers = modifiers_from_meta(MetaState(meta_state as u32));
+    let secondary_button = (button_state & ANDROID_BUTTON_SECONDARY) != 0;
 
     let mut out = Vec::new();
     match action_masked {
         JAVA_ACTION_DOWN | JAVA_ACTION_POINTER_DOWN => {
+            // Right-click via mouse secondary button or trackpad two-
+            // finger tap (Android resolves the gesture to BUTTON_SECONDARY
+            // in button_state for us). Mirrors the primary translator at
+            // events.rs:107-122.
+            let button = if secondary_button {
+                MouseButton::Right
+            } else {
+                MouseButton::Left
+            };
             out.push(PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
+                button,
                 position,
                 modifiers,
                 click_count: 1,
@@ -323,19 +423,94 @@ pub(crate) fn translate_extra_motion_event(
             }));
         }
         JAVA_ACTION_UP | JAVA_ACTION_POINTER_UP | JAVA_ACTION_CANCEL => {
+            // We don't track the latched-down button across events here —
+            // for the Settings window's single-pointer-tap-or-secondary
+            // workflow that's fine; emit Right-up if button_state still
+            // shows secondary, else Left-up. End any multi-touch scroll.
+            EXTRA_MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
+            let button = if secondary_button {
+                MouseButton::Right
+            } else {
+                MouseButton::Left
+            };
             out.push(PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
+                button,
                 position,
                 modifiers,
                 click_count: 1,
             }));
         }
         JAVA_ACTION_MOVE => {
+            // Multi-touch drag → synthesize scroll. Same Samsung-trackpad
+            // story as the primary translator's Move arm; see the
+            // `MULTI_TOUCH_CENTROID` doc.
+            if positions.len() >= 2 {
+                let cur = pointer_centroid(positions);
+                let prev = EXTRA_MULTI_TOUCH_CENTROID.with(|cell| cell.replace(Some(cur)));
+                if prev.is_none() {
+                    // Cancel the latched Left from a single-finger Down
+                    // that turned into a multi-finger drag.
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers,
+                        click_count: 0,
+                    }));
+                }
+                if let Some((lx, ly)) = prev {
+                    let dx = cur.0 - lx;
+                    let dy = cur.1 - ly;
+                    if dx != 0.0 || dy != 0.0 {
+                        out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(
+                                px(dx / scale_factor),
+                                px(dy / scale_factor),
+                            )),
+                            modifiers,
+                            touch_phase: TouchPhase::Moved,
+                        }));
+                    }
+                }
+                return out;
+            }
+            EXTRA_MULTI_TOUCH_CENTROID.with(|cell| cell.set(None));
+            let pressed = if secondary_button {
+                Some(MouseButton::Right)
+            } else {
+                Some(MouseButton::Left)
+            };
             out.push(PlatformInput::MouseMove(MouseMoveEvent {
                 position,
-                pressed_button: Some(MouseButton::Left),
+                pressed_button: pressed,
                 modifiers,
             }));
+        }
+        JAVA_ACTION_HOVER_MOVE => {
+            // Mouse moved without a button held. The scrollbar autohide
+            // state machine (`crates/ui/src/components/scrollbar.rs:1507`)
+            // listens for `MouseMoveEvent { pressed_button: None }` to
+            // fade the thumb in on parent-region entry.
+            out.push(PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers,
+            }));
+        }
+        JAVA_ACTION_SCROLL => {
+            // Mouse wheel + trackpad two-finger scroll. Android reports
+            // +Vscroll for "wheel rotates away from user"; gpui expects
+            // +Y to scroll content up (wheel-toward-user convention), so
+            // negate Vscroll. Same fix the primary translator applies at
+            // events.rs:266.
+            if vscroll != 0.0 || hscroll != 0.0 {
+                out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position,
+                    delta: ScrollDelta::Lines(point(hscroll, -vscroll)),
+                    modifiers,
+                    touch_phase: TouchPhase::Moved,
+                }));
+            }
         }
         _ => {}
     }

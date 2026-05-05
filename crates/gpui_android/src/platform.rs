@@ -376,6 +376,8 @@ impl AndroidPlatform {
                     meta_state,
                     button_state,
                     event_time_millis: _,
+                    vscroll,
+                    hscroll,
                     positions,
                 } => {
                     let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
@@ -391,6 +393,8 @@ impl AndroidPlatform {
                         action_index,
                         meta_state,
                         button_state,
+                        vscroll,
+                        hscroll,
                         &positions,
                         scale,
                     );
