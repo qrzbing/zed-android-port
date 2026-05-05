@@ -154,22 +154,44 @@ fn handle_tree_result(uri: &str) -> Result<Option<PathBuf>> {
     if uri.is_empty() {
         return Ok(None);
     }
-    let prefix = "content://com.android.externalstorage.documents/tree/";
-    let rest = uri.strip_prefix(prefix).with_context(|| {
-        format!("unsupported tree URI authority: {uri}")
-    })?;
-    Ok(Some(decode_storage_segment(rest)?))
+    if let Some(rest) =
+        uri.strip_prefix("content://com.android.externalstorage.documents/tree/")
+    {
+        return Ok(Some(decode_storage_segment(rest)?));
+    }
+    if let Some(rest) =
+        uri.strip_prefix("content://dev.zed.zed_android.documents/tree/")
+    {
+        return Ok(Some(decode_zed_segment(rest)?));
+    }
+    Err(anyhow::anyhow!("unsupported tree URI authority: {uri}"))
 }
 
 fn handle_document_result(uri: &str) -> Result<Option<PathBuf>> {
     if uri.is_empty() {
         return Ok(None);
     }
-    let prefix = "content://com.android.externalstorage.documents/document/";
-    let rest = uri.strip_prefix(prefix).with_context(|| {
-        format!("unsupported document URI authority: {uri}")
-    })?;
-    Ok(Some(decode_storage_segment(rest)?))
+    if let Some(rest) =
+        uri.strip_prefix("content://com.android.externalstorage.documents/document/")
+    {
+        return Ok(Some(decode_storage_segment(rest)?));
+    }
+    if let Some(rest) =
+        uri.strip_prefix("content://dev.zed.zed_android.documents/document/")
+    {
+        return Ok(Some(decode_zed_segment(rest)?));
+    }
+    Err(anyhow::anyhow!("unsupported document URI authority: {uri}"))
+}
+
+/// Document IDs from `ZedDocumentsProvider` are already absolute
+/// filesystem paths under our app-private dir
+/// (`/data/data/<pkg>/files/home/...`). We're the only process that can
+/// read them, but since the URI came from our own provider (or via the
+/// system DocumentsUI which signed off on the user's choice), we just
+/// percent-decode and use directly.
+fn decode_zed_segment(segment: &str) -> Result<PathBuf> {
+    Ok(PathBuf::from(percent_decode(segment)))
 }
 
 fn decode_storage_segment(segment: &str) -> Result<PathBuf> {
