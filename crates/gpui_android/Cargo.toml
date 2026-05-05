@@ -23,6 +23,7 @@ libc.workspace = true
 log.workspace = true
 ndk = { version = "0.9", features = ["nativewindow", "api-level-26"] }
 raw-window-handle = "0.6"
+serde_json.workspace = true
 util.workspace = true
 uuid.workspace = true
 zip = "2"

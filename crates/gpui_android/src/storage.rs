@@ -138,6 +138,67 @@ pub fn projects_dir() -> Option<PathBuf> {
     std::env::var_os("TERMUX__HOME").map(|v| PathBuf::from(v).join("projects"))
 }
 
+/// Path of the JSON file storing per-folder "suppress noexec warning"
+/// entries. Lives under `~/.cache/zed-android/`. Returns `None` only if
+/// `TERMUX__HOME` is unset (which means lib.rs hasn't initialized env yet).
+fn noexec_suppressed_file() -> Option<PathBuf> {
+    let home = std::env::var_os("TERMUX__HOME")?;
+    let dir = PathBuf::from(home).join(".cache").join("zed-android");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("noexec-suppressed.json"))
+}
+
+fn read_noexec_suppressed_list() -> Vec<String> {
+    let Some(file) = noexec_suppressed_file() else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(&file) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&contents).unwrap_or_default()
+}
+
+/// Returns true if the user has previously dismissed the noexec warning for
+/// this exact path. The title-bar banner consults this before rendering.
+pub fn is_noexec_suppressed(path: &Path) -> bool {
+    let needle = path.to_string_lossy();
+    read_noexec_suppressed_list()
+        .iter()
+        .any(|p| p.as_str() == needle)
+}
+
+/// Persist a "don't warn me about this path again" entry. No-op if the
+/// path is already in the list. Best-effort — write errors are logged but
+/// don't propagate (failure mode: user sees the banner again next session).
+pub fn add_noexec_suppressed(path: &Path) {
+    let Some(file) = noexec_suppressed_file() else {
+        log::warn!(
+            "noexec_suppressed: TERMUX__HOME unset; cannot persist suppression for {}",
+            path.display()
+        );
+        return;
+    };
+    let mut list = read_noexec_suppressed_list();
+    let needle = path.to_string_lossy().into_owned();
+    if list.iter().any(|p| p == &needle) {
+        return;
+    }
+    list.push(needle);
+    let json = match serde_json::to_string_pretty(&list) {
+        Ok(s) => s,
+        Err(err) => {
+            log::warn!("noexec_suppressed: serialize failed: {err:#}");
+            return;
+        }
+    };
+    if let Err(err) = std::fs::write(&file, json) {
+        log::warn!(
+            "noexec_suppressed: write {} failed: {err:#}",
+            file.display()
+        );
+    }
+}
+
 /// True if the filesystem `path` lives on is mounted with `noexec`. Returns
 /// false on any error (couldn't statvfs, path missing, etc.) — false positives
 /// are harmful (we'd nag users about a path that's actually fine), false

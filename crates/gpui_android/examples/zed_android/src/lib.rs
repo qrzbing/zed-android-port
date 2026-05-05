@@ -5,6 +5,7 @@
 
 mod header;
 mod menu_bar;
+mod noexec_modal;
 mod title_bar;
 
 use std::borrow::Cow;
@@ -20,23 +21,11 @@ use fs::{Fs, RealFs};
 use node_runtime::NodeRuntime;
 use project::Project;
 use session::{AppSession, Session};
-use gpui::{App, AppContext as _, UpdateGlobal as _, actions};
+use gpui::{App, AppContext as _, UpdateGlobal as _};
 use log::{error, info};
 use settings::Settings as _;
 use workspace::{AppState, MultiWorkspace, Workspace, WorkspaceStore};
 use reqwest_client::ReqwestClient;
-
-actions!(
-    zed_android,
-    [
-        /// Pick a tree from shared storage, recursively copy it to
-        /// ~/projects/<name>, and open the local copy. Source on /sdcard
-        /// is left untouched. The local copy lives on app-private storage
-        /// where exec is allowed, so cargo / go / make / native build
-        /// tools all run natively without any noexec workaround.
-        ImportFromSdcard
-    ]
-);
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
     gpui::WindowOptions::default()
@@ -698,112 +687,11 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         .detach();
     });
 
-    let projects_root = termux_home.join("projects");
-    cx.on_action(move |_: &ImportFromSdcard, cx: &mut App| {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
-        let projects_root = projects_root.clone();
-        cx.spawn(async move |cx| {
-            let picked = match paths.await {
-                Ok(Ok(Some(p))) if !p.is_empty() => p,
-                Ok(Ok(None)) | Ok(Ok(Some(_))) => return,
-                Ok(Err(err)) => {
-                    error!(
-                        "zed_android: ImportFromSdcard picker failed: {err:#}"
-                    );
-                    return;
-                }
-                Err(_) => return,
-            };
-            let src = picked.into_iter().next().expect("non-empty picked");
-            let basename = match src.file_name() {
-                Some(n) => n.to_owned(),
-                None => {
-                    error!(
-                        "zed_android: ImportFromSdcard: picked path {} has no file name",
-                        src.display()
-                    );
-                    return;
-                }
-            };
-            let mut dst = projects_root.join(&basename);
-            // Don't clobber an existing project with the same name.
-            // Suffix `-imported`, `-imported-2`, etc. so the user keeps
-            // their previous import and the new one lands cleanly.
-            if dst.exists() {
-                let stem = basename.to_string_lossy().to_string();
-                let mut suffix = 1usize;
-                loop {
-                    let candidate = projects_root.join(format!(
-                        "{stem}-imported{}",
-                        if suffix == 1 {
-                            String::new()
-                        } else {
-                            format!("-{suffix}")
-                        }
-                    ));
-                    if !candidate.exists() {
-                        dst = candidate;
-                        break;
-                    }
-                    suffix += 1;
-                }
-            }
-            info!(
-                "zed_android: ImportFromSdcard: copying {} -> {}",
-                src.display(),
-                dst.display()
-            );
-            let dst_for_copy = dst.clone();
-            let copy_result = cx
-                .background_spawn(async move {
-                    gpui_android::storage::copy_tree(&src, &dst_for_copy)
-                })
-                .await;
-            match copy_result {
-                Ok(bytes) => info!(
-                    "zed_android: ImportFromSdcard: copied {bytes} bytes to {}",
-                    dst.display()
-                ),
-                Err(err) => {
-                    error!(
-                        "zed_android: ImportFromSdcard: copy failed: {err:#}"
-                    );
-                    return;
-                }
-            }
-            let mw = cx.update(|cx| {
-                cx.active_window()
-                    .and_then(|w| w.downcast::<MultiWorkspace>())
-            });
-            let Some(mw) = mw else {
-                error!(
-                    "zed_android: ImportFromSdcard: no active MultiWorkspace"
-                );
-                return;
-            };
-            let task = mw.update(cx, |mw, window, cx| {
-                mw.open_project(
-                    vec![dst],
-                    workspace::OpenMode::Activate,
-                    window,
-                    cx,
-                )
-            });
-            if let Ok(task) = task {
-                if let Err(err) = task.await {
-                    error!(
-                        "zed_android: ImportFromSdcard: open_project failed: {err:#}"
-                    );
-                }
-            }
-        })
-        .detach();
-    });
+    // ImportFromSdcard action removed in L9 — the menu entry was redundant
+    // with the existing SAF picker (Open / Add Folder to Project), and the
+    // copy-into-`~/projects` flow it ran is now triggered from the noexec
+    // banner's confirmation dialog (see title_bar.rs::render_noexec_banner)
+    // when an opened worktree turns out to live on a noexec mount.
 
     // Mirror production zed/src/main.rs's first-launch decision. Both
     // helpers internally call `Workspace::new_local` → `cx.open_window`,

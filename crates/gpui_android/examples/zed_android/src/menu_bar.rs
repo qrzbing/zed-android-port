@@ -17,7 +17,7 @@ use gpui::{
     Action, App, Context, Entity, Focusable, IntoElement, Render, WeakEntity, Window, actions,
 };
 use ui::prelude::*;
-use ui::{ContextMenu, PopoverMenu, PopoverMenuHandle, Tooltip};
+use ui::{ContextMenu, PopoverMenu, PopoverMenuHandle};
 use workspace::Workspace;
 
 actions!(
@@ -325,10 +325,6 @@ fn file_menu_items() -> Vec<MenuEntry> {
         MenuEntry::Action(
             "Add Folder to Project…",
             Box::new(workspace::AddFolderToProject),
-        ),
-        MenuEntry::Action(
-            "Import from sdcard…",
-            Box::new(crate::ImportFromSdcard),
         ),
         MenuEntry::Separator,
         MenuEntry::Action("Save", Box::new(workspace::Save { save_intent: None })),

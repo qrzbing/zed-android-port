@@ -23,6 +23,14 @@ class ZedApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         System.loadLibrary("zed_android")
-        File(filesDir, "home").mkdirs()
+        // Pre-create ~ AND ~/projects so:
+        //   1. ZedDocumentsProvider's SAF root is non-empty before the
+        //      bootstrap extractor runs (cold provider queries succeed
+        //      with at least one visible subfolder).
+        //   2. The noexec-banner Copy-to-projects dialog has a real
+        //      destination dir from the moment the user can interact —
+        //      no race with `storage::setup_user_symlinks` which mkdirs
+        //      the same path on the Rust side at android_main entry.
+        File(filesDir, "home/projects").mkdirs()
     }
 }

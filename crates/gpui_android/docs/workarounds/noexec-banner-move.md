@@ -1,7 +1,7 @@
-# Noexec banner with one-tap Move-to-local
+# Noexec banner with confirm-dialog Move-to-local
 
 **Status:** Active
-**Phase / Commit:** L3d
+**Phase / Commit:** L3d (initial), L9 (dialog + suppress)
 **Files:** `crates/gpui_android/examples/zed_android/src/title_bar.rs`, `crates/gpui_android/src/storage.rs`
 
 ## Problem
@@ -34,24 +34,49 @@ pub fn is_noexec_path(path: &Path) -> bool {
 }
 ```
 
-Render:
+Render is gated on **both** the noexec check AND the per-path suppression
+list — if either says skip, no banner. Click no longer copies straight
+away; it pops a Trust-style three-button confirmation modal:
 
 ```rust
 Button::new("zed-android-noexec-banner", "Builds won't run · Move")
-    .style(ButtonStyle::Tinted(TintColor::Warning))
-    .start_icon(Icon::new(IconName::Warning))
-    .tooltip(/* explanation */)
-    .on_click(move |_, _, cx| Self::start_move_to_local(click_path.clone(), cx))
+    .on_click(cx.listener(move |_, _, window, cx| {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Builds won't run on shared storage",
+            Some(&detail),
+            &["Copy to ~/projects", "Suppress this warning", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| match answer.await {
+            Ok(0) => { cx.update(|cx| Self::start_move_to_local(path, cx)); }
+            Ok(1) => {
+                gpui_android::storage::add_noexec_suppressed(&path);
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }
+            _ => {}
+        }).detach();
+    }))
 ```
 
-Click handler in `start_move_to_local`:
+- **Copy** path is the L3d-era flow: resolve `~/projects/<basename>` with
+  `-imported`/`-imported-N` suffixing, `cx.background_spawn`'d
+  `copy_tree`, then `MultiWorkspace::open_project(...Activate)`. New
+  worktree's root is exec-allowed, the banner re-checks `is_noexec_path`,
+  finds it false, and doesn't render.
+- **Suppress** writes the absolute path into
+  `~/.cache/zed-android/noexec-suppressed.json` and notifies the
+  TitleBar entity to redraw — banner vanishes for **this exact path**
+  forever (until the user deletes the JSON or the path goes away).
+  Per-path, not project-name-based, so import copies opened later still
+  warn if they happen to land on a noexec mount.
+- **Cancel** does nothing.
 
-1. Resolve `~/projects/<basename>` (with `-imported`/`-imported-N`
-   suffixing if it already exists).
-2. `cx.background_spawn` runs `gpui_android::storage::copy_tree(src, dst)`.
-3. On copy success, `MultiWorkspace::open_project(vec![dst], Activate, ...)`.
-4. The new project opens, the noexec check on its root returns false, the
-   banner doesn't render. User can build.
+The suppress list is a `Vec<String>` of absolute paths serialized via
+`serde_json` — same format used by other Zed preference files. Lives
+under `~/.cache/zed-android/` rather than `~/.config/` because it's a
+per-device cache (cross-device path duplication is unlikely and not
+worth syncing).
 
 ## Why this works
 
@@ -74,8 +99,12 @@ Click handler in `start_move_to_local`:
   the statvfs result if env var debug flag is set.
 - Move action fails partway → partial copy at destination, original
   untouched. User can retry or `rm -rf` the partial.
-- User has TERMUX__HOME unset (boot init failed) → start_move_to_local logs
-  error and returns without action.
+- User has TERMUX__HOME unset (boot init failed) → both
+  `start_move_to_local` and `add_noexec_suppressed` log an error and
+  return without action. Banner re-shows next launch.
+- Suppress JSON corrupted → `read_noexec_suppressed_list` returns empty
+  (`serde_json::from_str` fails silently into `unwrap_or_default`); banner
+  re-shows for all paths. User reapplies suppression.
 
 ## See also
 
