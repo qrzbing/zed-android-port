@@ -22,6 +22,13 @@ import com.google.androidgamesdk.GameActivity
 /// the same reason — `GameActivity` forwards `onActivityResult` correctly
 /// to its Java host, and we get the result without any of the registry
 /// gating.
+///
+/// Multi-window: this Activity hosts only the primary gpui window (the one
+/// backing `android_app.native_window()` on the Rust side via GameActivity).
+/// Every secondary `cx.open_window` is hosted by a separate
+/// [ExtraWindowActivity] launched via Intent, giving each window OS-managed
+/// freeform chrome on devices that support it. See `multi_window.rs` and
+/// `ExtraWindowActivity.kt`.
 class MainActivity : GameActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -10791,10 +10791,27 @@ pub fn with_active_or_new_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + 'static,
 ) {
-    match cx
+    // On Android, the active window can be an extra OS-chromed Activity
+    // (e.g. Settings or Project Settings) whose root view isn't a
+    // `MultiWorkspace`. Falling through to `open_new` from
+    // `with_active_or_new_workspace` would spawn a brand-new Workspace
+    // window for what's logically a modal in the existing one (theme
+    // picker, command palette, extension installer, etc.). On Android
+    // we always have exactly one Workspace alive, so prefer it as the
+    // host for the modal before falling back to `open_new`.
+    let active = cx
         .active_window()
-        .and_then(|w| w.downcast::<MultiWorkspace>())
-    {
+        .and_then(|w| w.downcast::<MultiWorkspace>());
+    let target = if cfg!(target_os = "android") {
+        active.or_else(|| {
+            cx.windows()
+                .into_iter()
+                .find_map(|w| w.downcast::<MultiWorkspace>())
+        })
+    } else {
+        active
+    };
+    match target {
         Some(multi_workspace) => {
             cx.defer(move |cx| {
                 multi_workspace

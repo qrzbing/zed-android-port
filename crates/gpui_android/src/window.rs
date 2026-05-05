@@ -3,7 +3,9 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
+use android_activity::AndroidApp;
 use anyhow::Result;
 use futures::channel::oneshot;
 use ndk::native_window::NativeWindow;
@@ -86,6 +88,20 @@ pub(crate) struct AndroidWindowState {
     /// but gpui's invalidator doesn't know that. The next paint must be
     /// forced; consumed by `refresh()` via `std::mem::take`.
     pub(crate) force_render_after_recovery: bool,
+    /// Set true by the platform's `OsClosed` drain handler when the
+    /// underlying `ExtraWindowActivity` has already destroyed (user clicked
+    /// the OS chrome X). `AndroidWindow::Drop` reads this to skip its
+    /// JNI `finishAndRemoveTask` call — the Activity is already gone, so
+    /// issuing the call would warn-log harmlessly. Lives on the state (in
+    /// the `Rc<RefCell>`) rather than on `AndroidWindow` itself so it
+    /// survives the `Box<dyn PlatformWindow>` drop and is reachable from the
+    /// drain handler via the platform's `extra_windows` map.
+    pub(crate) os_closed: AtomicBool,
+    /// Cheap clone (Arc internally) used by `AndroidWindow::Drop` to issue
+    /// `multi_window::finish_extra_activity` for extra windows. Always set
+    /// at construction time (both primary and extras carry it; primary just
+    /// never reaches the Drop branch that uses it).
+    pub(crate) android_app: AndroidApp,
 }
 
 #[derive(Clone)]
@@ -265,6 +281,23 @@ impl AndroidWindowStatePtr {
         }
     }
 
+    /// Fire the gpui-registered `on_active_status_change` callback. gpui
+    /// uses this to drive `cx.observe_window_activation` listeners — the
+    /// editor crate registers one of these in `Editor::new` (editor.rs:2618)
+    /// to enable the cursor blink animation when the window becomes active.
+    /// Our `is_active()` returns true at construction, but gpui only fires
+    /// the activation observers when this callback runs — so without
+    /// invoking it explicitly, the editor never calls
+    /// `BlinkManager::enable`, and the cursor renders statically until the
+    /// user's first input flips the path through `pause_blinking`.
+    pub(crate) fn notify_active_status_change(&self, active: bool) {
+        let callback = self.callbacks.borrow_mut().active_status_change.take();
+        if let Some(mut callback) = callback {
+            callback(active);
+            self.callbacks.borrow_mut().active_status_change = Some(callback);
+        }
+    }
+
     /// Dispatches a translated input event into gpui via the registered
     /// `on_input` callback, then routes printable `KeyDown`s through the
     /// active `PlatformInputHandler` (gpui's text-input path) when the
@@ -296,7 +329,18 @@ impl AndroidWindowStatePtr {
     }
 }
 
-pub(crate) struct AndroidWindow(pub(crate) AndroidWindowStatePtr);
+pub(crate) struct AndroidWindow {
+    pub(crate) ptr: AndroidWindowStatePtr,
+    /// `Some(window_id)` when this is an extra (multi-window) host backed
+    /// by an `ExtraWindowActivity`. `None` for the GameActivity-owned
+    /// primary window. On `Drop`, an extra window calls
+    /// `multi_window::finish_extra_activity` to ask the JVM to finish the
+    /// Activity (removing it from screen and Recents) — unless the
+    /// `os_closed` flag on state is already set, in which case the Activity
+    /// destroyed itself first (user clicked OS chrome X) and the JNI call
+    /// would warn-log harmlessly.
+    pub(crate) extra_window_id: Option<u64>,
+}
 
 impl AndroidWindow {
     pub(crate) fn new(
@@ -304,6 +348,7 @@ impl AndroidWindow {
         _params: WindowParams,
         gpu_context: GpuContext,
         appearance: WindowAppearance,
+        android_app: AndroidApp,
     ) -> Self {
         let display: Rc<dyn PlatformDisplay> = Rc::new(AndroidDisplay::new());
         let bounds = display.bounds();
@@ -323,22 +368,44 @@ impl AndroidWindow {
             gpu_context,
             native_window: None,
             force_render_after_recovery: false,
+            os_closed: AtomicBool::new(false),
+            android_app,
         };
 
-        Self(AndroidWindowStatePtr {
-            state: Rc::new(RefCell::new(state)),
-            callbacks: Rc::new(RefCell::new(Callbacks::default())),
-        })
+        Self {
+            ptr: AndroidWindowStatePtr {
+                state: Rc::new(RefCell::new(state)),
+                callbacks: Rc::new(RefCell::new(Callbacks::default())),
+            },
+            extra_window_id: None,
+        }
     }
 
     pub(crate) fn ptr(&self) -> AndroidWindowStatePtr {
-        self.0.clone()
+        self.ptr.clone()
+    }
+}
+
+impl Drop for AndroidWindow {
+    fn drop(&mut self) {
+        let Some(window_id) = self.extra_window_id else {
+            return;
+        };
+        let state = self.ptr.state.borrow();
+        if state.os_closed.load(std::sync::atomic::Ordering::SeqCst) {
+            // OS-initiated close already happened — Activity is gone, no
+            // need to issue another finish call.
+            return;
+        }
+        let android_app = state.android_app.clone();
+        drop(state);
+        crate::multi_window::finish_extra_activity(&android_app, window_id);
     }
 }
 
 impl rwh::HasWindowHandle for AndroidWindow {
     fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        let raw = self.0.state.borrow().raw_window;
+        let raw = self.ptr.state.borrow().raw_window;
         let Some(non_null) = NonNull::new(raw.native_window) else {
             return Err(rwh::HandleError::Unavailable);
         };
@@ -356,7 +423,7 @@ impl rwh::HasDisplayHandle for AndroidWindow {
 
 impl PlatformWindow for AndroidWindow {
     fn bounds(&self) -> Bounds<Pixels> {
-        self.0.state.borrow().bounds
+        self.ptr.state.borrow().bounds
     }
 
     fn is_maximized(&self) -> bool {
@@ -364,25 +431,25 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn window_bounds(&self) -> WindowBounds {
-        WindowBounds::Maximized(self.0.state.borrow().bounds)
+        WindowBounds::Maximized(self.ptr.state.borrow().bounds)
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        self.0.state.borrow().bounds.size
+        self.ptr.state.borrow().bounds.size
     }
 
     fn resize(&mut self, _size: Size<Pixels>) {}
 
     fn scale_factor(&self) -> f32 {
-        self.0.state.borrow().scale_factor
+        self.ptr.state.borrow().scale_factor
     }
 
     fn appearance(&self) -> WindowAppearance {
-        self.0.state.borrow().appearance
+        self.ptr.state.borrow().appearance
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        Some(self.0.state.borrow().display.clone())
+        Some(self.ptr.state.borrow().display.clone())
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
@@ -398,11 +465,11 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.0.state.borrow_mut().input_handler = Some(input_handler);
+        self.ptr.state.borrow_mut().input_handler = Some(input_handler);
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.0.state.borrow_mut().input_handler.take()
+        self.ptr.state.borrow_mut().input_handler.take()
     }
 
     fn prompt(
@@ -415,7 +482,19 @@ impl PlatformWindow for AndroidWindow {
         None
     }
 
-    fn activate(&self) {}
+    fn activate(&self) {
+        // Only meaningful for extra windows — primary GameActivity is
+        // always at the foreground of its task. settings_ui's
+        // existing-window dedup (settings_ui.rs:622) calls this after
+        // finding an open SettingsWindow; without it, tapping
+        // "Open Settings" again while Settings is already open silently
+        // no-ops (the existing window stays in the background).
+        let Some(window_id) = self.extra_window_id else {
+            return;
+        };
+        let android_app = self.ptr.state.borrow().android_app.clone();
+        crate::multi_window::activate_extra_activity(&android_app, window_id);
+    }
 
     fn is_active(&self) -> bool {
         true
@@ -426,10 +505,21 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        self.0.state.borrow().background_appearance
+        self.ptr.state.borrow().background_appearance
     }
 
-    fn set_title(&mut self, _title: &str) {}
+    fn set_title(&mut self, title: &str) {
+        // Only routes for extra windows (each `ExtraWindowActivity` carries
+        // OS chrome that displays the title). Primary GameActivity has no
+        // chrome under our setup, so a setTitle there would be invisible.
+        let state = self.ptr.state.borrow();
+        let Some(window_id) = self.extra_window_id else {
+            return;
+        };
+        let android_app = state.android_app.clone();
+        drop(state);
+        crate::multi_window::set_extra_activity_title(&android_app, window_id, title);
+    }
 
     fn set_background_appearance(&self, _bg: WindowBackgroundAppearance) {}
 
@@ -442,31 +532,31 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
-        self.0.callbacks.borrow_mut().request_frame = Some(callback);
+        self.ptr.callbacks.borrow_mut().request_frame = Some(callback);
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
-        self.0.callbacks.borrow_mut().input = Some(callback);
+        self.ptr.callbacks.borrow_mut().input = Some(callback);
     }
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
-        self.0.callbacks.borrow_mut().active_status_change = Some(callback);
+        self.ptr.callbacks.borrow_mut().active_status_change = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
-        self.0.callbacks.borrow_mut().hovered_status_change = Some(callback);
+        self.ptr.callbacks.borrow_mut().hovered_status_change = Some(callback);
     }
 
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
-        self.0.callbacks.borrow_mut().resize = Some(callback);
+        self.ptr.callbacks.borrow_mut().resize = Some(callback);
     }
 
     fn on_moved(&self, callback: Box<dyn FnMut()>) {
-        self.0.callbacks.borrow_mut().moved = Some(callback);
+        self.ptr.callbacks.borrow_mut().moved = Some(callback);
     }
 
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
-        self.0.callbacks.borrow_mut().should_close = Some(callback);
+        self.ptr.callbacks.borrow_mut().should_close = Some(callback);
     }
 
     fn on_hit_test_window_control(
@@ -476,15 +566,15 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_close(&self, callback: Box<dyn FnOnce()>) {
-        self.0.callbacks.borrow_mut().close = Some(callback);
+        self.ptr.callbacks.borrow_mut().close = Some(callback);
     }
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
-        self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
+        self.ptr.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
     fn draw(&self, scene: &Scene) {
-        let mut state = self.0.state.borrow_mut();
+        let mut state = self.ptr.state.borrow_mut();
         let raw_window = state.raw_window;
         let Some(renderer) = state.renderer.as_mut() else {
             return;
@@ -511,7 +601,7 @@ impl PlatformWindow for AndroidWindow {
         // `gpui::Window::new` calls this once during construction. `open_window`
         // blocks until `attach_surface` succeeds, so the renderer (and its atlas)
         // is always populated by the time gpui asks for it.
-        self.0
+        self.ptr
             .state
             .borrow()
             .renderer
@@ -526,7 +616,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.0
+        self.ptr
             .state
             .borrow()
             .renderer

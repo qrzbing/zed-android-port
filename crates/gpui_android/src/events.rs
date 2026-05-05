@@ -274,6 +274,74 @@ pub(crate) fn translate_motion_event(
     out
 }
 
+/// Java `MotionEvent.getActionMasked()` constants. We can't reuse
+/// `android_activity::input::MotionAction` because that enum's
+/// constructor is private — `MotionEvent`s authored from arbitrary JNI
+/// data only carry the integer.
+const JAVA_ACTION_DOWN: i32 = 0;
+const JAVA_ACTION_UP: i32 = 1;
+const JAVA_ACTION_MOVE: i32 = 2;
+const JAVA_ACTION_CANCEL: i32 = 3;
+const JAVA_ACTION_POINTER_DOWN: i32 = 5;
+const JAVA_ACTION_POINTER_UP: i32 = 6;
+
+/// Touch-translator for events arriving on extra `SurfaceView`s (i.e.
+/// secondary gpui windows hosted by `multi_window`). The primary path uses
+/// [`translate_motion_event`] which consumes android-activity's NDK-backed
+/// `MotionEvent`; this one takes the raw fields we marshal across the JNI
+/// boundary in `MainActivity.forwardTouchEvent`.
+///
+/// Intentionally simpler than the primary translator: single-finger only
+/// (DOWN→Left/UP→Left/MOVE with Left held). Multi-finger gestures
+/// (two-finger right-click, scroll) on extra windows aren't yet wired —
+/// the production Settings window is mostly tap+scroll-via-buttons so
+/// this is enough to drive it interactively.
+pub(crate) fn translate_extra_motion_event(
+    action_masked: i32,
+    _action_index: i32,
+    meta_state: i32,
+    _button_state: i32,
+    positions: &[(f32, f32, i32)],
+    scale_factor: f32,
+) -> MotionInputs {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let (raw_x, raw_y, _id) = positions[0];
+    let position = point(px(raw_x / scale_factor), px(raw_y / scale_factor));
+    let modifiers = modifiers_from_meta(MetaState(meta_state as u32));
+
+    let mut out = Vec::new();
+    match action_masked {
+        JAVA_ACTION_DOWN | JAVA_ACTION_POINTER_DOWN => {
+            out.push(PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }));
+        }
+        JAVA_ACTION_UP | JAVA_ACTION_POINTER_UP | JAVA_ACTION_CANCEL => {
+            out.push(PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }));
+        }
+        JAVA_ACTION_MOVE => {
+            out.push(PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers,
+            }));
+        }
+        _ => {}
+    }
+    out
+}
+
 fn modifiers_from_meta(meta: MetaState) -> Modifiers {
     Modifiers {
         shift: meta.shift_on(),

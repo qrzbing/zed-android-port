@@ -12,10 +12,11 @@ use ndk::configuration::UiModeNight;
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
-    ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow,
-    PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance, WindowParams,
+    Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
+    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Pixels,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    PlatformWindow, PriorityQueueReceiver, RunnableVariant, Task, ThermalState, WindowAppearance,
+    WindowParams,
 };
 use gpui_wgpu::GpuContext;
 
@@ -104,10 +105,19 @@ pub(crate) struct AndroidCommon {
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) active_window: Option<AnyWindowHandle>,
     pub(crate) gpu_context: GpuContext,
-    /// The single live AndroidWindow. Android only supports one window per
-    /// activity for our purposes; lifecycle events from the run loop are
-    /// dispatched to whatever's stored here.
+    /// The GameActivity-owned primary window. First `cx.open_window` lands
+    /// here; subsequent calls go to [`extra_windows`].
     pub(crate) window: Option<AndroidWindowStatePtr>,
+    /// Secondary `cx.open_window` results, keyed by `WindowId::as_u64()`.
+    /// Each is hosted in its own `ExtraWindowActivity`; the OS owns the
+    /// chrome and routes touch/keyboard input straight to that Activity's
+    /// `SurfaceView`. We just need the state ptr to dispatch resize and
+    /// motion events delivered through the `extra_event_rx` channel.
+    pub(crate) extra_windows: std::collections::HashMap<u64, AndroidWindowStatePtr>,
+    /// Receiver side of the JNI → game-thread channel for extra-window
+    /// events. Drained each iteration of the platform run loop. `Some`
+    /// from `AndroidCommon::new` until the loop terminates.
+    pub(crate) extra_event_rx: Option<futures::channel::mpsc::UnboundedReceiver<crate::multi_window::ExtraWindowEvent>>,
     pub(crate) running: bool,
 }
 
@@ -130,6 +140,8 @@ impl AndroidCommon {
             active_window: None,
             gpu_context: Rc::new(RefCell::new(None)),
             window: None,
+            extra_windows: std::collections::HashMap::new(),
+            extra_event_rx: Some(crate::multi_window::init_event_channel()),
             running: true,
         }
     }
@@ -156,6 +168,40 @@ impl AndroidPlatform {
         }
     }
 
+    /// Translate the gpui-side `WindowParams.bounds` (in logical pixels at
+    /// the primary's scale factor) into device-pixel `Rect` coordinates the
+    /// OS will use as the freeform window's initial size and position. Falls
+    /// back to `None` (let the OS pick) if either the requested size is
+    /// nonsense or we can't read screen dimensions.
+    fn compute_launch_bounds(
+        &self,
+        bounds: &Bounds<Pixels>,
+        scale_factor: f32,
+    ) -> Option<crate::multi_window::LaunchBounds> {
+        let width_px = (bounds.size.width.as_f32() * scale_factor).round() as i32;
+        let height_px = (bounds.size.height.as_f32() * scale_factor).round() as i32;
+        if width_px <= 0 || height_px <= 0 {
+            return None;
+        }
+        let nw = self.android_app.native_window()?;
+        let screen_w = nw.width() as i32;
+        let screen_h = nw.height() as i32;
+        if screen_w <= 0 || screen_h <= 0 {
+            return None;
+        }
+        // Center the window on screen by default. Caller-supplied origin is
+        // ignored for now — gpui's WindowParams.bounds.origin is meaningless
+        // on Android (no window manager coordinate space prior to L7e).
+        let left = ((screen_w - width_px) / 2).max(0);
+        let top = ((screen_h - height_px) / 2).max(0);
+        Some(crate::multi_window::LaunchBounds {
+            left,
+            top,
+            right: left + width_px,
+            bottom: top + height_px,
+        })
+    }
+
     /// Read the device's display density and convert to a scale factor.
     /// Android reports density in dpi where 160 dpi = 1.0x. Tab S9 Ultra
     /// reports ~336 dpi (~2.1x). Falls back to 1.0 if the density isn't yet
@@ -167,14 +213,210 @@ impl AndroidPlatform {
         }
     }
 
+    /// Branch of [`open_window`](Self::open_window) for the second-and-beyond
+    /// `cx.open_window` call. Launches an `ExtraWindowActivity` via JNI Intent,
+    /// waits up to 500ms for its `surfaceCreated` callback, then wraps the
+    /// resulting `ANativeWindow` in a new `AndroidWindow`. The OS owns the
+    /// chrome and routes touch/lifecycle events to that Activity's
+    /// `SurfaceView`; events flow through `drain_extra_window_events`.
+    ///
+    /// `options.bounds` is informational only — actual placement is
+    /// controlled by the OS window manager (or by ActivityOptions launch
+    /// bounds, deferred to L7e).
+    fn open_extra_window(
+        &self,
+        handle: AnyWindowHandle,
+        options: WindowParams,
+    ) -> Result<Box<dyn PlatformWindow>> {
+        let scale_factor = self.compute_scale_factor();
+        let window_id = handle.window_id().as_u64();
+        let launch_bounds = self.compute_launch_bounds(&options.bounds, scale_factor);
+        log::info!(
+            "open_extra_window: windowId={window_id} launching ExtraWindowActivity bounds={launch_bounds:?}"
+        );
+
+        // Mark the window as known BEFORE launching the Activity. If we
+        // marked it later (e.g. after `attach_surface`), the Activity's
+        // `onCreate` would race ahead and call `nativeIsExtraWindowKnown`
+        // before the mark — getting a false negative and finishing itself
+        // prematurely. The `unmark_window_registered` calls below cover the
+        // failure paths.
+        crate::multi_window::mark_window_registered(window_id);
+
+        let native_window = match crate::multi_window::create_extra_window_blocking(
+            &self.android_app,
+            window_id,
+            launch_bounds,
+        ) {
+            Ok(nw) => nw,
+            Err(err) => {
+                crate::multi_window::unmark_window_registered(window_id);
+                return Err(err);
+            }
+        };
+
+        let appearance = self.common.borrow().appearance;
+        let gpu_context = self.common.borrow().gpu_context.clone();
+        let mut window =
+            AndroidWindow::new(handle, options, gpu_context, appearance, self.android_app.clone());
+        window.extra_window_id = Some(window_id);
+        if let Err(err) = window.ptr().attach_surface(native_window, scale_factor) {
+            crate::multi_window::unmark_window_registered(window_id);
+            return Err(err);
+        }
+
+        {
+            let mut common = self.common.borrow_mut();
+            common.extra_windows.insert(window_id, window.ptr());
+            common.active_window = Some(handle);
+        }
+        // Fire the activation observers so the editor's
+        // `cx.observe_window_activation` callback runs and enables cursor
+        // blink (and any other activation-gated state). Our `is_active()`
+        // returns true at construction, but gpui's observer machinery only
+        // fires when the platform calls the active-status-change callback;
+        // without this, the search field's cursor renders statically until
+        // the user's first input. See `blink_manager.rs` and `editor.rs`'s
+        // `cx.observe_window_activation` registration.
+        //
+        // Must defer to a later tick: gpui registers the
+        // `on_active_status_change` callback inside `Window::new`, which
+        // runs AFTER our `open_extra_window` returns. Firing synchronously
+        // here would no-op against an empty callback slot.
+        let executor = self.common.borrow().foreground_executor.clone();
+        let window_ptr = window.ptr();
+        executor
+            .spawn(async move {
+                window_ptr.notify_active_status_change(true);
+            })
+            .detach();
+        Ok(Box::new(window))
+    }
+
+    /// Pull JNI-originated extra-window events off the channel and dispatch
+    /// to the matching `AndroidWindowStatePtr`. Called once per iteration of
+    /// the platform's main loop.
+    fn drain_extra_window_events(&self) {
+        use crate::multi_window::ExtraWindowEvent;
+
+        let mut rx = match self.common.borrow_mut().extra_event_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                ExtraWindowEvent::Resized {
+                    window_id,
+                    width,
+                    height,
+                } => {
+                    let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
+                    if let Some(state) = entry {
+                        let scale = state.state.borrow().scale_factor;
+                        state.resize_surface(width, height, scale);
+                    } else {
+                        log::warn!(
+                            "drain_extra_window_events: Resized for unknown windowId={window_id}"
+                        );
+                    }
+                }
+                ExtraWindowEvent::SurfaceDestroyed { window_id } => {
+                    let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
+                    if let Some(state) = entry {
+                        state.detach_surface();
+                    }
+                }
+                ExtraWindowEvent::OsClosed { window_id } => {
+                    // OS-initiated close (user clicked chrome X). Set the
+                    // os_closed flag so AndroidWindow::Drop will skip its
+                    // JNI finishActivity call (Activity is already gone),
+                    // then fire the gpui-registered `on_close` callback.
+                    // gpui's callback drives `Window::remove_window()`, which
+                    // in turn drops our `Box<dyn PlatformWindow>` and
+                    // ultimately reaps the `extra_windows` map entry.
+                    let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
+                    let Some(state) = entry else {
+                        log::info!(
+                            "drain_extra_window_events: OsClosed for already-removed windowId={window_id}"
+                        );
+                        crate::multi_window::unmark_window_registered(window_id);
+                        continue;
+                    };
+                    state.state.borrow().os_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let close_cb = state.callbacks.borrow_mut().close.take();
+                    if let Some(cb) = close_cb {
+                        log::info!(
+                            "drain_extra_window_events: OsClosed windowId={window_id} → invoking gpui on_close"
+                        );
+                        cb();
+                    } else {
+                        // No callback registered — gpui never wired one. Tear
+                        // down the platform-side state directly so we don't
+                        // leak.
+                        log::warn!(
+                            "drain_extra_window_events: OsClosed windowId={window_id} but no on_close registered"
+                        );
+                        let mut common = self.common.borrow_mut();
+                        common.extra_windows.remove(&window_id);
+                        if common
+                            .active_window
+                            .as_ref()
+                            .is_some_and(|h| h.window_id().as_u64() == window_id)
+                        {
+                            common.active_window = None;
+                        }
+                    }
+                    crate::multi_window::unmark_window_registered(window_id);
+                }
+                ExtraWindowEvent::Motion {
+                    window_id,
+                    action_masked,
+                    action_index,
+                    meta_state,
+                    button_state,
+                    event_time_millis: _,
+                    positions,
+                } => {
+                    let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
+                    let Some(state) = entry else {
+                        log::warn!(
+                            "drain_extra_window_events: Motion for unknown windowId={window_id}"
+                        );
+                        continue;
+                    };
+                    let scale = state.state.borrow().scale_factor;
+                    let inputs = crate::events::translate_extra_motion_event(
+                        action_masked,
+                        action_index,
+                        meta_state,
+                        button_state,
+                        &positions,
+                        scale,
+                    );
+                    for input in inputs {
+                        state.handle_input(input);
+                    }
+                }
+            }
+        }
+
+        self.common.borrow_mut().extra_event_rx = Some(rx);
+    }
+
     /// Pull every queued `InputEvent` off android-activity's iterator and
-    /// route translatable ones into the active gpui window. Returning
+    /// route translatable ones into the primary gpui window. Returning
     /// `InputStatus::Handled` for our own events lets android-activity stop
-    /// propagating them up the system input stack (e.g. so a keyboard ENTER
-    /// doesn't also dismiss the keyboard).
+    /// propagating them up the system input stack.
+    ///
+    /// Extra-window inputs are NOT routed here — each `ExtraWindowActivity`
+    /// has its own input pipeline (`OnTouchListener` + `OnKeyListener`) that
+    /// JNIs into `multi_window` directly via `NativeBridge`. This loop only
+    /// concerns events that GameActivity's native input queue receives,
+    /// which is the primary surface alone.
     fn drain_input_events(&self) {
-        use android_activity::input::InputEvent;
         use android_activity::InputStatus;
+        use android_activity::input::InputEvent;
 
         let Some(window_ptr) = self.common.borrow().window.clone() else {
             return;
@@ -336,6 +578,9 @@ impl Platform for AndroidPlatform {
             // stall touch.
             self.drain_input_events();
 
+            // Drain JNI-side extra-window lifecycle / touch events.
+            self.drain_extra_window_events();
+
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have
             // changed state. gpui's window.refresh() short-circuits
@@ -343,7 +588,17 @@ impl Platform for AndroidPlatform {
             // cheap; gating on FRAME_PENDING saves the dirty-bit check
             // when we know nothing's happened.
             if FRAME_PENDING.swap(false, Ordering::AcqRel) {
-                if let Some(window_ptr) = self.common.borrow().window.clone() {
+                let (primary, extras) = {
+                    let common = self.common.borrow();
+                    (
+                        common.window.clone(),
+                        common.extra_windows.values().cloned().collect::<Vec<_>>(),
+                    )
+                };
+                if let Some(window_ptr) = primary {
+                    window_ptr.refresh();
+                }
+                for window_ptr in extras {
                     window_ptr.refresh();
                 }
             }
@@ -387,18 +642,9 @@ impl Platform for AndroidPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        // Android only supports one window. The second `cx.open_window` call
-        // (e.g. `workspace::open_paths` falling through to `Workspace::new_local`
-        // when there's no existing target) tries to create another VkSurfaceKHR
-        // for the same `ANativeWindow` and panics with
-        // `ERROR_NATIVE_WINDOW_IN_USE_KHR`. Fail cleanly so the caller's
-        // `.log_err()` reports it instead of taking the process down.
-        if self.common.borrow().window.is_some() {
-            return Err(anyhow::anyhow!(
-                "open_window: gpui_android only supports a single window; \
-                 callers should reuse the active window via `requesting_window` \
-                 (and `add_dirs_to_sidebar` / `should_reuse_existing_window`)"
-            ));
+        let primary_present = self.common.borrow().window.is_some();
+        if primary_present {
+            return self.open_extra_window(handle, options);
         }
 
         // gpui's `Window::new` calls `platform_window.sprite_atlas()` immediately,
@@ -435,7 +681,8 @@ impl Platform for AndroidPlatform {
 
         let appearance = self.common.borrow().appearance;
         let gpu_context = self.common.borrow().gpu_context.clone();
-        let window = AndroidWindow::new(handle, options, gpu_context, appearance);
+        let window =
+            AndroidWindow::new(handle, options, gpu_context, appearance, self.android_app.clone());
 
         let native_window = self.android_app.native_window().ok_or_else(|| {
             anyhow::anyhow!("open_window: native_window vanished between poll and attach")

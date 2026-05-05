@@ -20,14 +20,26 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
 
     <application
+        android:name=".ZedApplication"
         android:label="zed_android"
         android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:hasCode="true">
+        android:hasCode="true"
+        android:appCategory="productivity"
+        android:resizeableActivity="true">
 
+        <!--
+          Exhaustive configChanges: in freeform / desktop windowing mode every
+          drag-resize fires a config change, which by default destroys+recreates
+          the Activity (breaking our gpui Window mid-resize). Declaring every
+          relevant config tells the OS to deliver onConfigurationChanged()
+          instead. density+colorMode handle cross-display moves; fontScale +
+          fontWeightAdjustment handle accessibility setting changes;
+          layoutDirection handles RTL toggle. Verbose but cheap.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode|density">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="zed_android"/>
@@ -36,5 +48,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!--
+          Each cx.open_window beyond the primary spawns one of these.
+          documentLaunchMode="always" implies FLAG_ACTIVITY_NEW_DOCUMENT |
+          FLAG_ACTIVITY_MULTIPLE_TASK, so each open is a fresh task with its
+          own Recents card and (in freeform mode) its own OS-chromed window.
+          taskAffinity differentiates from MainActivity's task. exported=false
+          because only our own Rust code launches it (via JNI Intent).
+        -->
+        <activity
+            android:name=".ExtraWindowActivity"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:documentLaunchMode="always"
+            android:taskAffinity="dev.zed.zed_android.extra"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen"/>
     </application>
 </manifest>

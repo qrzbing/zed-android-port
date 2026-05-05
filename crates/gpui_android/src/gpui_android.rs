@@ -8,6 +8,7 @@ mod display;
 pub mod dns_bridge;
 mod events;
 mod keyboard;
+mod multi_window;
 mod platform;
 mod saf;
 pub mod storage;
