@@ -321,6 +321,13 @@ fn file_menu_items() -> Vec<MenuEntry> {
                 create_new_window: false,
             }),
         ),
+        MenuEntry::Action(
+            "Open Remote…",
+            Box::new(zed_actions::OpenRemote {
+                from_existing_connection: false,
+                create_new_window: false,
+            }),
+        ),
         MenuEntry::Separator,
         MenuEntry::Action(
             "Add Folder to Project…",
