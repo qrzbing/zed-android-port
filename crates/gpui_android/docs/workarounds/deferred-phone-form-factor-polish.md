@@ -73,6 +73,73 @@ If real users hit any of these and report:
    sitting at the back of the queue because hardware keyboards
    cover all our test paths.
 
+## Samsung Book Cover Keyboard trackpad: two-finger scroll
+unsupported in non-DeX mode
+
+The Galaxy Tab S9 Ultra's Book Cover Keyboard ships with a built-in
+trackpad. In **DeX desktop mode** the trackpad fires standard
+multi-finger gestures (two-finger swipe → `ACTION_SCROLL`). In
+**regular tablet mode** (which is the default Zed launches into),
+Samsung's trackpad driver treats the trackpad as a single-finger
+mouse pointer device — `pointer_count` is always 1 regardless of
+how many fingers the user puts down, and `ACTION_SCROLL` is never
+synthesized for trackpad gestures.
+
+Verified by:
+
+1. Logcat trace of `MotionEvent` shape on the gesture: 16
+   consecutive `ACTION_HOVER_MOVE` events with `pointer_count=1`,
+   `source=0x2002` (`SOURCE_MOUSE`), and relative-motion deltas in
+   `AXIS_RELATIVE_X` / `AXIS_RELATIVE_Y` — but no `ACTION_SCROLL`.
+2. Settings → Connected devices → Mouse and trackpad on Tab S9
+   in tablet mode exposes only "Pointer speed", "Wheel scrolling
+   speed", "Enhance pointer precision", and mouse-button mapping.
+   No "Two-finger scroll" toggle, no "Touchpad gestures" section.
+   DeX mode exposes the full gesture set.
+
+What we already do for it: ExtraWindowActivity's SurfaceView is a
+`ScrollableSurfaceView` subclass that returns `true` from
+`canScrollVertically` / `canScrollHorizontally`. That makes
+Android's input dispatcher *try* to convert trackpad gestures into
+`ACTION_SCROLL`. On stock Pixel / Lenovo / etc. trackpads this is
+likely to succeed because their drivers expose multi-finger
+gestures; on Samsung Book Cover it doesn't help because the
+gesture never reaches the dispatcher as multi-pointer in the
+first place. The override is still net-positive — without it the
+gesture arrives as a fake `Down(button=0) → Move ×N → Up` drag,
+which gpui interprets as click-and-drag selection. With it the
+gesture arrives as `HoverMove ×N`, which gpui correctly treats as
+"cursor hovering" (no destructive selection effect, just cursor
+movement on screen).
+
+Working scroll inputs on Samsung tablets:
+
+- Mouse wheel (USB / Bluetooth mouse) — `ACTION_SCROLL` with
+  `AXIS_VSCROLL` / `AXIS_HSCROLL` set, fires through the `Scroll`
+  arm in `translate_motion_event` /
+  `translate_extra_motion_event`.
+- Drag the scrollbar thumb — works wherever the production
+  scrollbar autohide state machine surfaces a thumb to grab.
+- Switch to DeX mode — Samsung exposes proper trackpad gesture
+  recognition there.
+- Bluetooth-paired external trackpad with native multi-touch (Apple
+  Magic Trackpad via dongle, Logitech Pebble Pro, etc.) — the
+  device exposes its own gesture recognition; `ACTION_SCROLL`
+  fires.
+
+Fix-it-later approaches if a Samsung-tablet user with no mouse
+hits this:
+
+1. **Pointer capture** (`view.requestPointerCapture()`) — gives
+   us raw `AXIS_RELATIVE_X` / `AXIS_RELATIVE_Y` deltas and we
+   could synthesize `ScrollWheelEvent` from them. Cost: makes the
+   system mouse cursor invisible; we'd have to render our own.
+2. **Synthesize scroll from `HoverMove` deltas when over a
+   scrollable region** — would require gpui to expose "is the
+   point under the cursor scrollable", which it doesn't currently.
+3. **Detect Samsung firmware at boot, surface a one-time banner
+   pointing users at DeX mode** — feels patronizing, low signal.
+
 ## See also
 
 - [deferred-soft-keyboard.md](deferred-soft-keyboard.md) — the
