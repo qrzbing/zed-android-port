@@ -609,7 +609,22 @@ impl AutoUpdater {
         };
         let http_client = client.http_client();
 
-        let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
+        // Zed's release API rejects "dev" as a channel name (Dev is the
+        // developer-build channel, no public releases). On Android the
+        // ReleaseChannel global is always Dev for our custom local
+        // build, but our APK still wants to hit the Nightly CDN to
+        // download a remote_server binary — same shape as the static
+        // funnel in `crates/remote/src/transport/ssh.rs` for the
+        // `ReleaseChannel::Dev if cfg!(target_os = "android")` arm.
+        // Substitute Nightly's name here so the URL resolves; everything
+        // else (data dir namespace, telemetry channel, app update
+        // disable) stays at Dev.
+        let cdn_channel = if cfg!(target_os = "android") && release_channel == ReleaseChannel::Dev {
+            ReleaseChannel::Nightly.dev_name()
+        } else {
+            release_channel.dev_name()
+        };
+        let path = format!("/releases/{}/{}/asset", cdn_channel, version,);
         let url = http_client.build_zed_cloud_url_with_query(
             &path,
             AssetQuery {

@@ -7,6 +7,7 @@ from Tab S9 Ultra; Zed protocol, file tree, terminal, file ops all flow)
 - `crates/gpui_android/examples/zed_android/src/lib.rs`
 - `crates/gpui_android/examples/zed_android/Cargo.toml`
 - `crates/remote/src/transport/ssh.rs`
+- `crates/auto_update/src/auto_update.rs`
 
 ## The one-line summary
 
@@ -85,6 +86,28 @@ before they reach the `exec env` invocation. Strip:
 `CURL_CA_BUNDLE`, anything starting with `TERMUX__` or `TERMUX_APP__`.
 Generic dev env (NVM_DIR, PYENV_ROOT, RUSTUP_HOME, etc.) keeps
 forwarding so non-Android Zed clients aren't regressed.
+
+### F. `failed to fetch release: "invalid channel: dev"`
+
+Path: `crates/auto_update/src/auto_update.rs:612` (CDN URL builder for
+the remote_server asset). After (B) returns `Ok(None)` on Android-Dev,
+the SSH transport falls through to the CDN download path. The URL is
+built as `/releases/{release_channel.dev_name()}/{version}/asset` —
+which interpolates to `/releases/dev/X.Y.Z/asset`. Zed's release CDN
+only accepts `stable` / `preview` / `nightly` and returns the quoted
+error for anything else. The `Dev` channel was never meant to hit the
+CDN at all (gated by the bail in (B)) — our static-funnel patch
+unblocks (B) but doesn't change the channel name plumbed into the URL.
+
+Fix (second leg of the static funnel): substitute
+`ReleaseChannel::Nightly.dev_name()` for `release_channel.dev_name()`
+at the URL assembly site, only when `cfg!(target_os = "android")` and
+`release_channel == ReleaseChannel::Dev`. Other call sites of
+`dev_name()` in `auto_update.rs` (line 313 self-update URL, line 532
+local-cache directory, line 986 telemetry) don't need the swap —
+self-update polling is suppressed by `ZED_UPDATE_EXPLANATION`, the
+local cache directory name is internal, and telemetry should record
+the actual channel.
 
 ### E. (Pre-existing) Open Remote args needed for libtermux-auth's broken HOME
 
