@@ -82,6 +82,7 @@ theme = { path = "../../../theme" }
 theme_settings = { path = "../../../theme_settings" }
 ui = { path = "../../../ui" }
 menu = { path = "../../../menu" }
+auto_update = { path = "../../../auto_update" }
 
 # Debug builds embed unwind/DWARF tables that overflow llvm-strip's ELF
 # parser at our binary size (2GB+). Drop debug info on Android — backtraces

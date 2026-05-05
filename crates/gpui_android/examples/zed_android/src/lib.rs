@@ -96,6 +96,53 @@ fn android_main(app: AndroidApp) {
             std::env::set_var("TERM", "xterm-256color");
             std::env::set_var("LANG", "en_US.UTF-8");
             std::env::set_var("COLORTERM", "truecolor");
+            // Disable the remote-server source-build fallback in
+            // `crates/remote/src/transport.rs::build_remote_server_from_source`
+            // unconditionally on Android. The fallback fires when Zed can't
+            // find a prebuilt remote_server binary for the target triple
+            // (typical for any locally-built / non-release-channel client),
+            // and tries to cross-compile the binary on the CLIENT — which
+            // means rustup + zig + cargo-zigbuild + a glibc-target rustup
+            // component on the device. None of that is reasonably available
+            // inside Termux on bionic Android, and even if we shipped them
+            // the cross-compile from aarch64-linux-android to
+            // x86_64-unknown-linux-gnu (or whatever the remote runs) is a
+            // multi-component lift. Setting `never` here forces Zed to use
+            // the standard CDN-or-existing-on-remote path that production
+            // clients use; users hitting a remote without a cached binary
+            // either let Zed download from the CDN or pre-stage the binary
+            // at `~/.cache/zed/remote_server` on the remote host themselves.
+            std::env::set_var("ZED_BUILD_REMOTE_SERVER", "never");
+            // Termux's bootstrap sets LD_PRELOAD=$PREFIX/lib/libtermux-exec.so
+            // for its bash subprocesses (so exec() of Android-incompatible
+            // shebangs gets shimmed). On Android this is fine — local
+            // Termux subprocesses re-source `profile.d/termux-exec.sh` at
+            // bash startup and re-set LD_PRELOAD themselves where they need
+            // it. But our gpui app process inherits LD_PRELOAD from the
+            // shell that launched it (or has it set explicitly elsewhere),
+            // and when Zed's remote SSH subprocess inherits + propagates it
+            // (either via OpenSSH's `SendEnv` or via the remote_server's
+            // own env channel), the remote shell on every connection ends
+            // up trying to dlopen our local Android-only path. ld.so on the
+            // remote (typically glibc on Linux) prints `ld.so: object …
+            // libtermux-exec.so from LD_PRELOAD cannot be preloaded:
+            // ignored.` to stderr for every command. Non-fatal but turns
+            // every remote-terminal session into a wall of spam. Clearing
+            // it from the gpui app's env at boot keeps ssh subprocesses
+            // clean while local Termux shells still get their shim via the
+            // bash profile.
+            std::env::remove_var("LD_PRELOAD");
+            // Run as Nightly channel so the SSH transport's Dev-channel
+            // hard-bail at `crates/remote/src/transport/ssh.rs:850-855`
+            // ("ZED_BUILD_REMOTE_SERVER is not set and no remote server
+            // exists at …") doesn't fire. Nightly's branch returns
+            // `wanted_version = None`, which lets Zed download the
+            // latest-on-CDN remote_server without pinning a specific
+            // version — appropriate for our locally-built client whose
+            // version doesn't match anything published. Stable / Preview
+            // would require a strict version match against the global
+            // AppVersion which we don't ship to a release CDN.
+            std::env::set_var("ZED_RELEASE_CHANNEL", "nightly");
             // Point HTTPS-using subprocesses (cargo, npm, curl, …) at
             // Termux's pre-shipped CA bundle. Without this, rust-
             // analyzer's `cargo metadata` dies with "unable to get
@@ -284,6 +331,28 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
 
     let client = Client::production(cx);
     info!("zed_android: Client::production constructed (id={})", client.id());
+
+    // Initialize auto_update so the remote_server CDN-fetch path can
+    // resolve the right binary URL via `GlobalAutoUpdate`. The
+    // remote/transport.rs flow at `auto_update.rs:516` reads this
+    // global to know which `zed-remote-server` asset to fetch from
+    // GitHub releases; without it, every Open Remote attempt hard-bails
+    // with "auto-update not initialized" before any download starts.
+    //
+    // We deliberately set `ZED_UPDATE_EXPLANATION` ahead of `init` so
+    // the polling subscription (auto_update.rs:248-262) is suppressed —
+    // we DO NOT want Zed periodically self-updating the APK at runtime
+    // (Android distribution = user reinstalls the APK, not in-app
+    // update). The explanation string is shown if the user manually
+    // hits "Check for updates", redirecting them to reinstall.
+    unsafe {
+        std::env::set_var(
+            "ZED_UPDATE_EXPLANATION",
+            "Updates ship via the APK; reinstall to upgrade.",
+        );
+    }
+    auto_update::init(client.clone(), cx);
+    info!("zed_android: auto_update::init complete (polling suppressed)");
 
     let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
     let workspace_store = cx.new(|cx| WorkspaceStore::new(client.clone(), cx));
