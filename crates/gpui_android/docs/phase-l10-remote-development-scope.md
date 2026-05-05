@@ -56,30 +56,61 @@ the gpui_android platform layer.
 
 ## What's missing / needs work
 
-### L10a — OpenSSH not in default Termux bootstrap
+### L10a — Bake openssh into the rebuilt bootstrap
 
 `/data/data/dev.zed.zed_android/files/usr/bin/ssh` doesn't exist on a
 fresh install. Termux ships OpenSSH as the `openssh` apt package, not
-as part of the base bootstrap. Until that's installed, the SSH
-subprocess spawn fails with `ENOENT`.
+the base bootstrap, and `apt install openssh` from a running Zed
+session pulls the upstream Termux deb which has
+`/data/data/com.termux/files/...` paths baked into its binaries' rodata
+(notably `libtermux-auth.so` which provides the `getpwnam` shim that
+ssh-keygen consults for the default key path). Patchelf fixes the
+ELF dynlinker metadata (RUNPATH, interp), but it can't rewrite
+in-binary string literals — and the paths differ in length
+(`/data/data/com.termux/files` = 27 chars vs `/data/data/dev.zed.zed_android/files`
+= 36 chars), so an in-place hex-patch can't substitute either.
 
-Three fixes, in order of effort:
+Three fixes considered:
 
-1. **Document and let users install manually** (`apt install
-   openssh` from Zed's terminal). 0 LOC. Bad UX for a flagship
-   feature; user has to know to do this.
-2. **Auto-install on first OpenRemote action invocation.** Detect
-   `which("ssh")` at OpenRemote action time; if missing, run
-   `apt install openssh` in the background, then proceed.
-   Reasonable middle ground.
-3. **Re-pack `termux-bootstrap.zip` to include openssh.** Modify
-   the build pipeline that generates the bootstrap (currently
-   sourced from upstream Termux) to install openssh during the
-   pre-pack apt-cache stage. Cleanest UX, requires touching the
-   bootstrap-build tooling.
+1. ~~Auto-install at first OpenRemote invocation~~ — pulls the
+   upstream-baked deb anyway. Same path-baked-in problem.
+2. **Bake openssh into the bootstrap rebuild on the Vultr
+   instance.** Same path L2a / `termux-bootstrap-rebuild.md`
+   already takes for git, curl, and the rest of the prebundled
+   userland: rebuild openssh's deb against our package-name
+   substitution before packing into `termux-bootstrap.zip`. ssh,
+   scp, sftp, ssh-keygen, sshd, and `libtermux-auth.so` all ship
+   with `/data/data/dev.zed.zed_android/files/...` baked correctly
+   from the start. No runtime patching, no Magisk root, no
+   per-process mount namespace gymnastics.
+3. ~~Symlink `/data/data/com.termux` → ours, or
+   namespace-bind-mount~~ — requires Magisk root, conflicts with
+   real Termux being installed alongside our app, and only fixes
+   things at runtime per binary. Decisively worse than baking it
+   in.
 
-Recommend (2) for ship — same install-on-first-use pattern Zed
-already uses for tools like `npm` / `cargo`.
+**Path forward: option (2).** Add `openssh` (+ its libtermux-auth
+dep) to the bootstrap-rebuild package list on the Vultr
+instance. Re-pack. Ship the bigger `termux-bootstrap.zip`. Same
+mechanism that gave us git, npm, claude-code, etc. with paths
+substituted at build time.
+
+### L10a-tmp — Temporary user workaround (until next bootstrap ship)
+
+If a tester needs to validate the rest of the L10 connection flow
+before the rebuilt bootstrap lands:
+
+```sh
+apt install openssh
+$PREFIX/etc/apt/zed-launcher-gen.sh   # patchelf RUNPATH
+mkdir -p ~/.ssh
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
+```
+
+The explicit `-f` arg sidesteps libtermux-auth's hardcoded default
+(which still says `/data/data/com.termux/files/home/...`). Once
+the Vultr-rebuilt bootstrap lands, the `-f` arg is no longer
+necessary — defaults resolve to our home cleanly.
 
 ### L10b — Test connection flow on device
 
@@ -121,23 +152,22 @@ our side.
 
 ## Phase plan
 
-**L10a** Auto-install OpenSSH on first OpenRemote action invocation
-  (detect `which("ssh")`, prompt user, run `apt install openssh -y`
-  in a background terminal). ~50 LOC in lib.rs / a new helper
-  module. Defer until L10b proves out the rest.
+**L10a** Bake openssh into the bootstrap rebuild on the Vultr
+  instance. Add `openssh` (+ `libtermux-auth.so` already pulled in
+  transitively) to the package list, re-substitute paths,
+  re-pack `termux-bootstrap.zip`. First-launch users get ssh /
+  scp / sftp / ssh-keygen / sshd ready to use with our package
+  paths baked correctly. Tracking inflight on the rebuild server.
 
 **L10b** Build + install + test the connection flow end-to-end
-  against a real remote SSH host. Watch for runtime panics, missing
-  binaries, env var gaps. (DONE on the build side; needs the user
-  on a device with `apt install openssh` already run.)
+  against a real remote SSH host. (Build side DONE; runtime
+  needs a device with the rebuilt bootstrap, OR the L10a-tmp
+  workaround applied for early validation.)
 
 **L10c** Document common error modes and recovery in
   `crates/gpui_android/docs/workarounds/remote-development-on-android.md`.
 
-**L10d** (optional) Re-pack `termux-bootstrap.zip` to include
-  openssh by default, so first-launch ships ready-to-remote.
-
-**L10e** (optional) Detect Android background lifecycle and
+**L10d** (optional) Detect Android background lifecycle and
   surface a "remote disconnected" banner / auto-reconnect dialog
   if the SSH subprocess dies. Lower priority — most desktop SSH
   clients don't auto-reconnect either.
