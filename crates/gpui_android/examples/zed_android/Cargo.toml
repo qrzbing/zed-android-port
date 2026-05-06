@@ -54,6 +54,7 @@ project = { path = "../../../project" }
 project_panel = { path = "../../../project_panel" }
 project_symbols = { path = "../../../project_symbols" }
 recent_projects = { path = "../../../recent_projects" }
+remote = { path = "../../../remote" }
 settings_profile_selector = { path = "../../../settings_profile_selector" }
 settings_ui = { path = "../../../settings_ui" }
 snippet_provider = { path = "../../../snippet_provider" }
