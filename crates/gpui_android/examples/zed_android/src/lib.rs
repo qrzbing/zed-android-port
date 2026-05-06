@@ -24,7 +24,11 @@ use session::{AppSession, Session};
 use gpui::{App, AppContext as _, UpdateGlobal as _};
 use log::{error, info};
 use settings::Settings as _;
-use workspace::{AppState, MultiWorkspace, Workspace, WorkspaceStore};
+use util::ResultExt as _;
+use workspace::{
+    AppState, CloseIntent, CloseProject, MultiWorkspace, OpenOptions, Workspace, WorkspaceStore,
+    open_new,
+};
 use reqwest_client::ReqwestClient;
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
@@ -618,10 +622,82 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // The PanelButtons in the status bar render one button per
     // registered panel, so adding more panels here surfaces more
     // bottom-bar buttons for free.
-    cx.observe_new(|workspace: &mut Workspace, window, cx| {
+    let observe_app_state = app_state.clone();
+    cx.observe_new(move |workspace: &mut Workspace, window, cx| {
         let Some(window) = window else { return };
 
         workspace.register_action(editor::open_project_settings_file);
+
+        // CloseProject: action wired in production at
+        // `crates/zed/src/zed.rs:1123-1180`. Production binds it inside
+        // `initialize_workspace` next to NewFile / NewWindow handlers.
+        // We don't pull crates/zed (Android workspace example owns its
+        // own boot()), so the handler has to be re-registered here on
+        // every new workspace via observe_new.
+        //
+        // Flow, identical to production except the new-workspace init
+        // closure is a no-op (we don't auto-create an empty Editor on
+        // close — same shape as the returning-launch path at
+        // `workspace::open_new(Default::default(), app_state, cx,
+        // |_, _, _| {})` lower in this file):
+        //
+        //   1. prepare_to_close(ReplaceWindow) — checks dirty buffers,
+        //      pops the standard "Save changes?" modal if needed.
+        //   2. If the user proceeds, open_new() builds a fresh empty
+        //      workspace within the same MultiWorkspace tab, reusing
+        //      the requesting_window so we don't spawn an extra
+        //      ExtraWindowActivity (which open_window does on Android).
+        //   3. After the new workspace lands, remove the old project's
+        //      group key from the MultiWorkspace registry. Without this
+        //      the closed project's group survives in MultiWorkspace's
+        //      internal tracking and `Open Recent` / window-cycle UX
+        //      shows ghost entries.
+        workspace.register_action({
+            let app_state = observe_app_state.clone();
+            move |workspace: &mut Workspace, _: &CloseProject, window, cx| {
+                let Some(window_handle) =
+                    window.window_handle().downcast::<MultiWorkspace>()
+                else {
+                    return;
+                };
+                let app_state = app_state.clone();
+                let old_group_key = workspace.project_group_key(cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    let should_continue = this
+                        .update_in(cx, |workspace, window, cx| {
+                            workspace.prepare_to_close(
+                                CloseIntent::ReplaceWindow,
+                                window,
+                                cx,
+                            )
+                        })?
+                        .await?;
+                    if !should_continue {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    let task = cx.update(|_window, cx| {
+                        open_new(
+                            OpenOptions {
+                                requesting_window: Some(window_handle),
+                                ..Default::default()
+                            },
+                            app_state,
+                            cx,
+                            |_workspace, _window, _cx| {},
+                        )
+                    })?;
+                    task.await?;
+                    window_handle
+                        .update(cx, |mw, window, cx| {
+                            mw.remove_project_group(&old_group_key, window, cx)
+                        })?
+                        .await
+                        .log_err();
+                    Ok(())
+                })
+                .detach_and_log_err(cx);
+            }
+        });
 
         // Status bar items, mirroring production zed/src/zed.rs:537-586.
         // Skipped: edit_prediction_ui (AI), activity_indicator (collab),
