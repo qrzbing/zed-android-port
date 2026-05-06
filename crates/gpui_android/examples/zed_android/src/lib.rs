@@ -69,18 +69,27 @@ fn android_main(app: AndroidApp) {
     // $ROOTFS/home is set separately so future shell/LSP children can
     // override HOME per-spawn without disturbing the Rust globals.
     //
-    // PATH is set to `$PREFIX/bin:$PATH` IFF the bootstrap is on disk —
-    // detected by the presence of `$PREFIX/bin/bash`. Pre-bootstrap we'd
-    // override PATH with a non-existent directory and any subprocess
-    // looking up `git`/`grep`/etc. would fail. Post-bootstrap we want
-    // every Zed subprocess (git status, LSP spawns, terminal) to find
-    // Termux binaries first and fall back to `/system/bin/*` only for
-    // things bionic provides natively.
+    // PATH is unconditionally set to `$PREFIX/bin:$PATH` at boot. An
+    // earlier version of this code gated the prepend on the presence of
+    // `$PREFIX/bin/bash`, on the theory that pointing PATH at a
+    // non-existent dir pre-bootstrap would break `which git` / `which
+    // grep` lookups. That theory was wrong: PATH search ignores
+    // non-existent entries and falls through to the next dir, so the
+    // gate was pure downside — on a *fresh* install (data wiped /
+    // first launch / app reinstalled), `extract_if_needed` runs AFTER
+    // `ENV_INITIALIZED.get_or_init`, so bash isn't on disk yet, the
+    // gate evaluates false, PATH stays Android-default, and the
+    // OnceLock then blocks any later re-init. Result: integrated
+    // terminal opens with PATH=`/system/bin:...` (no $PREFIX/bin), and
+    // every `pkg`, `apt`, `dpkg` invocation hits "command not found"
+    // until the user closes the terminal and re-opens it (which
+    // reinherits the post-extract Zed env — but they have no idea
+    // that's the workaround). Just always prepend; correctness is
+    // unchanged post-extract, fresh-install UX no longer broken.
     static ENV_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = ENV_INITIALIZED.get_or_init(|| {
         let prefix = data_path.join("usr");
         let termux_home = data_path.join("home");
-        let bash_present = prefix.join("bin/bash").is_file();
         unsafe {
             std::env::set_var("HOME", &data_path);
             std::env::set_var("TERMUX__ROOTFS", &data_path);
@@ -158,40 +167,38 @@ fn android_main(app: AndroidApp) {
                 std::env::set_var("SSL_CERT_FILE", &cert_path);
                 std::env::set_var("CURL_CA_BUNDLE", &cert_path);
             }
-            if bash_present {
-                let prefix_bin = prefix.join("bin");
-                let existing = std::env::var_os("PATH").unwrap_or_default();
-                let mut new_path = std::ffi::OsString::from(&prefix_bin);
-                new_path.push(":");
-                new_path.push(&existing);
-                std::env::set_var("PATH", &new_path);
-                std::env::set_var("SHELL", prefix.join("bin/bash"));
+            let prefix_bin = prefix.join("bin");
+            let existing = std::env::var_os("PATH").unwrap_or_default();
+            let mut new_path = std::ffi::OsString::from(&prefix_bin);
+            new_path.push(":");
+            new_path.push(&existing);
+            std::env::set_var("PATH", &new_path);
+            std::env::set_var("SHELL", prefix.join("bin/bash"));
 
-                // DELIBERATELY NOT SET: LD_LIBRARY_PATH.
-                //
-                // Our bootstrap binaries (built with TERMUX_APP_PACKAGE=
-                // com.zdroid) have DT_RUNPATH pointing at our
-                // real lib path, so they load libs natively without help.
-                //
-                // Setting LD_LIBRARY_PATH globally poisons every spawned
-                // subprocess, including Android system processes — e.g.
-                // /system/bin/app_process64 loads /system/lib64/libsqlite.so
-                // which needs OpenSSL_add_all_algorithms; the linker
-                // searches LD_LIBRARY_PATH first, finds our OpenSSL 3.x
-                // libssl.so (which dropped that deprecated symbol),
-                // CANNOT LINK, cascading into JVM stack overflow when
-                // ART retries the failing dlopen. Crashed copy/paste from
-                // the terminal panel because of exactly this.
-                //
-                // Upstream Termux packages we install via `pkg` DO need
-                // LD_LIBRARY_PATH to find their libs at runtime, but we
-                // set it per-spawn (in the LSP launcher / terminal-panel
-                // pty bringup), not as a global env var.
-                log::info!(
-                    "zed_android: PATH prefixed with {} (bootstrap detected)",
-                    prefix_bin.display()
-                );
-            }
+            // DELIBERATELY NOT SET: LD_LIBRARY_PATH.
+            //
+            // Our bootstrap binaries (built with TERMUX_APP_PACKAGE=
+            // com.zdroid) have DT_RUNPATH pointing at our real lib
+            // path, so they load libs natively without help.
+            //
+            // Setting LD_LIBRARY_PATH globally poisons every spawned
+            // subprocess, including Android system processes — e.g.
+            // /system/bin/app_process64 loads /system/lib64/libsqlite.so
+            // which needs OpenSSL_add_all_algorithms; the linker
+            // searches LD_LIBRARY_PATH first, finds our OpenSSL 3.x
+            // libssl.so (which dropped that deprecated symbol),
+            // CANNOT LINK, cascading into JVM stack overflow when ART
+            // retries the failing dlopen. Crashed copy/paste from the
+            // terminal panel because of exactly this.
+            //
+            // Upstream Termux packages we install via `pkg` DO need
+            // LD_LIBRARY_PATH to find their libs at runtime, but we
+            // set it per-spawn (in the LSP launcher / terminal-panel
+            // pty bringup), not as a global env var.
+            log::info!(
+                "zed_android: PATH prefixed with {}",
+                prefix_bin.display()
+            );
         }
     });
 
