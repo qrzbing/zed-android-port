@@ -94,7 +94,7 @@ cp target/aarch64-linux-android/debug/libzed_android.so \
 cd android
 gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n dev.zed.zed_android/.MainActivity
+adb shell am start -n com.zdroid/.MainActivity
 ```
 
 The first build takes ~10 minutes. Incremental Rust rebuilds are
@@ -170,7 +170,7 @@ editor with an integrated terminal. Two facts shape everything below:
    there fine, but the kernel refuses to `execve()` anything that lives on
    it — `cargo run` against a binary in `/storage/emulated/0/projects/foo/
    target/debug/foo` returns `EACCES (Permission denied, os error 13)`.
-2. `/data/data/dev.zed.zed_android/files` (app-private storage) is
+2. `/data/data/com.zdroid/files` (app-private storage) is
    exec-mounted. At our pinned `targetSdk=28`, `execve()` and `dlopen()`
    work natively here — same place Termux runs everything from.
 

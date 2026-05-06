@@ -14,7 +14,7 @@ in `.rodata`, not extend it. And the file at the replacement path has
 to be writable by an untrusted Android app.
 
 App-private storage would be ideal architecturally
-(`/data/data/dev.zed.zed_android/files/...`) but the path is **way too
+(`/data/data/com.zdroid/files/...`) but the path is **way too
 long** to fit any of the canonical `/etc/*` slots:
 
 ```
@@ -24,7 +24,7 @@ long** to fit any of the canonical `/etc/*` slots:
 /etc/passwd       → 11 bytes
 /etc/services     → 13 bytes
 
-/data/data/dev.zed.zed_android/files/r.conf → 43 bytes  ✗
+/data/data/com.zdroid/files/r.conf → 43 bytes  ✗
 /data/local/tmp/r.conf                      → 22 bytes  ✗ (and untrusted apps can't write there)
 /storage/self/primary/r.conf                → 27 bytes  ✗
 /sdcard/r.conf                              → 14 bytes  ✓

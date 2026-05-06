@@ -3,7 +3,7 @@
 **Status:** Active
 **Phase / Commit:** L7
 **Files:**
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/ZedApplication.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/ZedApplication.kt`
 - `crates/gpui_android/examples/zed_android/android/app/src/main/AndroidManifest.xml`
 
 ## Problem
@@ -75,7 +75,7 @@ the native lib here makes JNI safe everywhere else.
 ## Failure mode if regressed
 
 - `UnsatisfiedLinkError: No implementation found for boolean
-  dev.zed.zed_android.NativeBridge.nativeIsExtraWindowKnown(long)` on first
+  com.zdroid.NativeBridge.nativeIsExtraWindowKnown(long)` on first
   ExtraWindowActivity launch.
 - App crash, no Settings window.
 

@@ -65,7 +65,7 @@ constructing `Client::production`, and pre-set
 (`auto_update.rs:248-262`) is suppressed — we don't want Zed
 periodically self-updating the APK.
 
-### D. `ld.so: object '/data/data/dev.zed.zed_android/files/usr/lib/libtermux-exec.so' from LD_PRELOAD cannot be preloaded: ignored.`
+### D. `ld.so: object '/data/data/com.zdroid/files/usr/lib/libtermux-exec.so' from LD_PRELOAD cannot be preloaded: ignored.`
 
 Sprayed on every command run via `remote_server` RPC. Caused by Zed's
 worktree-shell env capture
@@ -75,7 +75,7 @@ the SSH transport at
 `crates/remote/src/transport/ssh.rs::build_command_posix`
 forwarding it across the tunnel via
 `exec env LD_PRELOAD=… HOME=… TERMUX__HOME=… ./remote_server`. Glibc
-on the remote can't dlopen `/data/data/dev.zed.zed_android/...` (path
+on the remote can't dlopen `/data/data/com.zdroid/...` (path
 doesn't exist on Linux) and complains. **Bigger problem**: `HOME` and
 `TMPDIR` were also being overridden, breaking remote `~/.ssh/`,
 `~/.bashrc`, subprocess scratch space.
@@ -123,8 +123,8 @@ location. Workaround in `settings.json`:
     "host": "<your.host>",
     "username": "<user>",
     "args": [
-      "-o", "UserKnownHostsFile=/data/data/dev.zed.zed_android/files/home/.ssh/known_hosts",
-      "-o", "IdentityFile=/data/data/dev.zed.zed_android/files/home/.ssh/id_ed25519",
+      "-o", "UserKnownHostsFile=/data/data/com.zdroid/files/home/.ssh/known_hosts",
+      "-o", "IdentityFile=/data/data/com.zdroid/files/home/.ssh/id_ed25519",
       "-o", "StrictHostKeyChecking=accept-new"
     ]
   }]
@@ -175,7 +175,7 @@ After the build/install, in Zed's remote terminal (post-Open-Remote):
 # SHOULD print empty brackets:
 echo "LD_PRELOAD=[$LD_PRELOAD]"
 # SHOULD print /root (or whatever the remote user's home is), NOT
-# /data/data/dev.zed.zed_android/...:
+# /data/data/com.zdroid/...:
 echo "HOME=$HOME"
 # SHOULD print /tmp or similar, NOT /data/data/.../usr/tmp:
 echo "TMPDIR=${TMPDIR:-/tmp}"

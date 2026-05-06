@@ -17,11 +17,11 @@ just exits".
 logcat from the device confirms the cause:
 
 ```
-SmartPower.dev.zed.zed_android/10377: background->died(1134ms)
+SmartPower.com.zdroid/10377: background->died(1134ms)
   R(process died ) adj=900.
-ActivityManager: Killing 16469:dev.zed.zed_android/u0a377 (adj 900):
-  stop dev.zed.zed_android due to from process:17503
-SmartPower: dev.zed.zed_android/10377 state=inactive adj=900
+ActivityManager: Killing 16469:com.zdroid/u0a377 (adj 900):
+  stop com.zdroid due to from process:17503
+SmartPower: com.zdroid/10377 state=inactive adj=900
   proc size=1 move to died process died
 ```
 

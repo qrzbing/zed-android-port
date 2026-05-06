@@ -3,8 +3,8 @@
 **Status:** Active
 **Phase / Commit:** L8
 **Files:**
-- `crates/.../kotlin/dev/zed/zed_android/ZedDocumentsProvider.kt` (new)
-- `crates/.../kotlin/dev/zed/zed_android/ZedApplication.kt` (mkdir `~`)
+- `crates/.../kotlin/com/zdroid/ZedDocumentsProvider.kt` (new)
+- `crates/.../kotlin/com/zdroid/ZedApplication.kt` (mkdir `~`)
 - `crates/.../AndroidManifest.xml` (`<provider>` declaration)
 
 ## Problem
@@ -12,7 +12,7 @@
 Termux exposes its home dir to other apps via Android's Storage Access
 Framework — open any system file picker and "Termux" appears in the
 sidebar with full read-write browse. We didn't have an equivalent: our
-`/data/data/dev.zed.zed_android/files/home` was effectively invisible to
+`/data/data/com.zdroid/files/home` was effectively invisible to
 the rest of the OS. Couldn't share files out of `~/projects` via the
 share sheet, couldn't drop into a stock document picker and pick "from
 Zed", couldn't have other apps (NetHunter, Files-app, IDEs, etc.)
@@ -41,7 +41,7 @@ Manifest:
 ```xml
 <provider
     android:name=".ZedDocumentsProvider"
-    android:authorities="dev.zed.zed_android.documents"
+    android:authorities="com.zdroid.documents"
     android:exported="true"
     android:grantUriPermissions="true"
     android:permission="android.permission.MANAGE_DOCUMENTS">

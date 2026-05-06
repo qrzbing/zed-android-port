@@ -58,7 +58,7 @@ the gpui_android platform layer.
 
 ### L10a — Bake openssh into the rebuilt bootstrap
 
-`/data/data/dev.zed.zed_android/files/usr/bin/ssh` doesn't exist on a
+`/data/data/com.zdroid/files/usr/bin/ssh` doesn't exist on a
 fresh install. Termux ships OpenSSH as the `openssh` apt package, not
 the base bootstrap, and `apt install openssh` from a running Zed
 session pulls the upstream Termux deb which has
@@ -67,7 +67,7 @@ session pulls the upstream Termux deb which has
 ssh-keygen consults for the default key path). Patchelf fixes the
 ELF dynlinker metadata (RUNPATH, interp), but it can't rewrite
 in-binary string literals — and the paths differ in length
-(`/data/data/com.termux/files` = 27 chars vs `/data/data/dev.zed.zed_android/files`
+(`/data/data/com.termux/files` = 27 chars vs `/data/data/com.zdroid/files`
 = 36 chars), so an in-place hex-patch can't substitute either.
 
 Three fixes considered:
@@ -80,7 +80,7 @@ Three fixes considered:
    userland: rebuild openssh's deb against our package-name
    substitution before packing into `termux-bootstrap.zip`. ssh,
    scp, sftp, ssh-keygen, sshd, and `libtermux-auth.so` all ship
-   with `/data/data/dev.zed.zed_android/files/...` baked correctly
+   with `/data/data/com.zdroid/files/...` baked correctly
    from the start. No runtime patching, no Magisk root, no
    per-process mount namespace gymnastics.
 3. ~~Symlink `/data/data/com.termux` → ours, or

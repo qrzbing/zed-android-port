@@ -97,7 +97,7 @@ fn activate(&self) {
 `getAppTasks()` + `AppTask.moveToFront()` is the documented
 permissionless self-task surfacing API since Android 5.0 (API 21). Each
 `ExtraWindowActivity` is in its own freeform task (via
-`taskAffinity="dev.zed.zed_android.extra"` + `documentLaunchMode="always"`),
+`taskAffinity="com.zdroid.extra"` + `documentLaunchMode="always"`),
 so taskId uniquely identifies the windowId-to-Activity mapping.
 
 Verified on device: with Settings extra Activity in foreground, tapping

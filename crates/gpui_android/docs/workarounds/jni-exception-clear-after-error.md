@@ -16,7 +16,7 @@ pure-read like `GetObjectClass` — trips:
 
 ```
 JNI DETECTED ERROR IN APPLICATION: JNI GetObjectClass called with pending
-  exception java.lang.ClassNotFoundException: dev.zed.zed_android.ExtraWindowActivity
+  exception java.lang.ClassNotFoundException: com.zdroid.ExtraWindowActivity
 ```
 
 …and ART aborts the process. Our clean Rust error never reaches the user;

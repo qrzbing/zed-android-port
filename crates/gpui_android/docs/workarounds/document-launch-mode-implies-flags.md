@@ -40,7 +40,7 @@ Pick **one** path. We picked manifest:
 ```xml
 <activity android:name=".ExtraWindowActivity"
           android:documentLaunchMode="always"
-          android:taskAffinity="dev.zed.zed_android.extra"
+          android:taskAffinity="com.zdroid.extra"
           ...>
 ```
 

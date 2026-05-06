@@ -3,8 +3,8 @@
 **Status:** Active
 **Phase / Commit:** L9 follow-up (input UX polish)
 **Files:**
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/ExtraWindowActivity.kt`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/NativeBridge.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/ExtraWindowActivity.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/NativeBridge.kt`
 - `crates/gpui_android/src/events.rs` (`translate_extra_motion_event`)
 - `crates/gpui_android/src/multi_window.rs` (`Java_..._nativeOnExtraTouchEvent` + `ExtraWindowEvent::Motion`)
 - `crates/gpui_android/src/platform.rs` (Motion drain arm)

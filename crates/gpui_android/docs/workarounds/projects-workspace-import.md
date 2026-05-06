@@ -36,7 +36,7 @@ tree is more useful than a hard failure midway through).
 ## Note: the L9-attempted picker default to ~/projects
 
 L9 tried to swap `EXTRA_INITIAL_URI` from the externalstorage primary
-RootUri to a `buildDocumentUri("dev.zed.zed_android.documents",
+RootUri to a `buildDocumentUri("com.zdroid.documents",
 "<absolute path to ~/projects>")` so the picker would default-land at
 the projects folder. Reverted same session: the custom-provider
 DocumentUri form interacted badly with Samsung One UI 8's My Files

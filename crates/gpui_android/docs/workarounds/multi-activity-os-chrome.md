@@ -6,10 +6,10 @@
 - `crates/gpui_android/src/multi_window.rs`
 - `crates/gpui_android/src/platform.rs`
 - `crates/gpui_android/src/window.rs`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/MainActivity.kt`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/ExtraWindowActivity.kt`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/NativeBridge.kt`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/ZedApplication.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/MainActivity.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/ExtraWindowActivity.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/NativeBridge.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/ZedApplication.kt`
 - `crates/gpui_android/examples/zed_android/android/app/src/main/AndroidManifest.xml`
 
 ## Problem
@@ -80,7 +80,7 @@ fork a separate JVM and break shared state.
             android:exported="false"
             android:resizeableActivity="true"
             android:documentLaunchMode="always"
-            android:taskAffinity="dev.zed.zed_android.extra"
+            android:taskAffinity="com.zdroid.extra"
             android:configChanges="<same exhaustive list>"/>
 </application>
 ```
@@ -98,7 +98,7 @@ let main_class = env.get_object_class(&main_activity)?;
 let class_loader = env
     .call_method(&main_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
     .l()?;
-let class_name = env.new_string("dev.zed.zed_android.ExtraWindowActivity")?;
+let class_name = env.new_string("com.zdroid.ExtraWindowActivity")?;
 let extra_class = env
     .call_method(&class_loader, "loadClass", ..., &[JValue::Object(&class_name)])?
     .l()?;

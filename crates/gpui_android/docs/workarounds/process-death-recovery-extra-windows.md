@@ -5,8 +5,8 @@
 **Files:**
 - `crates/gpui_android/src/multi_window.rs` (`REGISTERED_WINDOWS`, `nativeIsExtraWindowKnown`)
 - `crates/gpui_android/src/platform.rs` (`open_extra_window`, `OsClosed` drain)
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/ExtraWindowActivity.kt`
-- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/dev/zed/zed_android/NativeBridge.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/ExtraWindowActivity.kt`
+- `crates/gpui_android/examples/zed_android/android/app/src/main/kotlin/com/zdroid/NativeBridge.kt`
 
 ## Problem
 
@@ -60,7 +60,7 @@ JNI extern fn:
 
 ```rust
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeIsExtraWindowKnown<'local>(
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeIsExtraWindowKnown<'local>(
     _env: jni::JNIEnv<'local>,
     _bridge: JObject<'local>,
     window_id: i64,

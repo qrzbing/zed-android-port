@@ -15,8 +15,8 @@ Termux's stock bootstrap-aarch64.zip ships every binary with
 - Compiled-in path constants (apt's sysconfdir, gcc's include paths,
   dpkg's status-file location)
 
-Our APK has applicationId `dev.zed.zed_android`, so Android places our
-files under `/data/data/dev.zed.zed_android/files/usr/...`. The com.termux
+Our APK has applicationId `com.zdroid`, so Android places our
+files under `/data/data/com.zdroid/files/usr/...`. The com.termux
 paths don't exist for our UID — every binary fails at first `dlopen` with
 "library not found", every script fails with "no such file or directory" on
 the shebang interpreter.
@@ -32,7 +32,7 @@ nightmare.
 
 ## Solution
 
-Fork `termux/termux-packages`. Set `TERMUX_APP_PACKAGE=dev.zed.zed_android`
+Fork `termux/termux-packages`. Set `TERMUX_APP_PACKAGE=com.zdroid`
 in `scripts/properties.sh`. Re-run `scripts/build-bootstraps.sh`. The build
 recompiles every package with our app's path baked into its RUNPATH /
 shebangs / constants.

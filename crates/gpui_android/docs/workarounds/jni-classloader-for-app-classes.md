@@ -8,11 +8,11 @@
 
 Building an `Intent(ctx, ExtraWindowActivity.class)` from JNI on Android
 needs a `Class<?>` reference for our own app's `ExtraWindowActivity`. The
-obvious idiom is `Class.forName("dev.zed.zed_android.ExtraWindowActivity")`,
+obvious idiom is `Class.forName("com.zdroid.ExtraWindowActivity")`,
 which works fine in plain JVM. On Android it throws:
 
 ```
-java.lang.ClassNotFoundException: dev.zed.zed_android.ExtraWindowActivity
+java.lang.ClassNotFoundException: com.zdroid.ExtraWindowActivity
 ```
 
 …and worse, the JNI exception abort tripped a process abort
@@ -43,7 +43,7 @@ let main_class = env.get_object_class(&main_activity)?;
 let class_loader = env
     .call_method(&main_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
     .l()?;
-let class_name = env.new_string("dev.zed.zed_android.ExtraWindowActivity")?;
+let class_name = env.new_string("com.zdroid.ExtraWindowActivity")?;
 let extra_class = env
     .call_method(
         &class_loader,
