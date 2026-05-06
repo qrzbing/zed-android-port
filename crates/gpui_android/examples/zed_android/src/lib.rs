@@ -171,9 +171,21 @@ fn android_main(app: AndroidApp) {
                 std::env::set_var("SSL_CERT_FILE", &cert_path);
                 std::env::set_var("CURL_CA_BUNDLE", &cert_path);
             }
+            // `$PREFIX/.zed/bin` is our apt-untouched shim namespace —
+            // holds the npm wrapper and any future shadow of an apt-managed
+            // binary. Must come BEFORE `$PREFIX/bin` so PATH resolution
+            // picks our wrapper over the upstream package's symlink even
+            // after `pkg install --reinstall` lands. Subprocesses (the
+            // integrated terminal in particular) inherit this PATH; profile.d
+            // only fires for login shells, and the integrated terminal is
+            // interactive non-login, so seeding PATH here is what actually
+            // gets the wrapper found.
+            let zed_bin = prefix.join(".zed/bin");
             let prefix_bin = prefix.join("bin");
             let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = std::ffi::OsString::from(&prefix_bin);
+            let mut new_path = std::ffi::OsString::from(&zed_bin);
+            new_path.push(":");
+            new_path.push(&prefix_bin);
             new_path.push(":");
             new_path.push(&existing);
             std::env::set_var("PATH", &new_path);
@@ -200,7 +212,8 @@ fn android_main(app: AndroidApp) {
             // set it per-spawn (in the LSP launcher / terminal-panel
             // pty bringup), not as a global env var.
             log::info!(
-                "zed_android: PATH prefixed with {}",
+                "zed_android: PATH prefixed with {} and {}",
+                zed_bin.display(),
                 prefix_bin.display()
             );
         }
