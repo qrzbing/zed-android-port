@@ -46,7 +46,7 @@ fn android_main(app: AndroidApp) {
 
     let data_path = app
         .internal_data_path()
-        .unwrap_or_else(|| PathBuf::from("/data/data/dev.zed.zed_android/files"));
+        .unwrap_or_else(|| PathBuf::from("/data/data/com.zdroid/files"));
     info!("zed_android: data_path = {}", data_path.display());
 
     // SAFETY: set_var mutates libc-shared process state. The accurate
@@ -91,7 +91,7 @@ fn android_main(app: AndroidApp) {
             // and != "com.termux", dpkg rewrites tar entry paths starting
             // with /data/data/com.termux/ to /data/data/<this>/ on the fly.
             // Lets `pkg install <upstream-deb>` Just Work with our prefix.
-            std::env::set_var("TERMUX_APP__PACKAGE_NAME", "dev.zed.zed_android");
+            std::env::set_var("TERMUX_APP__PACKAGE_NAME", "com.zdroid");
             std::env::set_var("TMPDIR", prefix.join("tmp"));
             std::env::set_var("TERM", "xterm-256color");
             std::env::set_var("LANG", "en_US.UTF-8");
@@ -170,7 +170,7 @@ fn android_main(app: AndroidApp) {
                 // DELIBERATELY NOT SET: LD_LIBRARY_PATH.
                 //
                 // Our bootstrap binaries (built with TERMUX_APP_PACKAGE=
-                // dev.zed.zed_android) have DT_RUNPATH pointing at our
+                // com.zdroid) have DT_RUNPATH pointing at our
                 // real lib path, so they load libs natively without help.
                 //
                 // Setting LD_LIBRARY_PATH globally poisons every spawned

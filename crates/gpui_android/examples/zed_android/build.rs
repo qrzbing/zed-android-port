@@ -2,7 +2,7 @@
 //!
 //! Termux's bootstrap binaries hardcode `/data/data/<package>/files/...` in
 //! every ELF's `DT_RUNPATH` and every shell shebang. Rebuilding the
-//! bootstrap with `TERMUX_APP_PACKAGE=dev.zed.zed_android` bakes that exact
+//! bootstrap with `TERMUX_APP_PACKAGE=com.zdroid` bakes that exact
 //! string into ~3 GB of binaries. If `applicationId` in
 //! `android/app/build.gradle.kts` ever drifts from this constant, every
 //! binary in the rebuilt bootstrap fails at runtime with `dlopen failed:
@@ -14,7 +14,7 @@
 //! exists and contains the literal — does NOT pretend to be a kts parser.
 //! AGP and we agree on the substring or we both panic.
 
-const BOOTSTRAP_PACKAGE_NAME: &str = "dev.zed.zed_android";
+const BOOTSTRAP_PACKAGE_NAME: &str = "com.zdroid";
 
 fn main() {
     let gradle_path = "android/app/build.gradle.kts";

@@ -197,7 +197,7 @@ pub fn insert_zed_terminal_env(
         // /data/data form, so libtermux-exec is loaded into the same
         // namespace.
         env.entry("LD_PRELOAD".to_string()).or_insert_with(|| {
-            "/data/data/dev.zed.zed_android/files/usr/lib/\
+            "/data/data/com.zdroid/files/usr/lib/\
              libtermux-exec.so"
                 .to_string()
         });
