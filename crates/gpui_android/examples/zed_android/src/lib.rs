@@ -23,7 +23,7 @@ use project::Project;
 use session::{AppSession, Session};
 use gpui::{App, AppContext as _, UpdateGlobal as _};
 use log::{error, info};
-use settings::Settings as _;
+use settings::{Settings as _, SettingsStore};
 use util::ResultExt as _;
 use workspace::{
     AppState, CloseIntent, CloseProject, MultiWorkspace, OpenOptions, Workspace, WorkspaceStore,
@@ -401,8 +401,49 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
 
     let fs: Arc<dyn Fs> = Arc::new(RealFs::new(None, cx.background_executor().clone()));
     <dyn Fs>::set_global(fs.clone(), cx);
-    let node_runtime = NodeRuntime::unavailable();
-    info!("zed_android: RealFs + NodeRuntime::unavailable constructed");
+    // Real NodeRuntime, mirroring crates/zed/src/main.rs:496-518. The
+    // earlier port stage stubbed this out as `NodeRuntime::unavailable()`
+    // back when Termux's Node didn't run on bionic — pre L3 npm intercept
+    // architecture (project_l3_npm_intercept memory). The intercept layer
+    // (patched node platform string, npm wrapper, launcher-gen RUNPATH
+    // fixup, libtermux-exec LD_PRELOAD) plus the bundled musl loader make
+    // a Termux-installed Node usable. Wire NodeRuntime against settings
+    // so PATH-resolved Node (`pkg install nodejs` → $PREFIX/bin/node)
+    // works, and Zed's managed-node fallback download path is available
+    // for users without termux Node. Without this, npm-based LSPs
+    // (TypeScript / JavaScript / Pyright / etc.) fail at the install step
+    // with `'node' settings do not allow any way to use Node.js`.
+    let (mut node_options_tx, node_options_rx) =
+        watch::channel::<Option<node_runtime::NodeBinaryOptions>>(None);
+    cx.observe_global::<SettingsStore>(move |cx| {
+        let settings = &project::project_settings::ProjectSettings::get_global(cx).node;
+        let options = node_runtime::NodeBinaryOptions {
+            allow_path_lookup: !settings.ignore_system_version,
+            allow_binary_download: true,
+            use_paths: settings.path.as_ref().map(|node_path| {
+                let node_path = std::path::PathBuf::from(
+                    shellexpand::tilde(node_path).as_ref(),
+                );
+                let npm_path = settings.npm_path.as_ref().map(|p| {
+                    std::path::PathBuf::from(shellexpand::tilde(&p).as_ref())
+                });
+                (
+                    node_path.clone(),
+                    npm_path.unwrap_or_else(|| {
+                        node_path
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_default()
+                            .join("npm")
+                    }),
+                )
+            }),
+        };
+        node_options_tx.send(Some(options)).log_err();
+    })
+    .detach();
+    let node_runtime = NodeRuntime::new(client.http_client(), None, node_options_rx);
+    info!("zed_android: RealFs + NodeRuntime constructed (PATH lookup + managed download)");
 
     // Mirror production zed::watch_settings_files. Without this, edits to
     // ~/.config/zed/settings.json on disk never propagate into the running

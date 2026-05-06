@@ -65,7 +65,9 @@ terminal_view = { path = "../../../terminal_view" }
 theme_selector = { path = "../../../theme_selector" }
 toolchain_selector = { path = "../../../toolchain_selector" }
 which_key = { path = "../../../which_key" }
+shellexpand = "3.1"
 util = { path = "../../../util" }
+watch = { path = "../../../watch" }
 workspace = { path = "../../../workspace" }
 release_channel = { path = "../../../release_channel" }
 reqwest_client = { path = "../../../reqwest_client" }
