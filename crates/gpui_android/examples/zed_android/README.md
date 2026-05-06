@@ -57,14 +57,17 @@ The trick: a custom `gpui_android` platform backend (Vulkan surface lifecycle, J
 | Command palette + fuzzy file finder | ✅ |
 | Buffer search + project-wide search + replace | ✅ |
 | Git panel + git graph + commit history + diff view | ✅ |
-| Integrated terminal (real Termux: apt, bash, ssh, node, go, claude-code) | ✅ |
-| LSPs running natively on-device (rust-analyzer baked in; gopls / ts / pyright / jdtls install in 1 command) | ✅ |
+| Integrated terminal (real Termux: `apt`, `bash`, `ssh`, `node`, `go`, etc. running natively) | ✅ |
+| LSPs running natively on-device (rust-analyzer baked in; others install via `pkg`/`npm`/`go install`) | ✅ |
 | Extensions: browse, install, manage (themes, language configs, grammars, LSPs) | ✅ |
-| Remote SSH projects (server picker pill in title bar; full feature parity) | ✅ |
-| Anthropic Claude Code CLI runs natively | ✅ |
+| Remote SSH projects + server picker pill + native askpass for password prompts | ✅ |
+| Anthropic Claude Code CLI runs natively (after `pkg install npm && npm install -g @anthropic-ai/claude-code`) | ✅ |
+| App menu bar (mirrors production: nested submenus, Settings/Keymap/Themes/Extensions) | ✅ |
 | Themes + icon themes + auto light/dark from system | ✅ |
 | Hardware keyboard, mouse, trackpad, two-finger right-click, long-press right-click | ✅ |
-| Multi-window via Android freeform / DeX desktop mode | ✅ |
+| Multi-window via Android freeform / DeX desktop mode (each extra window = real Activity with OS chrome) | ✅ |
+| Edge-to-edge rendering with content under display cutout/notch | ✅ |
+| `ZedDocumentsProvider` — your Zed projects show up in other Android apps' file pickers via SAF | ✅ |
 | Soft keyboard / touch IME bridge | ⏳ deferred |
 | 120Hz on 120Hz panels (currently locked 60Hz) | ⏳ deferred |
 | Collab, AI panels, livekit | ❌ stubbed (heavy deps; PoC skipped them) |
@@ -84,6 +87,51 @@ adb shell am start -n com.zdroid/.MainActivity
 ```
 
 Or sideload via your file manager — Android will prompt to allow installs from unknown sources. The first launch extracts a ~250 MB Termux userland into the app's private data dir; takes about 30 seconds. Subsequent launches are instant.
+
+## Storage workflow
+
+Android partitions storage in a way that has direct consequences for any code editor with an integrated terminal. Two facts shape everything:
+
+1. **`/storage/emulated/0/`** (the user-visible "Internal storage" / `~/storage/`) is FUSE-mounted with `noexec`. You can read, write, browse, edit fine — but the kernel refuses to `execve()` anything that lives there. `cargo run` against a binary in `/storage/emulated/0/projects/foo/target/debug/foo` returns `EACCES (Permission denied)`.
+2. **`/data/data/com.zdroid/files/`** (app-private storage, exposed as `~/`) is exec-mounted. `execve()` and `dlopen()` work natively — same place Termux runs everything from.
+
+So the workflow:
+
+| Where | What for |
+| --- | --- |
+| `~/projects/<name>` | **Default workspace root.** `cargo new`, `git clone`, `mkdir foo && cargo init` all just work — exec is allowed, builds run, native modules dlopen cleanly. |
+| `~/storage/<shared,downloads,dcim,documents,...>` | Termux-style curated symlinks into shared storage. Use these for "open / edit / save a single file" workflows. **Don't** treat them as a workspace root — see chip below. |
+| **File → Import from sdcard…** | Runs the SAF folder picker, recursively copies the picked tree into `~/projects/<basename>`, opens the imported copy. Original on shared storage stays untouched. |
+| Yellow "**Builds won't run · Move**" chip | Appears in the title bar if you open a project rooted on `/sdcard/` anyway. One tap copies the project into `~/projects/<name>` and reopens there. |
+
+A planned **Tier 2** (deferred — needs settings UI) would offer rooted users a `mount --bind` of `/mnt/pass_through/0/emulated` (the underlying f2fs, exec-mounted) over `~/sdcard-exec/`, letting advanced users keep multi-GB projects on shared storage and still build natively. Not implemented yet; see [`docs/workarounds/deferred-tier2-root-storage.md`](docs/workarounds/deferred-tier2-root-storage.md).
+
+## LSP install recipes
+
+Most LSPs install in a single command from the integrated terminal:
+
+```sh
+# Rust — already baked into the bootstrap, nothing to do
+rust-analyzer --version
+
+# Go — `go install` works natively after the bootstrap perm fix
+go install golang.org/x/tools/gopls@latest
+
+# TypeScript / JavaScript
+npm install -g typescript typescript-language-server
+
+# Python (Pyright)
+pkg install python && npm install -g pyright
+
+# Java (jdtls — JVM-based, no native proxy needed)
+pkg install openjdk-17 maven
+# Then download jdtls from https://download.eclipse.org/jdtls/milestones/
+# Add an `lsp.jdtls.binary.path` override in settings.json pointing at
+# Termux's `java` and the launcher .jar; see workarounds/extension-jvm-bypass
+# notes if/when that doc lands.
+```
+
+Extensions can also install LSPs through the Extensions pane (settings menu → Extensions) for languages that support it — themes, grammars, and language configs always work from extensions; some extension-shipped *binaries* are glibc-only and won't run on Android (see Caveats).
 
 ## Build from source
 
@@ -133,7 +181,8 @@ This is **a proof of concept**, not a polished product. Honest list of rough edg
 - **60Hz rendering on 120Hz panels.** Frame work is fast; we just haven't opted into 120Hz via `ANativeWindow_setFrameRate` yet. See [`docs/workarounds/deferred-render-pipeline-perf.md`](docs/workarounds/deferred-render-pipeline-perf.md).
 - **Some extension-shipped LSPs are glibc-only and won't run.** JVM-based (`jdtls`, `kotlin-language-server`), Node-based (`typescript-language-server`), and Python-based (`pyright`) LSPs all work via Termux's bionic-built runtimes — install via `pkg install openjdk-17` etc. Native glibc-only binaries (some Rust- or Go-built LSPs that extensions ship as glibc binaries) won't load without proot/glibc-runner; out of scope by design (root- and proot-free is a hard constraint).
 - **No collab / AI / livekit panels.** `livekit_client`, `audio`, `call`, `agent_ui`, `copilot`, `language_models` are cfg-gated to mock impls so they compile but don't wire. PoC skipped them; ~50 MB of heavy deps for features that need cloud account integration anyway.
-- **Sandboxed storage.** Projects under `~/projects/` (app-private, exec-mounted) are the supported workflow. `/sdcard/` is browsable via SAF + curated symlinks at `~/storage/` but is FUSE-`noexec` — `cargo run` against a binary there returns EACCES. The app surfaces a "Builds won't run · Move" banner and offers one-tap copy.
+- **Sandboxed storage.** Projects under `~/projects/` (app-private, exec-mounted) are the supported workflow. `/sdcard/` is browsable via SAF + curated symlinks at `~/storage/` but is FUSE-`noexec` — `cargo run` against a binary there returns EACCES. The app surfaces a "Builds won't run · Move" banner and offers one-tap copy. See [Storage workflow](#storage-workflow).
+- **MIUI / HyperOS aggressive battery management.** Xiaomi/Redmi/Poco devices kill backgrounded Zed within minutes via `MIUI Optimization` / `Battery saver`. Workaround: Settings → Apps → Zed → Battery → "No restrictions". Without that, you'll lose state when switching apps for too long. See [`docs/workarounds/miui-aggressive-task-killing.md`](docs/workarounds/miui-aggressive-task-killing.md).
 - **Tested on Tab S9 Ultra only.** Should work on any Vulkan 1.1 + Adreno device; Mali / Xclipse not tried. File issues with logcat dumps if you have other hardware.
 
 ## License
