@@ -584,9 +584,13 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     workspace::init(app_state.clone(), cx);
     command_palette::init(cx);
     search::init(cx);
-    // Mirror production zed/src/main.rs:710. Without this global the
-    // in-buffer search bar inside each pane never has a search-bar
-    // entity registered on its toolbar — Ctrl-F shows nothing.
+    // Mirror production zed/src/main.rs:710. setup_search_bar is fired
+    // from `terminal_panel.rs::TerminalPanel::new` ONLY — i.e. when the
+    // terminal panel adds its own internal buffer search. It is NOT
+    // called for editor panes; production wires those via initialize_pane
+    // in zed/src/zed.rs:1234, which we mirror further down inside the
+    // workspace observe_new (so editor-pane toolbars get BufferSearchBar
+    // + ProjectSearchBar there).
     cx.set_global(workspace::PaneSearchBarCallbacks {
         setup_search_bar: |languages, toolbar, window, cx| {
             let search_bar = cx.new(|cx| search::BufferSearchBar::new(languages, window, cx));
@@ -632,6 +636,14 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // language_model::registry::GlobalLanguageModelRegistry exists".
     language_model::init(cx);
     git_ui::init(cx);
+    // Mirror production zed/src/main.rs:733 — register the git graph
+    // (commit history) view's serializable item, action handlers
+    // (git::FileHistory, git_panel::Open, OpenAtCommit), and database
+    // domain. Action-driven: shows up as a workspace pane item when the
+    // user triggers it (e.g. via git panel "View History"), not pre-
+    // loaded as a panel like ProjectPanel/GitPanel. Uses
+    // project.git_store() so remote-SSH projects work transparently.
+    git_graph::init(cx);
     keymap_editor::init(cx);
     inspector_ui::init(app_state.clone(), cx);
     json_schema_store::init(cx);
@@ -806,6 +818,65 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             status_bar.add_right_item(vim_mode_indicator, window, cx);
             status_bar.add_right_item(cursor_position, window, cx);
         });
+
+        // Per-pane toolbar items. Mirrors production
+        // zed/src/zed.rs::initialize_pane (zed.rs:1234) which production
+        // invokes from a workspace observer at zed.rs:444-451 for the
+        // initial active pane and on every PaneAdded event.
+        //
+        //   - BufferSearchBar — the in-editor Ctrl-F find/replace bar.
+        //     Already registered for terminal panels via the global
+        //     PaneSearchBarCallbacks above; production registers a SECOND
+        //     instance on each editor pane's toolbar (different toolbar,
+        //     different visibility scope), and we mirror that here.
+        //
+        //   - ProjectSearchBar — the toolbar that holds the actual query
+        //     input field, regex/case/whole-word toggles, replace UI,
+        //     and match navigation for the Project Search view.
+        //     ProjectSearchView's render() draws only the results body;
+        //     the input field lives in this toolbar item. Without it
+        //     registered on the pane's toolbar, the project-search view
+        //     shows the empty-state heading but no input field, and the
+        //     toolbar slot stays in a half-rendered state — visible as
+        //     a flickering tab at vsync rate.
+        //
+        // Subscribe to PaneAdded so split panes get the same setup.
+        let toolbar_languages = observe_app_state.languages.clone();
+        let active_pane = workspace.active_pane().clone();
+        active_pane.update(cx, |pane, cx| {
+            pane.toolbar().update(cx, |toolbar, cx| {
+                let buffer_search_bar = cx.new(|cx| {
+                    search::BufferSearchBar::new(
+                        Some(toolbar_languages.clone()),
+                        window,
+                        cx,
+                    )
+                });
+                toolbar.add_item(buffer_search_bar, window, cx);
+                let project_search_bar =
+                    cx.new(|_| search::project_search::ProjectSearchBar::new());
+                toolbar.add_item(project_search_bar, window, cx);
+            });
+        });
+        let workspace_handle = cx.entity();
+        let pane_added_languages = observe_app_state.languages.clone();
+        cx.subscribe_in(&workspace_handle, window, move |_, _, event, window, cx| {
+            if let workspace::Event::PaneAdded(pane) = event {
+                let languages = pane_added_languages.clone();
+                pane.update(cx, |pane, cx| {
+                    pane.toolbar().update(cx, |toolbar, cx| {
+                        let buffer_search_bar = cx.new(|cx| {
+                            search::BufferSearchBar::new(Some(languages), window, cx)
+                        });
+                        toolbar.add_item(buffer_search_bar, window, cx);
+                        let project_search_bar = cx
+                            .new(|_| search::project_search::ProjectSearchBar::new());
+                        toolbar.add_item(project_search_bar, window, cx);
+                    });
+                });
+            }
+        })
+        .detach();
 
         // Custom always-on application menu bar. On Android there's no
         // native menu surface and the production `title_bar` crate pulls

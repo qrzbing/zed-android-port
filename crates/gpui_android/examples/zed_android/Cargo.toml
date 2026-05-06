@@ -27,6 +27,7 @@ feedback = { path = "../../../feedback" }
 file_finder = { path = "../../../file_finder" }
 fs = { path = "../../../fs" }
 futures = "0.3"
+git_graph = { path = "../../../git_graph" }
 git_ui = { path = "../../../git_ui" }
 go_to_line = { path = "../../../go_to_line" }
 gpui = { path = "../../../gpui" }
