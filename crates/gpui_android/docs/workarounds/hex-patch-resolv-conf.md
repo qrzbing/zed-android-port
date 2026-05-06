@@ -1,8 +1,8 @@
 # Hex-patch `/etc/resolv.conf` → `/sdcard/.zed/r`
 
 **Status:** Active
-**Phase / Commit:** L4g (`ce613cb8fe`) + LD_PRELOAD strip (`5accf13755`)
-**Files:** `crates/gpui_android/src/termux_bootstrap.rs` (`install_npm_launcher_generator` body — `patch_resolv_conf`, `handle_elf`)
+**Phase / Commit:** L4g (`ce613cb8fe`) + LD_PRELOAD strip (`5accf13755`) + libc patch (current commit)
+**Files:** `crates/gpui_android/src/termux_bootstrap.rs` — `install_npm_launcher_generator` body (`patch_resolv_conf`, `handle_elf`) for binaries; `install_musl_linker` + `patch_resolv_conf_in_bytes` for the shipped musl libc.
 
 ## Problem
 
@@ -80,6 +80,30 @@ Same `env -u LD_PRELOAD` the old proot wrapper had, just minus the
 proot. Also bypasses the npm JS dispatcher (claude.exe → spawn) and
 goes straight to the binary — single Node-less exec, faster cold
 start.
+
+## Two-layer patch — the binary AND the libc
+
+Patching just the binary is not enough. Bun's HTTP/fetch reaches
+`getaddrinfo()` through the **dynamically-loaded musl libc** we ship
+at `$PREFIX/lib/libc.musl-aarch64.so.1`, and musl's
+`__resolvconf` has its OWN baked-in `/etc/resolv.conf` literal —
+unrelated to the static c-ares slot in the main binary.
+
+Concrete bite (2026-05-06): claude's main binary's resolv literal
+was patched correctly (`strings | grep -c /etc/resolv.conf` → 0),
+but `claude --print "hi"` still hit `ECONNREFUSED`. Strace pinned it:
+
+```
+openat("/etc/resolv.conf", O_RDONLY) = -1 ENOENT
+sendto(..., port=53, addr=127.0.0.1) = 35
+... API Error: Unable to connect to API (ConnectionRefused)
+```
+
+Path was opened from inside musl libc, not the main binary. The fix
+is to also hex-patch the libc asset bytes in `install_musl_linker`
+before writing them out — same 16-byte-slot replacement, applied
+once at boot. See [musl-linker-bundle.md](musl-linker-bundle.md) for
+the libc-side write-up.
 
 ## What this kills vs the proot path
 

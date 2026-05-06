@@ -445,6 +445,14 @@ fn install_profile_d_init(data_path: &Path, prefix: &Path) -> Result<()> {
          case \":$PATH:\" in\n    \
              *\":$PREFIX/bin:\"*) ;;\n    \
              *) export PATH=\"$PREFIX/bin:$PATH\" ;;\n\
+         esac\n\
+         # Zed's apt-untouchable bin dir. Holds shims (npm wrapper, etc.)\n\
+         # that need to survive `pkg install --reinstall` of upstream\n\
+         # packages owning the same name in $PREFIX/bin. Prepended so it\n\
+         # wins via PATH precedence.\n\
+         case \":$PATH:\" in\n    \
+             *\":$PREFIX/.zed/bin:\"*) ;;\n    \
+             *) export PATH=\"$PREFIX/.zed/bin:$PATH\" ;;\n\
          esac\n",
     );
     let needs_write = match std::fs::read(&target) {
@@ -668,8 +676,8 @@ fn cleanup_legacy_claude_wrapper(prefix: &Path) {
     }
 }
 
-/// Replace `$PREFIX/bin/npm` symlink with a shell shim that forwards args
-/// to real npm and fires the launcher generator on success.
+/// Install a PATH-precedence shell shim at `$PREFIX/.zed/bin/npm` that
+/// forwards args to real npm and fires the launcher generator on success.
 ///
 /// Why: every npm-distributed CLI (claude, codex, future tools) lands a
 /// binary under `$PREFIX/lib/node_modules/<pkg>/bin/<name>` and a symlink
@@ -681,15 +689,25 @@ fn cleanup_legacy_claude_wrapper(prefix: &Path) {
 /// runtime wrapper is auto-emitted (proot bind for static-with-hardcoded
 /// paths; direct exec for everything else).
 ///
-/// Self-healing: re-installed every `apply_runtime_patches` boot in case
-/// `pkg install nodejs` or `npm install -g npm` clobbers the symlink. The
-/// shim itself is plain forwarding shell so it can't break npm CLI usage
-/// — argv is passed verbatim, exit code preserved.
+/// PATH-precedence install: the wrapper lives at `$PREFIX/.zed/bin/npm`,
+/// which the profile.d shim places ahead of `$PREFIX/bin` in PATH. apt
+/// owns `$PREFIX/bin/npm` (a symlink installed by the upstream `npm`
+/// package). Earlier we wrote our wrapper directly to `$PREFIX/bin/npm`,
+/// which got silently clobbered by `pkg install npm` / `apt install
+/// --reinstall npm` because dpkg replaces the file as part of its
+/// package-managed contents. Clobbering meant the next `npm install -g
+/// claude-code` ran without `npm_config_libc=musl` and the optional
+/// `claude-code-linux-arm64-musl` dep got skipped — install reports
+/// success, but `claude` exits with "native binary not installed".
+/// Putting the wrapper in `.zed/bin` (an apt-untouched namespace) makes
+/// it survive every apt operation; PATH precedence means it still wins.
+///
+/// Self-healing: re-installed every `apply_runtime_patches` boot. If
+/// the file is missing or stale, this rewrites it.
 fn install_npm_wrapper(prefix: &Path) -> Result<()> {
-    let bin_dir = prefix.join("bin");
-    if !bin_dir.is_dir() {
-        return Ok(());
-    }
+    let zed_bin = prefix.join(".zed/bin");
+    std::fs::create_dir_all(&zed_bin)
+        .with_context(|| format!("create {}", zed_bin.display()))?;
     let prefix_str_resolved = prefix.to_string_lossy();
     let prefix_str = prefix_str_resolved
         .strip_prefix("/data/user/0/")
@@ -746,28 +764,45 @@ fn install_npm_wrapper(prefix: &Path) -> Result<()> {
          exit $RC\n"
     );
 
-    let wrapper_path = bin_dir.join("npm");
-    let needs_install = match std::fs::symlink_metadata(&wrapper_path) {
-        Ok(meta) if meta.file_type().is_symlink() => true,
-        Ok(_) => match std::fs::read(&wrapper_path) {
-            Ok(existing) => existing != body.as_bytes(),
-            Err(_) => true,
-        },
+    let wrapper_path = zed_bin.join("npm");
+    let needs_install = match std::fs::read(&wrapper_path) {
+        Ok(existing) => existing != body.as_bytes(),
         Err(_) => true,
     };
-    if !needs_install {
-        return Ok(());
+    if needs_install {
+        let _ = std::fs::remove_file(&wrapper_path);
+        std::fs::write(&wrapper_path, body.as_bytes())
+            .with_context(|| format!("write {}", wrapper_path.display()))?;
+        let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wrapper_path, perms)?;
+        log::info!(
+            "termux_bootstrap: installed npm wrapper at {}",
+            wrapper_path.display()
+        );
     }
-    let _ = std::fs::remove_file(&wrapper_path);
-    std::fs::write(&wrapper_path, body.as_bytes())
-        .with_context(|| format!("write {}", wrapper_path.display()))?;
-    let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&wrapper_path, perms)?;
-    log::info!(
-        "termux_bootstrap: installed npm wrapper at {}",
-        wrapper_path.display()
-    );
+
+    // Tidy up any wrapper we wrote to the legacy apt-managed path on
+    // earlier boots. Two cases:
+    //   - upstream `npm` package never (re)installed → file is still our
+    //     plain shell shim, leftover from a pre-PATH-precedence boot.
+    //     Removing it lets apt's own postinst restore the upstream symlink
+    //     if/when the user `pkg install npm`s.
+    //   - upstream `npm` already (re)installed → it overwrote our wrapper
+    //     with a symlink to `npm-cli.js`, which is what we want. Skip.
+    let legacy = prefix.join("bin/npm");
+    if let Ok(meta) = std::fs::symlink_metadata(&legacy)
+        && meta.file_type().is_file()
+        && let Ok(existing) = std::fs::read(&legacy)
+        && existing == body.as_bytes()
+    {
+        let _ = std::fs::remove_file(&legacy);
+        log::info!(
+            "termux_bootstrap: removed stale legacy npm wrapper at {}",
+            legacy.display()
+        );
+    }
+
     Ok(())
 }
 
@@ -1680,6 +1715,22 @@ fn install_apt_patchelf_hook(prefix: &Path) -> Result<()> {
 /// build time and shipped as a ~700KB asset; tiny enough to bundle
 /// unconditionally and removes a manual extract step from the
 /// claude-code-on-Android setup.
+///
+/// Applies the same `/etc/resolv.conf` → `/sdcard/.zed/r` hex-patch
+/// in-memory before writing to disk that the launcher-gen perl block
+/// applies to executables. musl libc has the literal `/etc/resolv.
+/// conf` baked into `network/resolvconf.c`, and ANY binary that calls
+/// `getaddrinfo()` through this libc opens that path — even when the
+/// binary itself was hex-patched (claude does this: its statically-
+/// linked c-ares' resolv literal is patched, but Bun's HTTP layer
+/// reaches for the dynamic libc's getaddrinfo, which goes through
+/// musl's own `__resolvconf` and reads the unpatched literal in
+/// libc.musl-aarch64.so.1). On Android `/etc/resolv.conf` doesn't
+/// exist, so the fopen returns ENOENT and c-ares' default-fallback
+/// nameserver kicks in — `127.0.0.1:53`, where nothing is listening,
+/// so every connect() returns ECONNREFUSED. Patching the libc here
+/// closes the leak class for every Bun-compiled CLI we ship (claude,
+/// codex, future tools) without per-tool work.
 fn install_musl_linker(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
     const ASSET: &str = "ld-musl-aarch64.so.1";
     let lib_dir = prefix.join("lib");
@@ -1694,6 +1745,8 @@ fn install_musl_linker(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("musl linker asset {ASSET} missing from APK"))?;
     let mut bytes = Vec::with_capacity(asset.length());
     asset.read_to_end(&mut bytes)?;
+
+    let patches = patch_resolv_conf_in_bytes(&mut bytes);
 
     std::fs::write(&target, &bytes)
         .with_context(|| format!("write {}", target.display()))?;
@@ -1710,11 +1763,41 @@ fn install_musl_linker(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
         .with_context(|| format!("symlink {} -> {ASSET}", alias.display()))?;
 
     log::info!(
-        "termux_bootstrap: installed musl linker ({} bytes) at {}",
+        "termux_bootstrap: installed musl linker ({} bytes) at {} \
+         (resolv.conf hex-patches applied: {})",
         bytes.len(),
-        target.display()
+        target.display(),
+        patches,
     );
     Ok(())
+}
+
+/// In-place rewrite of every `\x00/etc/resolv.conf\x00` occurrence in
+/// `bytes` to `\x00/sdcard/.zed/r\x00\x00\x00` (same 18-byte slot
+/// width — the path shrinks from 16 to 14 chars and the freed 2 bytes
+/// become NUL padding, so any C-string `strlen` naturally truncates
+/// at `/sdcard/.zed/r`). Returns the number of patches applied.
+///
+/// Same logic as the launcher-gen perl block but in pure Rust on the
+/// asset bytes, so the patch lands in $PREFIX/lib/ld-musl-aarch64.so.1
+/// once at install time rather than per-binary on every npm op.
+fn patch_resolv_conf_in_bytes(bytes: &mut [u8]) -> usize {
+    const NEEDLE: &[u8] = b"\x00/etc/resolv.conf\x00";
+    const REPLACEMENT: &[u8] = b"\x00/sdcard/.zed/r\x00\x00\x00";
+    debug_assert_eq!(NEEDLE.len(), REPLACEMENT.len());
+
+    let mut count = 0;
+    let mut i = 0;
+    while i + NEEDLE.len() <= bytes.len() {
+        if &bytes[i..i + NEEDLE.len()] == NEEDLE {
+            bytes[i..i + REPLACEMENT.len()].copy_from_slice(REPLACEMENT);
+            count += 1;
+            i += NEEDLE.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
 }
 
 /// Copy the standalone `zed-askpass-helper` binary from APK assets into
