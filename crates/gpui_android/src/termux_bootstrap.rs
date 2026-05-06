@@ -681,9 +681,26 @@ fn install_npm_wrapper(prefix: &Path) -> Result<()> {
          REAL_NPM_JS={prefix_str}/lib/node_modules/npm/bin/npm-cli.js\n\
          NODE={prefix_str}/bin/node\n\
          HOOK={prefix_str}/etc/apt/zed-launcher-gen.sh\n\
+         TERMUX_EXEC={prefix_str}/lib/libtermux-exec.so\n\
+         # Set LD_PRELOAD only inside this wrapper's process tree so\n\
+         # libtermux-exec.so intercepts execve and rewrites Linux-style\n\
+         # shebangs (#!/usr/bin/env node, #!/bin/sh, etc.) to their\n\
+         # Termux equivalents at $PREFIX/bin/. Without this, every\n\
+         # `npm run-script` that exec's a node-shebang'd CLI in\n\
+         # `node_modules/.bin/` (tsc, eslint, prettier, etc.) fails\n\
+         # with `sh: 1: tsc: not found` — the kernel binfmt_script\n\
+         # reports the SHEBANG file (/usr/bin/env) as missing rather\n\
+         # than the script itself. The gpui app process REMOVES\n\
+         # LD_PRELOAD globally at boot to keep ssh subprocesses clean\n\
+         # of `cannot be preloaded` spam on remote shells (see L10\n\
+         # phase doc Section D); scoping it to just npm here avoids\n\
+         # both regressions.\n\
          if [ ! -x \"$NODE\" ] || [ ! -f \"$REAL_NPM_JS\" ]; then\n    \
              echo \"zed-npm: real npm or node missing\" >&2\n    \
              exit 1\n\
+         fi\n\
+         if [ -f \"$TERMUX_EXEC\" ]; then\n    \
+             export LD_PRELOAD=\"$TERMUX_EXEC\"\n\
          fi\n\
          \"$NODE\" \"$REAL_NPM_JS\" \"$@\"\n\
          RC=$?\n\

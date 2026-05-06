@@ -913,6 +913,33 @@ fn npm_command_env(node_binary: Option<&Path>) -> HashMap<String, String> {
         }
     }
 
+    // On Android, scope LD_PRELOAD to the npm subprocess only. The gpui
+    // app removes LD_PRELOAD at boot to keep ssh subprocesses clean of
+    // `cannot be preloaded` spam on remote shells (per the L10
+    // remote-development workaround). Without it, npm-installed CLI
+    // scripts whose shebang is `#!/usr/bin/env node` fail to exec
+    // because Android has no `/usr/bin/env` — the kernel's
+    // binfmt_script handler reports the SHEBANG file as "not found"
+    // and `npm run-script compile` (eslint, typescript build, etc.)
+    // dies with `sh: 1: tsc: not found`. libtermux-exec.so intercepts
+    // execve and rewrites those Linux-style shebangs to the Termux
+    // equivalents at $PREFIX/bin/. Setting LD_PRELOAD here scopes the
+    // shim to the npm process tree only — ssh subprocesses still run
+    // clean.
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(prefix) = env::var("TERMUX__PREFIX") {
+            let termux_exec =
+                Path::new(&prefix).join("lib/libtermux-exec.so");
+            if termux_exec.is_file() {
+                command_env.insert(
+                    "LD_PRELOAD".into(),
+                    termux_exec.to_string_lossy().into_owned(),
+                );
+            }
+        }
+    }
+
     #[cfg(windows)]
     {
         if let Some(val) = env::var("SYSTEMROOT")
