@@ -372,6 +372,20 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
 
     info!("zed_android: settings + theme + editor init");
     settings::init(cx);
+    // `gpui_tokio::init` registers the global Tokio runtime that wasmtime's
+    // async support taps into for extension epoch interruption + WASI
+    // async tasks. Production calls this at zed/src/main.rs:462. Without
+    // it, extension_host's first WASM extension load panics:
+    //   `RustPanic: no state of type gpui_tokio::GlobalTokio exists`
+    // (caught it once on Android, then added this).
+    gpui_tokio::init(cx);
+    // `extension::init` creates the global ExtensionHostProxy that all
+    // extension contribution registries (theme, language, debug-adapter)
+    // hang off of. Has to run BEFORE any of those `*_extension::init`
+    // calls. Cheap — just installs a default proxy global; the real
+    // store gets created later by `extension_host::init` once fs/client
+    // /node_runtime are available.
+    extension::init(cx);
     theme_settings::init(theme::LoadThemes::All(Box::new(assets::Assets)), cx);
     editor::init(cx);
 
@@ -490,6 +504,28 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     );
     info!("zed_android: languages::init complete (load-grammars feature on)");
 
+    // language_extension::init registers grammar/language/language-server
+    // proxies on the global ExtensionHostProxy so extension-installed
+    // languages and LSPs route through Zed's normal language registry.
+    // Must come AFTER `languages::init` (the registry has to exist) and
+    // AFTER `extension::init` (the proxy has to exist).
+    //
+    // Production passes `LspAccess::ViaWorkspaces(...)` so extension-
+    // installed LSPs get auto-registered against every active workspace.
+    // We use `Noop` for now — extensions can still contribute languages,
+    // grammars, and themes; LSP-from-extension will require wiring
+    // `ViaWorkspaces` against the multi-workspace scope, which is its
+    // own follow-up because Android's `MultiWorkspace` differs in shape
+    // from desktop.
+    {
+        let extension_host_proxy = extension::ExtensionHostProxy::global(cx);
+        language_extension::init(
+            language_extension::LspAccess::Noop,
+            extension_host_proxy,
+            language_registry.clone(),
+        );
+    }
+
     let registry = theme::ThemeRegistry::global(cx);
     info!(
         "zed_android: theme registry has {} themes loaded",
@@ -502,9 +538,9 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         client: client.clone(),
         user_store,
         workspace_store,
-        fs,
+        fs: fs.clone(),
         build_window_options: minimal_window_options,
-        node_runtime,
+        node_runtime: node_runtime.clone(),
         session: app_session,
     });
     AppState::set_global(app_state.clone(), cx);
@@ -580,6 +616,45 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         };
     project::trusted_worktrees::init(db_trusted_paths, cx);
     Project::init(&client, cx);
+
+    // Extensions (Phase L3 — previously deferred). Mirrors production
+    // zed/src/main.rs:623, 631–637, 741. The store creates the
+    // global ExtensionStore, watches `paths::extensions_dir()` for new
+    // installations, and asynchronously fetches the registry from
+    // Zed's API. Theme/debug-adapter proxies register against the
+    // already-installed `ExtensionHostProxy` from `extension::init`
+    // earlier in boot. extensions_ui registers the workspace observer
+    // that handles the `zed_actions::Extensions` action — taps from
+    // the title-bar settings menu open the browse/install pane.
+    //
+    // Wasmtime engine init (`crates/extension_host/src/wasm_host.rs:564`)
+    // currently uses Cranelift JIT. Whether that survives Android's
+    // `untrusted_app_27` SELinux W^X policy is open — modern Android
+    // (API 30+) typically allows anonymous executable mappings for
+    // app processes, so it MAY just work; if not, the engine init
+    // will panic at first extension load and we switch wasmtime's
+    // strategy to Pulley interpreter (one Cargo.toml feature flip +
+    // a `Config::strategy(Strategy::Pulley)` line). See
+    // `deferred-render-pipeline-perf.md` philosophy: read the actual
+    // failure first, don't preemptively configure for a problem that
+    // may not exist.
+    {
+        let extension_host_proxy = extension::ExtensionHostProxy::global(cx);
+        extension_host::init(
+            extension_host_proxy.clone(),
+            fs.clone(),
+            client.clone(),
+            node_runtime.clone(),
+            cx,
+        );
+        debug_adapter_extension::init(extension_host_proxy.clone(), cx);
+        theme_extension::init(
+            extension_host_proxy,
+            theme::ThemeRegistry::global(cx),
+            cx.background_executor().clone(),
+        );
+    }
+
     diagnostics::init(cx);
     workspace::init(app_state.clone(), cx);
     command_palette::init(cx);
@@ -644,6 +719,13 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // loaded as a panel like ProjectPanel/GitPanel. Uses
     // project.git_store() so remote-SSH projects work transparently.
     git_graph::init(cx);
+    // Production zed/src/main.rs:741. Registers the workspace observer
+    // that handles `zed_actions::Extensions::default()` — opens the
+    // browse/install/manage pane (an `ExtensionsPage` workspace item).
+    // The settings-menu chevron in the Android title bar already
+    // dispatches `zed_actions::Extensions` (see title_bar.rs); without
+    // this init the action goes nowhere.
+    extensions_ui::init(cx);
     keymap_editor::init(cx);
     inspector_ui::init(app_state.clone(), cx);
     json_schema_store::init(cx);

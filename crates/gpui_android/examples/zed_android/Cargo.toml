@@ -27,11 +27,17 @@ feedback = { path = "../../../feedback" }
 file_finder = { path = "../../../file_finder" }
 fs = { path = "../../../fs" }
 futures = "0.3"
+debug_adapter_extension = { path = "../../../debug_adapter_extension" }
+extension = { path = "../../../extension" }
+extension_host = { path = "../../../extension_host" }
+extensions_ui = { path = "../../../extensions_ui" }
 git_graph = { path = "../../../git_graph" }
 git_ui = { path = "../../../git_ui" }
+language_extension = { path = "../../../language_extension" }
 go_to_line = { path = "../../../go_to_line" }
 gpui = { path = "../../../gpui" }
 gpui_android = { path = "../../" }
+gpui_tokio = { path = "../../../gpui_tokio" }
 image_viewer = { path = "../../../image_viewer" }
 inspector_ui = { path = "../../../inspector_ui" }
 json_schema_store = { path = "../../../json_schema_store" }
@@ -85,6 +91,7 @@ zed_actions = { path = "../../../zed_actions" }
 rust-embed = { version = "8.11", features = ["debug-embed", "include-exclude"] }
 settings = { path = "../../../settings" }
 theme = { path = "../../../theme" }
+theme_extension = { path = "../../../theme_extension" }
 theme_settings = { path = "../../../theme_settings" }
 ui = { path = "../../../ui" }
 menu = { path = "../../../menu" }
