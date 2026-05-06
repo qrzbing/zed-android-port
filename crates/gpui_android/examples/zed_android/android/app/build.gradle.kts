@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.zed.zed_android"
+    namespace = "com.zdroid"
     compileSdk = 35
 
     // Pin the NDK explicitly so reproducibility doesn't depend on whatever
@@ -15,7 +15,7 @@ android {
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "dev.zed.zed_android"
+        applicationId = "com.zdroid"
         // minSdk = 26 enforces bionic ≥ Oreo. `forkpty()` is on the symbol
         // table from API 23, but cpal/livekit transitive crates require
         // libaaudio which is API 26.
