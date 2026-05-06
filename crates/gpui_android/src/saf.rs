@@ -123,7 +123,7 @@ fn launch_create_document(
 
 /// Called from MainActivity's ActivityResultLauncher callback.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_MainActivity_onPickerResult<
+pub extern "system" fn Java_com_zdroid_MainActivity_onPickerResult<
     'local,
 >(
     mut env: jni::JNIEnv<'local>,
@@ -160,7 +160,7 @@ fn handle_tree_result(uri: &str) -> Result<Option<PathBuf>> {
         return Ok(Some(decode_storage_segment(rest)?));
     }
     if let Some(rest) =
-        uri.strip_prefix("content://dev.zed.zed_android.documents/tree/")
+        uri.strip_prefix("content://com.zdroid.documents/tree/")
     {
         return Ok(Some(decode_zed_segment(rest)?));
     }
@@ -177,7 +177,7 @@ fn handle_document_result(uri: &str) -> Result<Option<PathBuf>> {
         return Ok(Some(decode_storage_segment(rest)?));
     }
     if let Some(rest) =
-        uri.strip_prefix("content://dev.zed.zed_android.documents/document/")
+        uri.strip_prefix("content://com.zdroid.documents/document/")
     {
         return Ok(Some(decode_zed_segment(rest)?));
     }

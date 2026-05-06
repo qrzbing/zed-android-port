@@ -409,7 +409,7 @@ fn launch_extra_activity_inner(
     let class_loader = env
         .call_method(&main_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
         .l()?;
-    let class_name = env.new_string("dev.zed.zed_android.ExtraWindowActivity")?;
+    let class_name = env.new_string("com.zdroid.ExtraWindowActivity")?;
     let extra_class = env
         .call_method(
             &class_loader,
@@ -426,7 +426,7 @@ fn launch_extra_activity_inner(
         &[JValue::Object(&main_activity), JValue::Object(&extra_class)],
     )?;
 
-    let extra_key = env.new_string("dev.zed.zed_android.window_id")?;
+    let extra_key = env.new_string("com.zdroid.window_id")?;
     env.call_method(
         &intent,
         "putExtra",
@@ -514,7 +514,7 @@ fn dispatch_event(event: ExtraWindowEvent) {
 /// but the process was killed and restarted, so gpui has no record).
 /// Activity uses the result to decide whether to proceed or `finish()`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeIsExtraWindowKnown<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeIsExtraWindowKnown<
     'local,
 >(
     _env: jni::JNIEnv<'local>,
@@ -531,7 +531,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeIsExtraWindo
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraActivityCreated<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraActivityCreated<
     'local,
 >(
     env: jni::JNIEnv<'local>,
@@ -563,7 +563,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraActiv
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraActivityDestroyed<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraActivityDestroyed<
     'local,
 >(
     _env: jni::JNIEnv<'local>,
@@ -579,7 +579,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraActiv
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfaceCreated<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraSurfaceCreated<
     'local,
 >(
     env: jni::JNIEnv<'local>,
@@ -613,7 +613,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfaceChanged<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraSurfaceChanged<
     'local,
 >(
     _env: jni::JNIEnv<'local>,
@@ -634,7 +634,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfaceDestroyed<
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraSurfaceDestroyed<
     'local,
 >(
     _env: jni::JNIEnv<'local>,
@@ -647,7 +647,7 @@ pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraSurfa
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zed_zed_1android_NativeBridge_nativeOnExtraTouchEvent<'local>(
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraTouchEvent<'local>(
     mut env: jni::JNIEnv<'local>,
     _bridge: JObject<'local>,
     window_id: i64,

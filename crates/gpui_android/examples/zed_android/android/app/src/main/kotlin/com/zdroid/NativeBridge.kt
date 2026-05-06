@@ -1,4 +1,4 @@
-package dev.zed.zed_android
+package com.zdroid
 
 import android.view.Surface
 
@@ -10,7 +10,7 @@ import android.view.Surface
 /// `crates/gpui_android/src/multi_window.rs`.
 ///
 /// **JNI symbol mangling:** these `external fun`s resolve to
-/// `Java_dev_zed_zed_1android_NativeBridge_<methodName>` symbols. Class name
+/// `Java_com_zdroid_NativeBridge_<methodName>` symbols. Class name
 /// changes here require matching renames on the Rust side.
 object NativeBridge {
     /// Process-death recovery probe. `ExtraWindowActivity.onCreate` calls

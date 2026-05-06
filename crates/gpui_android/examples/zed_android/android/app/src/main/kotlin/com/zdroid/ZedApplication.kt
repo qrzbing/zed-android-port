@@ -1,4 +1,4 @@
-package dev.zed.zed_android
+package com.zdroid
 
 import android.app.Application
 import java.io.File

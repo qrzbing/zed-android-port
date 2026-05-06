@@ -1,4 +1,4 @@
-package dev.zed.zed_android
+package com.zdroid
 
 import android.Manifest
 import android.app.Activity

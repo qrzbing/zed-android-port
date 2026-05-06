@@ -1,4 +1,4 @@
-package dev.zed.zed_android
+package com.zdroid
 
 import android.content.res.AssetFileDescriptor
 import android.database.Cursor
@@ -14,7 +14,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.util.LinkedList
 
-/// Exposes Zed's `~` (i.e. `/data/data/dev.zed.zed_android/files/home`) to
+/// Exposes Zed's `~` (i.e. `/data/data/com.zdroid/files/home`) to
 /// other apps via Android's Storage Access Framework. After install Zed
 /// shows up in any system "Open from / Save to" picker as its own root —
 /// same pattern as Termux. Read-write; users can browse, edit, share files

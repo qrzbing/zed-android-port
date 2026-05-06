@@ -1,4 +1,4 @@
-package dev.zed.zed_android
+package com.zdroid
 
 import android.content.Context
 import android.os.Bundle
@@ -13,7 +13,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 /// Host for a single secondary gpui window. Spawned by Rust via JNI
 /// `startActivity(Intent(...))` from `multi_window::launch_extra_activity`,
-/// with the gpui `WindowId` passed as the `dev.zed.zed_android.window_id`
+/// with the gpui `WindowId` passed as the `com.zdroid.window_id`
 /// long extra. On freeform-windowing devices (DeX, Pixel desktop windowing,
 /// Android 16 Desktop Mode, ChromeOS) the OS provides native chrome —
 /// close X, drag bar, resize handles. On phones each Activity lives in its
@@ -192,7 +192,7 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "zed_android_extra"
-        const val EXTRA_WINDOW_ID = "dev.zed.zed_android.window_id"
+        const val EXTRA_WINDOW_ID = "com.zdroid.window_id"
     }
 }
 
