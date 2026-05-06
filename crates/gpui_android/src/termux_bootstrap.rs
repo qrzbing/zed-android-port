@@ -264,15 +264,40 @@ fn extract_entries<R: Read + std::io::Seek>(
             std::fs::create_dir_all(parent)?;
         }
 
+        let entry_mode = entry.unix_mode();
         let mut out = std::fs::File::create(&dest)
             .with_context(|| format!("create {}", dest.display()))?;
         std::io::copy(&mut entry, &mut out)?;
 
-        // Mirror TermuxInstaller.java::setupExecutables. Native binaries
-        // and apt helpers need owner-execute. 0o700 keeps everything in
-        // the app sandbox; broader perms are pointless because Android's
-        // app-private dir is already root:app_<uid>:S0:c... isolated.
-        if raw_name.starts_with("bin/")
+        // Honor the zip-stored unix mode for every entry. Bootstrap zips
+        // built by termux-packages stamp realistic perms on each file
+        // (binaries 0755, libs 0644, helper scripts 0755, etc.) — copy
+        // those through verbatim, scoped to the owner so we stay inside
+        // the app sandbox.
+        //
+        // Earlier this only chmod'd `bin/*`, `libexec/*`, `lib/apt/
+        // methods/*`, and `lib/apt/apt-helper` to 0700 and let everything
+        // else inherit `std::fs::File::create`'s default. With our
+        // process umask, default ended up at 0600 — which broke any
+        // executable outside that whitelist (`lib/go/bin/go`,
+        // `lib/node_modules/.bin/*`, etc.) with `EACCES` at execve.
+        // Honoring zip mode handles all of those plus future packages
+        // we don't have to think about.
+        //
+        // Fallback when the zip entry has no Unix mode (older zip
+        // creators / MS-DOS attribute mode): keep the original
+        // whitelist behavior so bin/* still gets 0700.
+        if let Some(mode) = entry_mode {
+            // Mask to 0o700 ownership scope — the bootstrap's app-
+            // private dir is already isolated by uid + SELinux, so
+            // group/world bits are decorative. Read+exec where the
+            // file says executable; read where it says non-exec.
+            let owner_only = (mode & 0o700)
+                | if mode & 0o100 != 0 { 0o700 } else { 0o600 };
+            let mut perms = std::fs::metadata(&dest)?.permissions();
+            perms.set_mode(owner_only);
+            std::fs::set_permissions(&dest, perms)?;
+        } else if raw_name.starts_with("bin/")
             || raw_name.starts_with("libexec/")
             || raw_name.starts_with("lib/apt/methods/")
             || raw_name == "lib/apt/apt-helper"
