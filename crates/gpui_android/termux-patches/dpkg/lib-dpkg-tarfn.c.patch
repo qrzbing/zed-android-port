@@ -8,10 +8,11 @@
 +/*
 + * zed_android port: when TERMUX_APP__PACKAGE_NAME is set in the environment
 + * and differs from the upstream "com.termux" baked into Termux's prebuilt
-+ * .debs, rewrite tar entry paths starting with "data/data/com.termux/" to
-+ * "data/data/<env>/" at extract time. Lets a fork install upstream Termux
-+ * packages without rebuilding each one for the new prefix. No-op when the
-+ * env var is unset or equals "com.termux".
++ * .debs, rewrite tar entry paths starting with "data/data/com.termux"
++ * (followed by either "/..." OR end-of-string — see boundary check below)
++ * to "data/data/<env>/..." at extract time. Lets a fork install upstream
++ * Termux packages without rebuilding each one for the new prefix. No-op
++ * when the env var is unset or equals "com.termux".
 + *
 + * Variable name uses Termux's double-underscore convention, same as
 + * scripts/build-bootstraps.sh:246 and scripts/build/termux_download_deb_pac.sh
@@ -22,18 +23,29 @@
 + *   - "data/data/com.termux/..."
 + *   - "./data/data/com.termux/..."
 + *   - "/data/data/com.termux/..."
++ *
++ * Boundary rule (extended 2026-05-06 after `apt install patchelf` failed
++ * with `unable to stat './data/data/com.termux' (which was about to be
++ * installed): Permission denied`): the byte after the 20-char base
++ * "data/data/com.termux" must be exactly '/' (regular file/dir entries)
++ * or '\0' (the bare-directory marker some tar implementations emit
++ * without a trailing slash for the package's own data dir). MUST NOT
++ * match a sibling like "data/data/com.termuxblah/..." — that would be
++ * a different package whose name happens to share a prefix.
 + */
 +static void
 +tarfn_translate_termux_path(char **name_ptr)
 +{
 +	static char *target;
 +	static int initialized;
-+	static const char needle[] = "data/data/com.termux/";
-+	const size_t needle_len = sizeof(needle) - 1;
++	static const char base[] = "data/data/com.termux";
++	const size_t base_len = sizeof(base) - 1;
 +	const char *name;
 +	const char *prefix;
++	char boundary;
 +	size_t lead;
 +	size_t target_len;
++	const char *rest;
 +	size_t rest_len;
 +	size_t new_len;
 +	char *new_name;
@@ -59,12 +71,24 @@
 +		prefix += 1;
 +		lead = 1;
 +	}
-+	if (strncmp(prefix, needle, needle_len) != 0)
++	if (strncmp(prefix, base, base_len) != 0)
++		return;
++	boundary = prefix[base_len];
++	/* Must terminate cleanly at "/" or end-of-string. Anything else
++	 * (e.g. "data/data/com.termuxblah/...") is a different package
++	 * whose name happens to share a prefix; do not rewrite. */
++	if (boundary != '/' && boundary != '\0')
 +		return;
 +
 +	target_len = strlen(target);
-+	rest_len = strlen(prefix + needle_len);
-+	new_len = lead + 10 /* "data/data/" */ + target_len + 1 + rest_len + 1;
++	if (boundary == '/') {
++		rest = prefix + base_len; /* keeps the leading '/' */
++		rest_len = strlen(rest);
++	} else {
++		rest = "";
++		rest_len = 0;
++	}
++	new_len = lead + 10 /* "data/data/" */ + target_len + rest_len + 1;
 +	new_name = m_malloc(new_len);
 +
 +	out = new_name;
@@ -76,9 +100,11 @@
 +	out += 10;
 +	memcpy(out, target, target_len);
 +	out += target_len;
-+	*out++ = '/';
-+	memcpy(out, prefix + needle_len, rest_len);
-+	out[rest_len] = '\0';
++	if (rest_len > 0) {
++		memcpy(out, rest, rest_len);
++		out += rest_len;
++	}
++	*out = '\0';
 +
 +	free(*name_ptr);
 +	*name_ptr = new_name;

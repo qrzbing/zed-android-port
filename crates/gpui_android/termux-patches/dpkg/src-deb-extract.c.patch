@@ -33,10 +33,17 @@
 +    const char *env = getenv("TERMUX_APP__PACKAGE_NAME");
 +    if (env != NULL && env[0] != '\0' &&
 +        strcmp(env, "com.termux") != 0)
++      /* Matches "data/data/com.termux" followed by either "/" (regular
++       * file/dir entries) OR end-of-string (the bare-directory marker
++       * tar implementations emit without trailing "/"). The boundary
++       * group \\(/\\|$\\) is captured in \\2 and re-emitted so a
++       * trailing-slashed entry round-trips trailing-slashed and a
++       * bare-dir entry stays bare. Boundary check parallels the
++       * lib/dpkg/tarfn.c patch — see comments there. */
 +      expr = str_fmt(
 +          "s,^\\(/\\|\\./\\)\\?"
-+          "data/data/com\\.termux/,"
-+          "\\1data/data/%s/,Srh", env);
++          "data/data/com\\.termux\\(/\\|$\\),"
++          "\\1data/data/%s\\2,Srh", env);
 +    initialized = 1;
 +  }
 +  return expr;
