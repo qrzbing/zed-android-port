@@ -1556,8 +1556,14 @@ fn install_apt_patchelf_hook(prefix: &Path) -> Result<()> {
          }}\n\
          maybe_hex_patch() {{\n    \
              [ -x \"$PREFIX/bin/perl\" ] || return 0\n    \
-             grep -q -a -- '/data/data/com.termux/' \"$1\" 2>/dev/null || return 0\n    \
-             \"$PREFIX/bin/perl\" -e '\n                my $path = $ARGV[0];\n                open my $fh, \"+<:raw\", $path or exit 0;\n                my $data = do {{ local $/; <$fh> }};\n                my $count = 0;\n                while ($data =~ m{{/data/data/com\\.termux/}}g) {{\n                    my $offset = $-[0];\n                    seek $fh, $offset, 0;\n                    print $fh \"/data/data/com.zdroid/\";\n                    $count++;\n                }}\n                close $fh;\n                print STDERR \"zed-rodata-hex: $count com.termux -> com.zdroid in $path\\n\" if $count > 0;\n            ' \"$1\" 2>&1\n\
+             # Rewrite paths only present in binaries that actually have\n    \
+             # something to rewrite. grep -q -a treats binary input as text\n    \
+             # and short-circuits per pattern.\n    \
+             local has_termux=0 has_resolv=0\n    \
+             grep -q -a -- '/data/data/com.termux/' \"$1\" 2>/dev/null && has_termux=1\n    \
+             grep -q -a -- '/etc/resolv.conf' \"$1\" 2>/dev/null && has_resolv=1\n    \
+             [ $has_termux -eq 0 ] && [ $has_resolv -eq 0 ] && return 0\n    \
+             \"$PREFIX/bin/perl\" -e '\n                my $path = $ARGV[0];\n                open my $fh, \"+<:raw\", $path or exit 0;\n                my $data = do {{ local $/; <$fh> }};\n                my $tcount = 0;\n                my $rcount = 0;\n                # Pass 1: com.termux/ -> com.zdroid/ (22 bytes <-> 22 bytes,\n                # in-place; the equal-length property of the com.zdroid\n                # rename).\n                while ($data =~ m{{/data/data/com\\.termux/}}g) {{\n                    my $offset = $-[0];\n                    seek $fh, $offset, 0;\n                    print $fh \"/data/data/com.zdroid/\";\n                    $tcount++;\n                }}\n                # Pass 2: /etc/resolv.conf -> /sdcard/.zed/r + 2 NUL pad\n                # (16 bytes <-> 14 + 2 NUL = 16). Anchored on leading and\n                # trailing NUL to avoid matching false positives in\n                # arbitrary string streams. dns_bridge.rs writes the\n                # active-network nameservers to /sdcard/.zed/r at boot;\n                # post-rewrite the binary opens that file instead of the\n                # nonexistent Android /etc/resolv.conf and Go pure-Go\n                # resolver / musl-libc resolver / c-ares all read it.\n                while ($data =~ m{{/etc/resolv\\.conf}}g) {{\n                    my $offset = $-[0];\n                    seek $fh, $offset, 0;\n                    print $fh \"/sdcard/.zed/r\\x00\\x00\";\n                    $rcount++;\n                }}\n                close $fh;\n                print STDERR \"zed-rodata-hex: $tcount com.termux, $rcount /etc/resolv.conf in $path\\n\" if ($tcount > 0 || $rcount > 0);\n            ' \"$1\" 2>&1\n\
          }}\n\
          find \"$PREFIX/bin\" \"$PREFIX/sbin\" \"$PREFIX/libexec\" \
               \"$PREFIX/glibc/bin\" \"$PREFIX/glibc/sbin\" \"$PREFIX/glibc/libexec\" \
