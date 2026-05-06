@@ -702,6 +702,17 @@ fn install_npm_wrapper(prefix: &Path) -> Result<()> {
          if [ -f \"$TERMUX_EXEC\" ]; then\n    \
              export LD_PRELOAD=\"$TERMUX_EXEC\"\n\
          fi\n\
+         # Force npm to pick `musl` libc variants of platform-specific\n\
+         # optional deps. Termux's bionic isn't detected as glibc OR\n\
+         # musl by npm's detect-libc (returns null), and packages like\n\
+         # @anthropic-ai/claude-code with `engines.libc: musl` in the\n\
+         # optional dep's package.json get silently skipped — install\n\
+         # appears to succeed but the native binary is missing.\n\
+         # `--libc=musl` (via env) tells npm to pick the musl variant;\n\
+         # our $PREFIX/lib/ld-musl-aarch64.so.1 + launcher-gen handle\n\
+         # the runtime side. Same flag set in node_runtime crate for\n\
+         # Zed-driven npm installs.\n\
+         export npm_config_libc=musl\n\
          \"$NODE\" \"$REAL_NPM_JS\" \"$@\"\n\
          RC=$?\n\
          if [ -x \"$HOOK\" ]; then\n    \
@@ -803,14 +814,29 @@ fn install_npm_launcher_generator(prefix: &Path) -> Result<()> {
              chmod +x -- \"$dst\"\n\
          }}\n\
          \n\
+         # Locate patchelf with the same fallback the apt patchelf hook\n\
+         # uses — prefer $PREFIX/bin/patchelf (the standard location),\n\
+         # fall back to $PREFIX/glibc/bin/patchelf (the glibc-stack\n\
+         # variant from `pkg install patchelf-glibc` or our manual\n\
+         # symlink dance). Without this fallback, a user who lost\n\
+         # $PREFIX/bin/patchelf (apt autoremove edge case, or hasn't\n\
+         # installed it yet) gets silent no-ops here — the npm install\n\
+         # appears to succeed but the resulting Bun-compiled binary\n\
+         # has the unpatched /lib/ld-musl-aarch64.so.1 INTERP and\n\
+         # fails at execve with `cannot execute: required file not\n\
+         # found`.\n\
+         PATCHELF=\"\"\n\
+         if [ -x \"$PREFIX/bin/patchelf\" ]; then PATCHELF=\"$PREFIX/bin/patchelf\"; \
+         elif [ -x \"$PREFIX/glibc/bin/patchelf\" ]; then PATCHELF=\"$PREFIX/glibc/bin/patchelf\"; \
+         fi\n\
          patch_musl_interp() {{\n    \
              bin=\"$1\"\n    \
-             [ -x \"$PREFIX/bin/patchelf\" ] || return 0\n    \
+             [ -n \"$PATCHELF\" ] || return 0\n    \
              interp=$(\"$PREFIX/bin/readelf\" -l \"$bin\" 2>/dev/null | awk '/interpreter:/ {{ gsub(/[\\[\\]]/, \"\", $NF); print $NF; exit }}')\n    \
              case \"$interp\" in\n        \
                  /lib/ld-musl-aarch64.so.1)\n            \
-                     \"$PREFIX/bin/patchelf\" --set-interpreter \"$PREFIX/lib/ld-musl-aarch64.so.1\" \"$bin\" 2>/dev/null || true\n            \
-                     \"$PREFIX/bin/patchelf\" --set-rpath \"$PREFIX/lib\" \"$bin\" 2>/dev/null || true\n            \
+                     \"$PATCHELF\" --set-interpreter \"$PREFIX/lib/ld-musl-aarch64.so.1\" \"$bin\" 2>/dev/null || true\n            \
+                     \"$PATCHELF\" --set-rpath \"$PREFIX/lib\" \"$bin\" 2>/dev/null || true\n            \
                      ;;\n    \
              esac\n\
          }}\n\

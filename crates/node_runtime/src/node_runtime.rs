@@ -913,19 +913,34 @@ fn npm_command_env(node_binary: Option<&Path>) -> HashMap<String, String> {
         }
     }
 
-    // On Android, scope LD_PRELOAD to the npm subprocess only. The gpui
-    // app removes LD_PRELOAD at boot to keep ssh subprocesses clean of
-    // `cannot be preloaded` spam on remote shells (per the L10
-    // remote-development workaround). Without it, npm-installed CLI
-    // scripts whose shebang is `#!/usr/bin/env node` fail to exec
-    // because Android has no `/usr/bin/env` — the kernel's
-    // binfmt_script handler reports the SHEBANG file as "not found"
-    // and `npm run-script compile` (eslint, typescript build, etc.)
-    // dies with `sh: 1: tsc: not found`. libtermux-exec.so intercepts
-    // execve and rewrites those Linux-style shebangs to the Termux
-    // equivalents at $PREFIX/bin/. Setting LD_PRELOAD here scopes the
-    // shim to the npm process tree only — ssh subprocesses still run
-    // clean.
+    // On Android, two npm-side adjustments scoped to the subprocess:
+    //
+    // 1. LD_PRELOAD=$PREFIX/lib/libtermux-exec.so. The gpui app removes
+    //    LD_PRELOAD at boot to keep ssh subprocesses clean of
+    //    `cannot be preloaded` spam on remote shells (per the L10
+    //    workaround). Without it, npm-installed CLI scripts whose
+    //    shebang is `#!/usr/bin/env node` fail to exec — Android has
+    //    no `/usr/bin/env`, kernel binfmt_script reports the SHEBANG
+    //    file as not-found, and `npm run-script compile` dies with
+    //    `sh: 1: tsc: not found`. libtermux-exec rewrites those Linux
+    //    shebangs to the $PREFIX/bin/ equivalents at execve. Scoping
+    //    here keeps ssh clean.
+    //
+    // 2. npm_config_libc=musl. Termux's bionic isn't musl OR glibc, so
+    //    npm's detect-libc returns null. Packages with platform-
+    //    specific optionalDependencies (like @anthropic-ai/claude-code,
+    //    most native-binary npm CLIs) require libc=musl OR libc=glibc
+    //    in their `engines` block, and `null` matches neither — npm
+    //    silently skips ALL optional variants and the install lands
+    //    only the wrapper package without the native binary.
+    //    `--libc=musl` (forwarded via npm_config_libc env, equivalent
+    //    to the CLI flag) tells npm to pick the musl variant. Our
+    //    musl loader at $PREFIX/lib/ld-musl-aarch64.so.1 plus the
+    //    launcher-gen patchelf step makes those binaries actually run.
+    //    Choosing musl over glibc because the Termux glibc-runner
+    //    package (`grun`) is a heavier dependency we don't want to
+    //    require for every npm-installed CLI; musl-static binaries
+    //    work directly via our bundled musl loader.
     #[cfg(target_os = "android")]
     {
         if let Ok(prefix) = env::var("TERMUX__PREFIX") {
@@ -938,6 +953,7 @@ fn npm_command_env(node_binary: Option<&Path>) -> HashMap<String, String> {
                 );
             }
         }
+        command_env.insert("npm_config_libc".into(), "musl".into());
     }
 
     #[cfg(windows)]
