@@ -231,12 +231,41 @@ fn android_main(app: AndroidApp) {
     // boot regardless of whether extraction actually re-extracted; the
     // sed is no-op on clean files and the apt config write is constant.
     if let Err(err) =
-        gpui_android::termux_bootstrap::apply_runtime_patches(&data_path)
+        gpui_android::termux_bootstrap::apply_runtime_patches(&app, &data_path)
     {
         log::warn!(
             "zed_android: termux runtime patches failed: {err:#}; \
              upstream `pkg install` of packages with hardcoded shebangs \
              may need a manual sed + dpkg --configure -a"
+        );
+    }
+
+    // Wire askpass to the standalone helper now that
+    // apply_runtime_patches has placed it at $PREFIX/bin/zed-askpass-helper.
+    // Must happen BEFORE any AskPassSession is created (Open Remote,
+    // git auth prompts, etc.) — the askpass crate's ASKPASS_PROGRAM
+    // OnceLock initializes on first read with current_exe() (=
+    // /system/bin/app_process64 on Android) and subsequent set_program
+    // calls are silently ignored.
+    let askpass_path = data_path.join("usr/bin/zed-askpass-helper");
+    if askpass_path.is_file() {
+        match askpass::set_program(askpass_path.clone()) {
+            Ok(()) => log::info!(
+                "zed_android: askpass program set to {}",
+                askpass_path.display()
+            ),
+            Err(_) => log::warn!(
+                "zed_android: askpass::set_program rejected (OnceLock \
+                 already initialized — set_program must run BEFORE first \
+                 AskPassSession)"
+            ),
+        }
+    } else {
+        log::warn!(
+            "zed_android: askpass helper missing at {}; SSH password / \
+             passphrase prompts will fall through to current_exe() and \
+             abort under SELinux",
+            askpass_path.display()
         );
     }
 

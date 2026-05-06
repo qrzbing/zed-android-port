@@ -181,13 +181,11 @@ pub fn extract_if_needed(android_app: &AndroidApp, data_path: &Path) -> Result<(
     // ld-musl-aarch64.so.1 lets `pkg install`-installed musl binaries
     // (e.g. claude-code-linux-arm64-musl) run natively after the
     // patchelf hook rewrites their `--set-interpreter` to this path.
-    if let Err(err) = install_musl_linker(android_app, &prefix) {
-        log::warn!(
-            "termux_bootstrap: musl linker install failed: {err:#}; \
-             pkg install of musl-linked upstream binaries will need \
-             a manual ld-musl-aarch64.so.1 in $PREFIX/lib"
-        );
-    }
+    // Asset-copy helpers (musl linker, askpass helper) live in
+    // `apply_runtime_patches` so they run on EVERY boot — the bootstrap
+    // re-extract above is gated by version-match, but the asset copies
+    // are cheap and need to land regardless of whether the heavy zip
+    // extract ran.
 
     if let Some(parent) = version_file.parent() {
         std::fs::create_dir_all(parent)?;
@@ -312,7 +310,7 @@ fn extract_entries<R: Read + std::io::Seek>(
 ///
 /// Idempotent and safe to run on every boot — the sed is no-op on
 /// already-clean files, and the apt config write is a constant string.
-pub fn apply_runtime_patches(data_path: &Path) -> Result<()> {
+pub fn apply_runtime_patches(android_app: &AndroidApp, data_path: &Path) -> Result<()> {
     let prefix = data_path.join("usr");
     rewrite_maintainer_scripts(&prefix.join("var/lib/dpkg/info"))?;
     install_apt_rewrite_hook(&prefix)?;
@@ -321,6 +319,24 @@ pub fn apply_runtime_patches(data_path: &Path) -> Result<()> {
     install_apt_pre_install_hook(&prefix)?;
     install_apt_node_platform_hook(&prefix)?;
     install_profile_d_init(data_path, &prefix)?;
+    // Idempotent asset copies — overwrite each boot so a wiped or
+    // tampered file is restored without needing a full bootstrap
+    // re-extract. Tiny cost (a few hundred KB of writes), big upside
+    // (no "where did patchelf go" mystery on next boot).
+    if let Err(err) = install_musl_linker(android_app, &prefix) {
+        log::warn!(
+            "termux_bootstrap: musl linker install failed: {err:#}; \
+             pkg install of musl-linked upstream binaries will need \
+             a manual ld-musl-aarch64.so.1 in $PREFIX/lib"
+        );
+    }
+    if let Err(err) = install_askpass_helper(android_app, &prefix) {
+        log::warn!(
+            "termux_bootstrap: askpass helper install failed: {err:#}; \
+             SSH password / passphrase prompts will fall back to \
+             current_exe() (= app_process64) and SIGABRT on Android"
+        );
+    }
     patch_node_platform_now(&prefix);
     install_npm_launcher_generator(&prefix)?;
     install_npm_wrapper(&prefix)?;
@@ -1621,6 +1637,53 @@ fn install_musl_linker(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
 
     log::info!(
         "termux_bootstrap: installed musl linker ({} bytes) at {}",
+        bytes.len(),
+        target.display()
+    );
+    Ok(())
+}
+
+/// Copy the standalone `zed-askpass-helper` binary from APK assets into
+/// `$PREFIX/bin`. Wired into the askpass crate at boot via
+/// `askpass::set_program(...)` (see `examples/zed_android/src/lib.rs`)
+/// so SSH_ASKPASS calls land on this binary instead of `current_exe()`.
+///
+/// On desktop, `ASKPASS_PROGRAM` defaults to `current_exe()` — same `zed`
+/// binary, just invoked with `--askpass=<sock>` to do the socket-IPC
+/// dance. On Android, `current_exe()` is `/system/bin/app_process64`
+/// (Zygote launcher hosting our DEX runtime), and ssh exec'ing that
+/// from a non-Activity context aborts under SELinux untrusted_app_27
+/// with `Error changing dalvik-cache ownership: Permission denied`.
+/// Three SIGABRTs, ssh treats them as failed password attempts, gives
+/// up — even though the user never saw a prompt.
+///
+/// The helper is a tiny standalone aarch64 ELF (~280 KB, bionic-linked,
+/// no dynamic deps beyond libc / libdl) that replicates the wire format
+/// of `crates/askpass/src/askpass.rs::main`: read prompt from stdin,
+/// connect to unix socket passed via `--askpass=`, write prompt, read
+/// password back, write password to stdout. ssh consumes stdout.
+fn install_askpass_helper(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
+    const ASSET: &str = "zed-askpass-helper";
+    let bin_dir = prefix.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let target = bin_dir.join(ASSET);
+
+    let asset_manager = android_app.asset_manager();
+    let asset_name = CString::new(ASSET)?;
+    let mut asset = asset_manager
+        .open(&asset_name)
+        .ok_or_else(|| anyhow!("askpass helper asset {ASSET} missing from APK"))?;
+    let mut bytes = Vec::with_capacity(asset.length());
+    asset.read_to_end(&mut bytes)?;
+
+    std::fs::write(&target, &bytes)
+        .with_context(|| format!("write {}", target.display()))?;
+    let mut perms = std::fs::metadata(&target)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&target, perms)?;
+
+    log::info!(
+        "termux_bootstrap: installed askpass helper ({} bytes) at {}",
         bytes.len(),
         target.display()
     );

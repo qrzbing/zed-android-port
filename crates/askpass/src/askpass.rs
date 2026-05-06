@@ -24,9 +24,27 @@ use util::{ResultExt as _, debug_panic, maybe, paths::PathExt, shell::ShellKind}
 
 /// Path to the program used for askpass
 ///
-/// On Unix and remote servers, this defaults to the current executable
-/// On Windows, this is set to the CLI variant of zed
+/// On Unix and remote servers, this defaults to the current executable.
+/// On Windows, this is set to the CLI variant of zed.
+/// On Android, the gpui app sets this to a tiny standalone native helper
+/// at boot time via `set_program`, because `current_exe()` returns the
+/// path to `app_process64` (Android's Zygote launcher) which can't be
+/// re-spawned from a non-Activity context — execve aborts with `Error
+/// changing dalvik-cache ownership: Permission denied` under SELinux
+/// `untrusted_app_27`. The helper binary lives at
+/// `$PREFIX/bin/zed-askpass-helper` and implements the same socket
+/// protocol as `main()` below.
 static ASKPASS_PROGRAM: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Override the program used for askpass. Must be called BEFORE the first
+/// `AskPassSession::new` — the OnceLock initializes on first read and
+/// subsequent `set` calls are silently ignored.
+///
+/// Returns `Ok(())` if the value was stored, `Err(path)` (with the
+/// rejected path) if `ASKPASS_PROGRAM` was already initialized.
+pub fn set_program(path: std::path::PathBuf) -> std::result::Result<(), std::path::PathBuf> {
+    ASKPASS_PROGRAM.set(path)
+}
 
 #[derive(PartialEq, Eq)]
 pub enum AskPassResult {
