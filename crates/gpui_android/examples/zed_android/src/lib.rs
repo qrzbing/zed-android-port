@@ -126,32 +126,6 @@ fn android_main(app: AndroidApp) {
             // either let Zed download from the CDN or pre-stage the binary
             // at `~/.cache/zed/remote_server` on the remote host themselves.
             std::env::set_var("ZED_BUILD_REMOTE_SERVER", "never");
-            // Force Go to use the cgo (bionic libc) DNS resolver instead
-            // of its pure-Go default. Go's pure-Go resolver reads
-            // `/etc/resolv.conf` at the literal `/etc/` path; on Android
-            // `/etc` is the read-only system partition with no
-            // `resolv.conf` there (our nameservers live at
-            // `$PREFIX/etc/resolv.conf` instead). With no nameservers
-            // parsed, Go falls back to `[::1]:53` which has no listener
-            // and every `go install` / `go get` / `go mod` /
-            // `go run`-with-network fails with `dial tcp: lookup X on
-            // [::1]:53: read: connection refused`. Concrete bite:
-            // Zed's gopls auto-install ran `go install
-            // golang.org/x/tools/gopls@latest` and died on
-            // proxy.golang.org resolution.
-            //
-            // Bionic's getaddrinfo goes through Android's Netd /
-            // ConnectivityManager, which has the actual DNS info from
-            // the active network — same path Java's
-            // `InetAddress.getByName` uses, same path our DNS bridge
-            // populates `/sdcard/.zed/r` from. `GODEBUG=netdns=cgo`
-            // tells Go to use that path. Setting it process-wide here
-            // means every Go subprocess (Zed's gopls install, the
-            // integrated terminal's `go install`, etc.) uses the
-            // working resolver. The `+1` suffix surfaces a one-line
-            // log on the first DNS lookup confirming which resolver
-            // is in use, helpful for future bisects.
-            std::env::set_var("GODEBUG", "netdns=cgo+1");
             // Termux's bootstrap sets LD_PRELOAD=$PREFIX/lib/libtermux-exec.so
             // for its bash subprocesses (so exec() of Android-incompatible
             // shebangs gets shimmed). On Android this is fine — local

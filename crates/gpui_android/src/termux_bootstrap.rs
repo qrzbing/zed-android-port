@@ -99,7 +99,7 @@ const VERSION_FILE: &str = "etc/termux-zed-bootstrap.version";
 // also writes `$PREFIX/bin/zed-setup-claude` — a one-shot helper that
 // turns `npm install -g @anthropic-ai/claude-code` into a runnable
 // `claude` command (musl variant, install.cjs map, patchelf, wrapper).
-const BOOTSTRAP_VERSION: &str = "2026.05.06-r1+apt.android-7-zed-r13+com.zdroid+ssh-node-go-patchelf-ra-git";
+const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix";
 
 static EXTRACTED: OnceLock<()> = OnceLock::new();
 
