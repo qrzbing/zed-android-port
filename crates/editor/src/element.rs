@@ -993,7 +993,35 @@ impl EditorElement {
                     cx.stop_propagation();
                     return;
                 } else {
-                    debug_panic!("drag state can never be in ready state after drag")
+                    // The mouse-move handler at line ~1175 normally
+                    // transitions ReadyToDrag → Dragging once the cursor
+                    // moves AND the drag-delay has elapsed. On Android the
+                    // touch-to-mouse translation can deliver mouse-up at a
+                    // different position without ever firing the mouse-
+                    // move events that drive that transition, so the
+                    // selection_drag_state is still ReadyToDrag here even
+                    // though `event.position != *click_position`. Treat
+                    // this as a non-drag click — clear the state, start a
+                    // new selection at the release position, and return.
+                    // Used to be a `debug_panic!` ("drag state can never
+                    // be in ready state after drag"); production release
+                    // builds always no-op'd that branch, this matches it.
+                    log::warn!(
+                        "selection_drag_state still ReadyToDrag at mouse-up \
+                         with moved position; treating as click"
+                    );
+                    editor.select(
+                        SelectPhase::Begin {
+                            position: point_for_position.nearest_valid,
+                            add: false,
+                            click_count: 1,
+                        },
+                        window,
+                        cx,
+                    );
+                    editor.selection_drag_state = SelectionDragState::None;
+                    cx.stop_propagation();
+                    return;
                 }
             }
             SelectionDragState::Dragging { ref selection, .. } => {
