@@ -182,6 +182,26 @@ impl MasterProcess {
 
         master_process.arg(format!("ControlPath={}", socket_path.display()));
 
+        // On Android, ssh is launched as a non-interactive subprocess
+        // with no controlling tty, so the default `StrictHostKeyChecking
+        // =ask` aborts on first-connect to any host whose key isn't
+        // already in known_hosts (the user can't see or answer the
+        // prompt). `accept-new` auto-accepts unknown host keys and
+        // appends them to known_hosts, while still rejecting if a
+        // known host's fingerprint changes (TOFU semantics, MITM
+        // protection on subsequent connects). Desktop Zed shows a
+        // host-key-confirmation modal in this case; on Android that
+        // path doesn't trigger before ssh aborts, so we trade the
+        // first-connect verification for the connection actually
+        // happening. Users who want stricter behavior can pre-populate
+        // known_hosts via `ssh-keyscan` from the integrated terminal
+        // or override per-connection in settings.json `ssh_connections
+        // [].args`.
+        #[cfg(target_os = "android")]
+        master_process
+            .arg("-o")
+            .arg("StrictHostKeyChecking=accept-new");
+
         let process = master_process.arg(&destination).spawn()?;
 
         Ok(MasterProcess { process })
