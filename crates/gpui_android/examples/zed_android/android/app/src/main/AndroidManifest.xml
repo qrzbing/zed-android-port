@@ -21,7 +21,7 @@
 
     <application
         android:name=".ZedApplication"
-        android:label="zed_android"
+        android:label="Zdroid"
         android:theme="@style/Theme.AppCompat.NoActionBar"
         android:hasCode="true"
         android:appCategory="productivity"

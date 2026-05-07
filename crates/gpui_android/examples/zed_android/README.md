@@ -26,6 +26,16 @@
 
 ---
 
+## Why this exists
+
+Zed Industries' official position on a mobile/tablet port: **not planned**.
+
+- [#12039 — IOS/Android Port](https://github.com/zed-industries/zed/issues/12039) — open feature request since May 2024. iPad programming, tablet coding, mobile note taking. Triaged, not actioned.
+- [#34633 — start of termux build](https://github.com/zed-industries/zed/issues/34633) — community attempt to compile Zed inside Termux. SIGSEGV in `cranelift-codegen`. **Closed as "not planned"** (Jul 2025).
+- [#43207 — gpui: On Android](https://github.com/zed-industries/zed/issues/43207) — sits in the GPUI Roadmap as "Wide Scope" since Nov 2025.
+
+This repo is what those threads were asking for, built independently. The Termux build attempt failed because the upstream `wasmtime`/`cranelift` dependencies don't compile inside Termux — we sidestep that by building the APK on a desktop with `cargo-ndk` and running our own custom Termux userland in-process. No fork of upstream-Zed-with-android-cfg is needed; the Editor / Workspace / Project / Search / GitGraph / Terminal / Extensions crates run unchanged. The work is at the platform boundary — see [Architecture](#architecture).
+
 ## What it is
 
 Real Zed: gpui rendering with Vulkan via wgpu, the upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions` and `Terminal` crates running unchanged. Not a webview. Not Termux + SSH to a server. Not proot or a chroot. The actual Rust `.so` runs as the app process; gpui composites every pixel directly via the Adreno Vulkan driver.
