@@ -103,3 +103,11 @@ auto_update = { path = "../../../auto_update" }
 [profile.dev]
 debug = "line-tables-only"
 strip = "debuginfo"
+
+# Release: workspace already pins `lto = "thin"` + `codegen-units = 1` for
+# perf. Override `debug` and `strip` here so the release `.so` ships without
+# any debug section at all — the workspace default keeps "limited" debug
+# info which inflates the binary by ~40%.
+[profile.release]
+debug = false
+strip = "symbols"

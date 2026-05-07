@@ -1,10 +1,24 @@
 import java.net.URL
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     kotlin("android")
 }
+
+// Release signing config. `signing.properties` and `release.keystore` are
+// gitignored: contributors who clone the repo can still build the debug
+// variant, but a release build that produces a signed APK requires the
+// keystore + properties to be present locally (or provided by CI via
+// env-var injected secrets, future work).
+val signingPropsFile = file("signing.properties")
+val signingProps = Properties().apply {
+    if (signingPropsFile.exists()) {
+        signingPropsFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = signingPropsFile.exists()
 
 // Bootstrap-zip distribution.
 //
@@ -112,12 +126,26 @@ android {
         jvmTarget = "17"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
         }
         getByName("release") {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }
