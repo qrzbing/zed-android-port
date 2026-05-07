@@ -126,6 +126,16 @@ android {
         jvmTarget = "17"
     }
 
+    // `targetSdk = 28` is intentional (see the comment in defaultConfig). It
+    // pins us in the SELinux `untrusted_app_27` domain so the bundled Termux
+    // runtime can `execve` $PREFIX/bin/*. AGP's `lintVitalRelease` task
+    // flags this as `ExpiredTargetSdkVersion` and refuses to assemble the
+    // release APK. We're not Play-Store eligible by design — disable that
+    // single rule rather than bumping the SDK and breaking exec.
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+    }
+
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
