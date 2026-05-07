@@ -99,7 +99,7 @@ const VERSION_FILE: &str = "etc/termux-zed-bootstrap.version";
 // also writes `$PREFIX/bin/zed-setup-claude` — a one-shot helper that
 // turns `npm install -g @anthropic-ai/claude-code` into a runnable
 // `claude` command (musl variant, install.cjs map, patchelf, wrapper).
-const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix+readexact";
+const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix";
 
 static EXTRACTED: OnceLock<()> = OnceLock::new();
 
@@ -208,35 +208,8 @@ fn read_bootstrap_asset(android_app: &AndroidApp) -> Result<Vec<u8>> {
     let mut asset = asset_manager
         .open(&asset_name)
         .ok_or_else(|| anyhow!("bootstrap asset {ASSET_NAME} not present in APK"))?;
-    read_asset_exact(&mut asset, ASSET_NAME)
-}
-
-/// Reads exactly `asset.length()` bytes from a `ndk::asset::Asset` into a
-/// fresh `Vec<u8>`.
-///
-/// The obvious-looking `Vec::with_capacity(asset.length()) +
-/// read_to_end(&mut buf)` pattern silently appends ~12% of trailing junk
-/// in release builds (debug builds happen to terminate at the right
-/// length): release-mode LTO + an upstream `Read` impl whose EOF
-/// signalling gets reordered or inlined into a state where it never
-/// returns `Ok(0)` until well past the asset's real end. Symptom on
-/// device: every dynamically-linked Termux binary segfaults at
-/// `0x1423c0` via a `blr x17` PLT trampoline because the ELF section
-/// table offsets baked into the file refer to bytes that have been
-/// pushed past their real position by the trailing junk.
-///
-/// `read_exact` against a pre-sized buffer of `asset.length()` makes the
-/// read terminate at exactly the byte count `AAsset_getLength` reports,
-/// independent of how the upstream `Read` impl handles EOF.
-fn read_asset_exact(
-    asset: &mut ndk::asset::Asset,
-    name_for_error: &str,
-) -> Result<Vec<u8>> {
-    let len = asset.length();
-    let mut buf = vec![0u8; len];
-    asset
-        .read_exact(&mut buf)
-        .with_context(|| format!("read_exact {len} bytes from asset {name_for_error}"))?;
+    let mut buf = Vec::with_capacity(asset.length());
+    asset.read_to_end(&mut buf)?;
     Ok(buf)
 }
 
@@ -1770,7 +1743,8 @@ fn install_musl_linker(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
     let mut asset = asset_manager
         .open(&asset_name)
         .ok_or_else(|| anyhow!("musl linker asset {ASSET} missing from APK"))?;
-    let mut bytes = read_asset_exact(&mut asset, ASSET)?;
+    let mut bytes = Vec::with_capacity(asset.length());
+    asset.read_to_end(&mut bytes)?;
 
     let patches = patch_resolv_conf_in_bytes(&mut bytes);
 
@@ -1856,7 +1830,8 @@ fn install_askpass_helper(android_app: &AndroidApp, prefix: &Path) -> Result<()>
     let mut asset = asset_manager
         .open(&asset_name)
         .ok_or_else(|| anyhow!("askpass helper asset {ASSET} missing from APK"))?;
-    let bytes = read_asset_exact(&mut asset, ASSET)?;
+    let mut bytes = Vec::with_capacity(asset.length());
+    asset.read_to_end(&mut bytes)?;
 
     std::fs::write(&target, &bytes)
         .with_context(|| format!("write {}", target.display()))?;
