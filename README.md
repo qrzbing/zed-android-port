@@ -5,17 +5,15 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-proof%20of%20concept-orange" alt="Proof of Concept" />
-  <img src="https://img.shields.io/badge/platform-Android%209%2B-3DDC84?logo=android" alt="Android 9+" />
-  <img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later" />
-  <img src="https://img.shields.io/github/v/release/Dylanmurzello/zed-android-port?label=APK&sort=semver" alt="Latest APK" />
+  <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental" />
+  <img src="https://img.shields.io/badge/platform-Android-3DDC84?logo=android" alt="Android" />
   <img src="https://img.shields.io/github/downloads/Dylanmurzello/zed-android-port/total?label=downloads" alt="Total downloads" />
   <img src="https://img.shields.io/github/stars/Dylanmurzello/zed-android-port?style=social" alt="GitHub stars" />
 </p>
 
-> **Proof of concept.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
+> **Experimental.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
 >
-> _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed). Upstream README preserved as [`README.zed-upstream.md`](README.zed-upstream.md)._
+> _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed)._
 
 ---
 
