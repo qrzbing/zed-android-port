@@ -1,7 +1,7 @@
 # Zed on Android
 
 <p align="center">
-  <em>The actual <a href="https://zed.dev">Zed</a> editor — workspace, project panel, multi-buffer editor, LSPs, terminal, git graph, extensions, remote SSH — running natively on an Android tablet.</em>
+  <em>The actual <a href="https://zed.dev">Zed</a> editor workspace, project panel, multi-buffer editor, LSPs, terminal, git graph, extensions, remote SSH running natively on an Android tablet.</em>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 ---
 
-## Why this exists
+## So why this ?
 
 Zed Industries' official position on a mobile/tablet port: **not planned**.
 
@@ -35,13 +35,13 @@ Zed Industries' official position on a mobile/tablet port: **not planned**.
 - [#34633 — start of termux build](https://github.com/zed-industries/zed/issues/34633) — community attempt to compile Zed inside Termux. SIGSEGV in `cranelift-codegen`. **Closed as "not planned"** (Jul 2025).
 - [#43207 — gpui: On Android](https://github.com/zed-industries/zed/issues/43207) — sits in the GPUI Roadmap as "Wide Scope" since Nov 2025.
 
-This repo is what those threads were asking for, built independently. The Termux build attempt failed because the upstream `wasmtime`/`cranelift` dependencies don't compile inside Termux — we sidestep that by building the APK on a desktop with `cargo-ndk` and running our own custom Termux userland in-process. No fork of upstream-Zed-with-android-cfg is needed; the Editor / Workspace / Project / Search / GitGraph / Terminal / Extensions crates run unchanged. The work is at the platform boundary — see [Architecture](#architecture).
+This repo is what those threads were asking for, built independently. The Termux build attempt failed because the upstream `wasmtime`/`cranelift` dependencies don't compile inside Termux that was sidestep that by building the APK on a desktop with `cargo-ndk` and running our own custom Termux userland in process. No fork of upstream-Zed-with-android-cfg is needed; the Editor / Workspace / Project / Search / GitGraph / Terminal / Extensions crates run unchanged. The work is at the platform boundary — see [Architecture](#architecture).
 
 ## What it is
 
-Real Zed: gpui rendering with Vulkan via wgpu, the upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions` and `Terminal` crates running unchanged. Not a webview. Not Termux + SSH to a server. Not proot or a chroot. The actual Rust `.so` runs as the app process; gpui composites every pixel directly via the Adreno Vulkan driver.
+Zed compiled from the source for Android : gpui rendering with Vulkan via wgpu, the upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions` and `Terminal` crates running unchanged. Its not a webview (no shade at electron).Bypassess termux + SSH to a server ( since we have our own bootstrap). The actual Rust `.so` runs as the app process; gpui composites every pixel (yes, you read that right) directly via the Adreno Vulkan driver.
 
-The trick: a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch/keyboard event translation) plus a Termux userland rebuilt under our app's package name so apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
+The trick was bascialy a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch/keyboard event translation) plus a Termux userland rebuilt under our app's package name so apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
 
 ## What works
 
