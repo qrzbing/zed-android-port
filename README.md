@@ -26,7 +26,7 @@
 
 ---
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/circle-help.svg" width="22" valign="middle" /> So why this ?
+## So why this ?
 
 Zed Industries' official position on a mobile/tablet port: **not planned**.
 
@@ -36,13 +36,13 @@ Zed Industries' official position on a mobile/tablet port: **not planned**.
 
 This repo is what those threads were asking for, built independently. The Termux build attempt failed because the upstream `wasmtime`/`cranelift` dependencies don't compile inside Termux. We sidestep that by building the APK on a desktop with `cargo-ndk` and running our own custom Termux userland in process. No fork of upstream-Zed-with-android-cfg is needed; the Editor / Workspace / Project / Search / GitGraph / Terminal / Extensions crates run unchanged. The work is at the platform boundary, see [Architecture](#architecture).
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/info.svg" width="22" valign="middle" /> What it is
+## What it is
 
 Zed compiled from the source for Android : gpui rendering with Vulkan via wgpu, the upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions` and `Terminal` crates running unchanged. Its not a webview (no shade at electron). Bypasses termux + SSH to a server (since we have our own bootstrap). The actual Rust `.so` runs as the app process; gpui composites every pixel (yes, you read that right) directly via the Adreno Vulkan driver.
 
 The trick was basically a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch/keyboard event translation) plus a Termux userland rebuilt under our app's package name so apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/layers.svg" width="22" valign="middle" /> What works
+## What works
 
 <p align="center">
   <!-- TODO: 4-up screenshot grid. ~600px wide each, low PNG compression. -->
@@ -76,7 +76,7 @@ The trick was basically a custom `gpui_android` platform backend (Vulkan surface
 
 **Bonus.** ZedDocumentsProvider exposes the project root as a Storage Access Framework volume, so other Android apps can browse Zed's worktrees through their own file pickers.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/map.svg" width="22" valign="middle" /> Roadmap
+## Roadmap
 
 A few items are deferred. Each is documented in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/) with the investigation path. PRs welcome.
 
@@ -86,13 +86,13 @@ A few items are deferred. Each is documented in [`crates/gpui_android/docs/worka
 
 Out of scope for this proof of concept: collab, AI panels, livekit voice. Cfg-gated to mock implementations so the binary still compiles. Cloud-account features that need backend integration anyway, deferred to post-PoC.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/tablet-smartphone.svg" width="22" valign="middle" /> Tested on
+## Tested on
 
 Samsung Galaxy Tab S9 Ultra (Snapdragon 8 Gen 2 / Adreno 740, Android 16, One UI 8) is the daily driver. Compiles for any aarch64 Android 8+ with Vulkan 1.1, but only Adreno is exercised. Mali / Xclipse will run but may want shader tweaks.
 
 A hardware keyboard is the supported config. Tablet plus Bluetooth keyboard, foldable in tablet mode, or DeX/desktop-mode with monitor and peripherals all work. Phones technically run but are de-prioritized; see [`crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md`](crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md).
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/download.svg" width="22" valign="middle" /> Install (precompiled APK)
+## Install (precompiled APK)
 
 ```sh
 adb install -r zed-android-<version>.apk
@@ -101,7 +101,7 @@ adb shell am start -n com.zdroid/.MainActivity
 
 Or sideload via your file manager. Android prompts to allow installs from unknown sources. The first launch extracts a 250 MB Termux userland into the app's private data dir; takes about 30 seconds. Subsequent launches are instant.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/folder-tree.svg" width="22" valign="middle" /> Storage workflow
+## Storage workflow
 
 Android is strict with app storage. Two facts to know:
 
@@ -117,7 +117,7 @@ So:
 | File → Import from sdcard… | Runs the SAF folder picker, recursively copies the picked tree into `~/projects/<basename>`, opens the imported copy. Original on shared storage stays untouched. |
 | Yellow "Builds won't run · Move" chip | Appears in the title bar if you open a project rooted on `/sdcard/` anyway. One tap copies the project into `~/projects/<name>` and reopens there. |
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/terminal.svg" width="22" valign="middle" /> LSP install recipes
+## LSP install recipes
 
 Most LSPs install in a single command from the integrated terminal:
 
@@ -143,7 +143,7 @@ pkg install openjdk-17 maven
 
 Extensions can also install LSPs through the Extensions pane (settings menu → Extensions). Themes, grammars, and language configs always work from extensions. Some extension-shipped binaries are glibc-only and won't run on Android (see [Caveats](#caveats)).
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/hammer.svg" width="22" valign="middle" /> Build from source
+## Build from source
 
 You'll need:
 
@@ -172,7 +172,7 @@ adb logcat -d | grep -E "zed_android|RustPanic|FATAL"
 
 First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Gradle re-pack a few seconds.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/cog.svg" width="22" valign="middle" /> Architecture
+## Architecture
 
 The interesting work was at the Android boundary. Deep-dives on every workaround live under [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/); `README.md` there is the index. Some highlights:
 
@@ -183,7 +183,7 @@ The interesting work was at the Android boundary. Deep-dives on every workaround
 - Multi-activity OS-chromed extra windows. DeX freeform / desktop windowing show our extra windows with Android's own task chrome.
 - A stack of `apply_runtime_patches` at every boot. npm wrapper with `npm_config_libc=musl` injection, launcher-gen patchelf for Bun-musl binaries, askpass helper for SSH password prompts, profile.d shim for terminal subprocess env, auto-reload of `/sdcard/.zed/r` on network changes.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/triangle-alert.svg" width="22" valign="middle" /> Caveats
+## Caveats
 
 This is just a proof of concept. No promises, might be highly unstable. The list below isn't comprehensive; plenty still needs work.
 
@@ -195,19 +195,19 @@ This is just a proof of concept. No promises, might be highly unstable. The list
 - MIUI / HyperOS aggressive battery management. Xiaomi/Redmi/Poco devices kill backgrounded Zed within minutes via `MIUI Optimization` / `Battery saver`. Workaround: Settings → Apps → Zed → Battery → "No restrictions". See [`crates/gpui_android/docs/workarounds/miui-aggressive-task-killing.md`](crates/gpui_android/docs/workarounds/miui-aggressive-task-killing.md).
 - Tested on Tab S9 Ultra only. Should work on any Vulkan 1.1 + Adreno device. Mali / Xclipse not tried. Open issues with logcat dumps if you have other hardware.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/file-text.svg" width="22" valign="middle" /> License
+## License
 
 GPL-3.0-or-later, same as upstream Zed. The bundled `bootstrap-aarch64.zip` contains Termux-rebuilt packages, each under its own license (mostly BSD/MIT/Apache; gnupg/bash/coreutils are GPL). The Alpine-derived `ld-musl-aarch64.so.1` we bundle is MIT.
 
 This is © Dylan Murzello, distributed under GPL-3.0-or-later. Zed itself is © Zed Industries.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/handshake.svg" width="22" valign="middle" /> Acknowledgments
+## Acknowledgments
 
 - [Zed Industries](https://zed.dev/) for building [`gpui`](https://github.com/zed-industries/zed/tree/main/crates/gpui) to be platform-agnostic enough that an Android port is plumbing rather than a rewrite.
 - [The Termux project](https://termux.dev/) for [a decade of figuring out how to ship a Linux userland on Android](https://github.com/termux/termux-app). Most of our `apt install` machinery is their patches with the package name swapped in.
 - [Alpine Linux](https://alpinelinux.org/) for the [musl libc](https://musl.libc.org/) we bundle so Bun-compiled musl binaries (claude-code, codex) execve cleanly on bionic.
 - The [`wgpu`](https://github.com/gfx-rs/wgpu) and [`blade-graphics`](https://github.com/kvark/blade) maintainers for a Vulkan abstraction that just works on Adreno.
 
-## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/git-pull-request.svg" width="22" valign="middle" /> Contributing
+## Contributing
 
 Issues, screenshots, hardware reports, and PRs welcome. Read [`crates/gpui_android/docs/workarounds/README.md`](crates/gpui_android/docs/workarounds/README.md) before adding a new platform shim. Good chance the issue you're hitting has a documented workaround already, and the doc explains the constraint that ruled out the obvious fix.
