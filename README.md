@@ -19,17 +19,9 @@
   <img src="crates/gpui_android/examples/zed_android/docs/screenshots/hero.gif" alt="Zed on Android: workspace, terminal, LSP demo" width="100%" />
 </p>
 
-> **Proof of concept.** Not affiliated with Zed Industries. The editor works; rough edges are honest. See [Caveats](#caveats).
+> **Proof of concept.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
 >
 > _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed). Upstream README preserved as [`README.zed-upstream.md`](README.zed-upstream.md)._
-
----
-
-## <img src="https://api.iconify.design/lucide:info.svg?color=%23999999&height=22" valign="middle" /> &nbsp;What it is
-
-Zed compiled from source for Android. gpui rendering with Vulkan via wgpu. The upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates running unchanged. Not a webview (no shade at electron). Bypasses termux + SSH to a server (since we have our own bootstrap). The actual Rust `.so` runs as the app process; gpui composites every pixel (yes, you read that right) directly via the Adreno Vulkan driver.
-
-The trick was basically a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch and keyboard event translation) plus a Termux userland rebuilt under our app's package name. apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
 
 ---
 
