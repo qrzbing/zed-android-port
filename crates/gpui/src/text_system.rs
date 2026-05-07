@@ -87,6 +87,16 @@ impl TextSystem {
     /// Get a list of all available font names from the operating system.
     pub fn all_font_names(&self) -> Vec<String> {
         let mut names = self.platform_text_system.all_font_names();
+        // The fallback stack hardcodes Linux/Windows/Mac UI families
+        // (Helvetica, Segoe UI, Ubuntu, Adwaita Sans, …) intended for
+        // *runtime* glyph fallback when the platform exposes them. On
+        // Android none of those families are present in the platform's
+        // fontdb, so adding them here pollutes the user-facing font
+        // picker with options that silently no-op when selected (the
+        // setting takes, but rendering falls through to the configured
+        // `system_font_fallback`). Skip the extension on Android so
+        // the picker only offers fonts that are actually loaded.
+        #[cfg(not(target_os = "android"))]
         names.extend(
             self.fallback_font_stack
                 .iter()

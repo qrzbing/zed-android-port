@@ -36,8 +36,30 @@ fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowO
 }
 
 
-const BUNDLED_FONT: &[u8] =
-    include_bytes!("../../../../../assets/fonts/lilex/Lilex-Regular.ttf");
+// Bundled fonts. Upstream Zed walks `assets/fonts/` via `AssetSource`
+// at boot (see `load_embedded_fonts` in crates/zed/src/main.rs) and
+// hands every `.ttf` to `cx.text_system().add_fonts(...)`. The Android
+// example doesn't run that loader, so until this list was filled out
+// only Lilex-Regular existed in the text system: bold/italic fell back
+// to faux-styled rasterizer output, IBM Plex Sans (the upstream UI
+// font) was unavailable, and any `buffer_font_family` setting pointing
+// at a different family silently no-op'd.
+//
+// `include_bytes!` baked into the .so means the fonts ship in the APK
+// without going through AAssetManager — they're literally in the .so's
+// rodata, so first read is mmap-direct with no extract / decompress
+// step. Total budget across the 8 weights is ~3 MB, irrelevant against
+// the bundled bootstrap zip.
+const BUNDLED_FONTS: &[&[u8]] = &[
+    include_bytes!("../../../../../assets/fonts/lilex/Lilex-Regular.ttf"),
+    include_bytes!("../../../../../assets/fonts/lilex/Lilex-Bold.ttf"),
+    include_bytes!("../../../../../assets/fonts/lilex/Lilex-Italic.ttf"),
+    include_bytes!("../../../../../assets/fonts/lilex/Lilex-BoldItalic.ttf"),
+    include_bytes!("../../../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../../../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf"),
+    include_bytes!("../../../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf"),
+    include_bytes!("../../../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBoldItalic.ttf"),
+];
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -488,8 +510,12 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     });
     info!("zed_android: settings file watcher attached");
 
-    cx.text_system()
-        .add_fonts(vec![Cow::Borrowed(BUNDLED_FONT)])?;
+    cx.text_system().add_fonts(
+        BUNDLED_FONTS
+            .iter()
+            .map(|bytes| Cow::Borrowed(*bytes))
+            .collect(),
+    )?;
 
     let mut language_registry =
         language::LanguageRegistry::new(cx.background_executor().clone());
