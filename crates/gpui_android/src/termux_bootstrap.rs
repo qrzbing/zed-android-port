@@ -99,7 +99,7 @@ const VERSION_FILE: &str = "etc/termux-zed-bootstrap.version";
 // also writes `$PREFIX/bin/zed-setup-claude` — a one-shot helper that
 // turns `npm install -g @anthropic-ai/claude-code` into a runnable
 // `claude` command (musl variant, install.cjs map, patchelf, wrapper).
-const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix+libcprotect";
+const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix+libcprotect-r2";
 
 static EXTRACTED: OnceLock<()> = OnceLock::new();
 
@@ -1696,7 +1696,7 @@ fn install_apt_patchelf_hook(prefix: &Path) -> Result<()> {
              # overwriting libc++_shared.so; this skip-list is\n    \
              # defense-in-depth against patchelf rewriting it after a\n    \
              # cmin-recent ctime bump.\n    \
-             case \"$(basename -- \\\"$1\\\")\" in\n        \
+             case \"${{1##*/}}\" in\n        \
                  ld-musl-aarch64.so.1|libc.musl-aarch64.so.1|libc++_shared.so) return 0 ;;\n    \
              esac\n    \
              current=$(\"$PATCHELF\" --print-rpath \"$1\" 2>/dev/null) || return 0\n    \
