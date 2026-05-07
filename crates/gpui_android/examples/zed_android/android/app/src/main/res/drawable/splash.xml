@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Window background shown by the OS from app-process-start until gpui
+     draws its first frame. On first launch this includes the ~30s of
+     bootstrap zip extraction; on subsequent launches it's <1s. Same
+     glyph + bg as the launcher icon so the launch experience reads as
+     one continuous visual moment. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/zdroid_bg" />
+        </shape>
+    </item>
+    <item
+        android:gravity="center"
+        android:width="160dp"
+        android:height="160dp"
+        android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

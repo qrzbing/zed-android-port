@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splash theme: shown by the OS from process start until gpui's
+         first surface frame. windowBackground = our brand splash drawable.
+         Inherits from the prior Theme.AppCompat.NoActionBar so the rest
+         of AppCompat compat behavior is unchanged. -->
+    <style name="Theme.Zdroid.Splash" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash</item>
+    </style>
+</resources>

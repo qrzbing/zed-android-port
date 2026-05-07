@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground. 108dp viewport, ~66dp safe zone. The
+     concentric rings + central orb evoke an expanding ripple from a
+     dropped stone; the outermost wavy ring is sine-perturbed to break
+     the perfect-circle monotony and add the "deviated waters" texture
+     called for by the brand spec. Monochrome accent over a dark indigo
+     background (set by the adaptive-icon background layer). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outermost wavy ring — sine-perturbed circle, 24 sampled points
+         smoothed via cubic beziers. Faintest of the rings (alpha 0.10),
+         hints at "deviated waters" without being legible at small sizes. -->
+    <path
+        android:strokeColor="#7AA2F7"
+        android:strokeAlpha="0.12"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M 99.0,54.0
+            C 98.5,60.5 96.8,66.7 94.3,72.2
+            C 92.6,78.0 88.7,82.8 84.0,86.5
+            C 79.5,89.5 74.4,90.8 69.0,93.0
+            C 63.0,94.5 56.7,93.8 50.5,93.0
+            C 44.5,91.5 39.0,88.7 34.0,84.5
+            C 29.5,80.5 26.5,75.4 23.5,70.0
+            C 20.5,64.0 18.0,57.5 17.0,51.0
+            C 16.5,44.5 18.7,38.3 21.5,32.5
+            C 24.7,27.5 28.2,22.8 33.0,19.5
+            C 38.0,16.5 43.7,15.5 49.5,14.5
+            C 56.0,14.0 62.5,15.0 68.5,17.5
+            C 74.0,19.5 78.7,23.5 83.0,27.5
+            C 87.0,31.5 90.5,36.0 93.0,41.0
+            C 95.5,46.5 98.5,49.5 99.0,54.0 Z" />
+
+    <!-- Outer ring — perfect circle, slightly stronger than outermost. -->
+    <path
+        android:strokeColor="#7AA2F7"
+        android:strokeAlpha="0.20"
+        android:strokeWidth="1.5"
+        android:pathData="M 14,54 A 40,40 0 1 1 94,54 A 40,40 0 1 1 14,54 Z" />
+
+    <!-- Mid ring. -->
+    <path
+        android:strokeColor="#7AA2F7"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="2"
+        android:pathData="M 22,54 A 32,32 0 1 1 86,54 A 32,32 0 1 1 22,54 Z" />
+
+    <!-- Inner ring — subtly perturbed (the second "wave") to keep the
+         ripple feel echoing inward, not just outward. -->
+    <path
+        android:strokeColor="#7AA2F7"
+        android:strokeAlpha="0.55"
+        android:strokeWidth="2.5"
+        android:strokeLineJoin="round"
+        android:pathData="M 78.0,54.0
+            C 78.0,59.0 76.8,64.0 74.0,68.5
+            C 71.5,72.5 67.5,75.5 63.0,77.5
+            C 58.5,79.0 53.5,80.0 48.5,79.0
+            C 44.0,78.0 40.0,75.5 36.5,72.5
+            C 33.0,69.0 30.5,64.5 30.0,59.5
+            C 29.5,54.5 30.5,49.5 32.5,45.0
+            C 35.0,40.5 39.0,37.0 43.5,35.0
+            C 48.0,33.5 53.0,32.5 58.0,33.5
+            C 62.5,34.5 66.5,37.0 70.0,40.0
+            C 73.5,43.5 76.0,48.0 77.5,52.0
+            C 78.0,53.0 78.0,53.5 78.0,54.0 Z" />
+
+    <!-- Inner halo around the orb. -->
+    <path
+        android:strokeColor="#A892FF"
+        android:strokeAlpha="0.75"
+        android:strokeWidth="3"
+        android:pathData="M 38,54 A 16,16 0 1 1 70,54 A 16,16 0 1 1 38,54 Z" />
+
+    <!-- The orb itself — filled, brightest element, sits at exact center. -->
+    <path
+        android:fillColor="#C8B4FF"
+        android:pathData="M 45,54 A 9,9 0 1 1 63,54 A 9,9 0 1 1 45,54 Z" />
+
+    <!-- Specular highlight on the orb to give it dimension. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.55"
+        android:pathData="M 49,50 A 3,3 0 1 1 55,50 A 3,3 0 1 1 49,50 Z" />
+</vector>
