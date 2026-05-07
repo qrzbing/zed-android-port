@@ -89,19 +89,22 @@ Or sideload via your file manager. Android prompts for unknown-source installs. 
 
 ## <img src="https://api.iconify.design/lucide:folder-tree.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Storage workflow
 
-Android is strict with app storage. Two facts to know:
+**Click "Open Project" from the welcome screen.** Android's storage picker opens at the device's shared storage. Two ways through:
 
-1. `/storage/emulated/0/` (Internal storage, linked at `~/storage/`) is FUSE-mounted noexec. Read/write/edit fine; the kernel refuses to `execve()` anything there. `cargo run` against a binary in `/storage/emulated/0/projects/foo/target/debug/foo` returns `EACCES`.
-2. `/data/data/com.zdroid/files/` (app-private, exposed as `~/`) is exec-mounted. Same place Termux runs everything from.
+- **Stay in the picker, open the side menu, navigate to Zdroid → projects.** Zdroid's `DocumentsProvider` exposes `~/` as a SAF root. Anything you open from under there is in exec-mounted storage and builds run normally.
+- **Pick anywhere on `/sdcard/`** (an existing project on internal storage). It opens in **restricted mode** — Android's shared storage is FUSE-mounted `noexec`, so `cargo build`'s output binary can't `execve()`. Read / edit / save still work. Zdroid shows a yellow **Builds won't run · Move** chip at the top; one tap copies the folder into `~/projects/<name>` once and reopens it from the exec-mounted side.
 
-So:
+The two storage realms underneath:
+
+1. `/data/data/com.zdroid/files/` (app-private, exposed as `~/`) is **exec-mounted**. Same place Termux runs everything from. `~/projects/<name>` is the default workspace root; `cargo new`, `git clone`, builds, debugs, integrated terminal subprocesses all run.
+2. `/storage/emulated/0/` (Android's shared storage, also surfaced at `~/storage/`) is **FUSE-mounted `noexec`**. Read / write / edit fine; the kernel refuses `execve()`. `cargo run` against a binary on `/sdcard/...` returns `EACCES`.
 
 | Where | What for |
 | --- | --- |
-| `~/projects/<name>` | Default workspace root. `cargo new`, `git clone` etc. just work. |
-| `~/storage/<shared,downloads,...>` | Curated symlinks into shared storage. For "open / edit / save a single file" workflows. Don't workspace-root these. |
-| File → Import from sdcard… | SAF folder picker. Recursively copies into `~/projects/<basename>`. |
-| Yellow "Builds won't run · Move" chip | Appears if you open a project on `/sdcard/` anyway. One tap copies into `~/projects/`. |
+| `~/projects/<name>` | Default workspace root. Builds, debugs, terminal subprocesses all run. |
+| `~/storage/{shared,downloads,...}` | Curated symlinks into shared storage. For "open / edit / save a single file" workflows. Don't workspace-root these. |
+| File → Open (any `/sdcard/` path) | Restricted mode. Use the yellow Move chip to promote into `~/projects/`. |
+| File → Import from sdcard… | SAF folder picker. Recursively copies the chosen folder into `~/projects/<basename>`. |
 
 ---
 
