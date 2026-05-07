@@ -174,11 +174,13 @@ Deep-dives in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs
 
 ---
 
+<a id="caveats"></a>
 ## <img src="https://api.iconify.design/lucide:triangle-alert.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Caveats
 
 This is just a proof of concept. No promises, might be highly unstable. The list isn't comprehensive.
 
-- Soft keyboard not bridged. Hardware keyboard required.
+- Soft keyboard not bridged. Hardware keyboard required for text input.
+- Input has rough edges. Hardware keyboard, mouse, trackpad, and touch all work for most flows, but some keystrokes / pointer events may not register or behave consistently. Touch scroll and drag are the most fragile; keyboard is the most reliable.
 - 60Hz on 120Hz panels. Haven't opted into 120Hz via `ANativeWindow_setFrameRate` yet.
 - Some extension-shipped LSPs are glibc-only and won't run. JVM/Node/Python LSPs work via Termux's bionic runtimes.
 - No collab / AI / livekit panels. Cfg-gated to mocks.
