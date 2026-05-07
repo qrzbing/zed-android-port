@@ -241,6 +241,7 @@ fn render_theme_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn render_telemetry_section(tab_index: &mut isize, cx: &App) -> impl IntoElement {
     let fs = <dyn Fs>::global(cx);
 
@@ -701,7 +702,7 @@ fn render_ai_section(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoE
 pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
     let mut tab_index = 0;
 
-    v_flex()
+    let page = v_flex()
         .id("basics-page")
         .gap_6()
         .child(render_theme_section(&mut tab_index, cx))
@@ -709,7 +710,17 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .child(render_ai_section(user_store, cx))
         .child(render_import_settings_section(&mut tab_index, cx))
         .child(render_vim_mode_switch(&mut tab_index, cx))
-        .child(render_worktree_auto_trust_switch(&mut tab_index, cx))
+        .child(render_worktree_auto_trust_switch(&mut tab_index, cx));
+
+    // Telemetry toggles are stubbed to mocks on Android (the
+    // `telemetry::event!` macros no-op), so the onboarding switches do
+    // nothing for our users — confusing UI to display options that no-
+    // op. The trailing divider is gated with the section so we don't
+    // leave an orphaned horizontal line.
+    #[cfg(not(target_os = "android"))]
+    let page = page
         .child(Divider::horizontal().color(ui::DividerColor::BorderVariant))
-        .child(render_telemetry_section(&mut tab_index, cx))
+        .child(render_telemetry_section(&mut tab_index, cx));
+
+    page
 }

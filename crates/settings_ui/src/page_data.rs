@@ -350,6 +350,7 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    #[cfg(not(target_os = "android"))]
     fn privacy_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Privacy"),
@@ -395,6 +396,7 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
+    #[cfg(not(target_os = "android"))]
     fn auto_update_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Auto Update"),
@@ -416,16 +418,23 @@ fn general_page(cx: &App) -> SettingsPage {
 
     SettingsPage {
         title: "General",
-        items: concat_sections!(
-            @vec,
-            general_settings_section(cx),
-            security_section(),
-            workspace_restoration_section(),
-            scoped_settings_section(),
-            privacy_section(),
-            auto_update_section(),
-        )
-        .into(),
+        items: {
+            // Open-coded instead of `concat_sections!` so we can cfg-gate
+            // privacy + auto-update off on Android: telemetry features
+            // are stubbed to mocks in this build (so the toggles do
+            // nothing) and the auto-update path points at Zed's update
+            // server which we don't use.
+            let mut items: Vec<SettingsPageItem> = Vec::new();
+            items.extend(general_settings_section(cx));
+            items.extend(security_section());
+            items.extend(workspace_restoration_section());
+            items.extend(scoped_settings_section());
+            #[cfg(not(target_os = "android"))]
+            items.extend(privacy_section());
+            #[cfg(not(target_os = "android"))]
+            items.extend(auto_update_section());
+            items.into()
+        },
     }
 }
 
