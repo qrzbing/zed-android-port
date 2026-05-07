@@ -1,7 +1,7 @@
 # Zed on Android
 
 <p align="center">
-  <em>The actual <a href="https://zed.dev">Zed</a> editor workspace, project panel, multi-buffer editor, LSPs, terminal, git graph, extensions, remote SSH running natively on an Android tablet.</em>
+  <em><strong>Zdroid</strong>. The actual <a href="https://zed.dev">Zed</a> editor workspace, project panel, multi-buffer editor, LSPs, terminal, git graph, extensions, remote SSH running natively on an Android tablet.</em>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 Zed compiled from source for Android. gpui rendering with Vulkan via wgpu. The upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates running unchanged. Not a webview (no shade at electron). Bypasses termux + SSH to a server (since we have our own bootstrap). The actual Rust `.so` runs as the app process; gpui composites every pixel (yes, you read that right) directly via the Adreno Vulkan driver.
 
-The trick was basically a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch and keyboard event translation) plus a Termux userland rebuilt under our app's package name. apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
+The trick was basically a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch and keyboard event translation) plus a Termux userland rebuilt under our package, `com.zdroid` (hence the unofficial name **Zdroid**, also the launcher label). apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
 
 ---
 
