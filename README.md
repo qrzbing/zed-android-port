@@ -36,12 +36,9 @@ The trick was basically a custom `gpui_android` platform backend (Vulkan surface
 <p align="center">
   <table>
     <tr>
-      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/workspace.png" alt="Workspace" /></td>
-      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/terminal.png" alt="Terminal" /></td>
-    </tr>
-    <tr>
-      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/git_graph.png" alt="Git graph" /></td>
-      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/extensions.png" alt="Extensions" /></td>
+      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/ssh_workspace.jpg" alt="Remote SSH workspace" /></td>
+      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/git_graph.jpg" alt="Git graph" /></td>
+      <td><img src="crates/gpui_android/examples/zed_android/docs/screenshots/settings.jpg" alt="Settings" /></td>
     </tr>
   </table>
 </p>
