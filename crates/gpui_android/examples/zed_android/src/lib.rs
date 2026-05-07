@@ -1082,21 +1082,54 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 }
                 Err(_) => return,
             };
-            let mw = cx.update(|cx| {
-                cx.active_window()
-                    .and_then(|w| w.downcast::<MultiWorkspace>())
-            });
-            let Some(mw) = mw else {
-                error!("zed_android: no active MultiWorkspace for Open");
+
+            // The first-launch onboarding path (show_onboarding_view →
+            // workspace::open_new) opens a plain `Workspace` window, not
+            // a `MultiWorkspace`. Returning-launch path is also `Workspace`
+            // until something attaches the multi-workspace shell. The Open
+            // action can fire on either, so try MultiWorkspace first then
+            // fall through to plain Workspace; the previous code silently
+            // no-op'd ("no active MultiWorkspace for Open" log + return)
+            // when invoked on the welcome screen of a fresh install.
+            let active = cx.update(|cx| cx.active_window());
+            let Some(active) = active else {
+                error!("zed_android: no active window for Open");
                 return;
             };
-            let task = mw.update(cx, |mw, window, cx| {
-                mw.open_project(picked, workspace::OpenMode::Activate, window, cx)
-            });
-            if let Ok(task) = task {
-                if let Err(err) = task.await {
-                    error!("zed_android: open_project failed: {err:#}");
+
+            if let Some(mw) = active.downcast::<MultiWorkspace>() {
+                let task = mw.update(cx, |mw, window, cx| {
+                    mw.open_project(picked, workspace::OpenMode::Activate, window, cx)
+                });
+                if let Ok(task) = task {
+                    if let Err(err) = task.await {
+                        error!("zed_android: open_project failed: {err:#}");
+                    }
                 }
+            } else if let Some(ws) = active.downcast::<workspace::Workspace>() {
+                // Fall-through path: add the picked folder as a worktree
+                // of the current workspace. The welcome page tab survives
+                // alongside (user can close it). Not as polished as the
+                // MultiWorkspace `find_or_create + replace` flow, but it
+                // unblocks Open Project from the welcome screen on every
+                // boot path.
+                let task = ws.update(cx, |ws, window, cx| {
+                    ws.open_paths(
+                        picked,
+                        workspace::OpenOptions::default(),
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+                if let Ok(task) = task {
+                    let _ = task.await;
+                }
+            } else {
+                error!(
+                    "zed_android: active window is neither Workspace nor MultiWorkspace; \
+                     Open action ignored"
+                );
             }
         })
         .detach();
