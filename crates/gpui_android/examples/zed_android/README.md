@@ -5,13 +5,12 @@
 </p>
 
 <p align="center">
-  <!-- Replace USER/REPO once the GitHub repo is created. -->
   <img src="https://img.shields.io/badge/status-proof%20of%20concept-orange" alt="Proof of Concept" />
   <img src="https://img.shields.io/badge/platform-Android%208%2B-3DDC84?logo=android" alt="Android 8+" />
   <img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later" />
-  <img src="https://img.shields.io/github/v/release/USER/REPO?label=APK&sort=semver" alt="Latest APK" />
-  <img src="https://img.shields.io/github/downloads/USER/REPO/total?label=downloads" alt="Total downloads" />
-  <img src="https://img.shields.io/github/stars/USER/REPO?style=social" alt="GitHub stars" />
+  <img src="https://img.shields.io/github/v/release/Dylanmurzello/zed-android-port?label=APK&sort=semver" alt="Latest APK" />
+  <img src="https://img.shields.io/github/downloads/Dylanmurzello/zed-android-port/total?label=downloads" alt="Total downloads" />
+  <img src="https://img.shields.io/github/stars/Dylanmurzello/zed-android-port?style=social" alt="GitHub stars" />
 </p>
 
 <p align="center">
