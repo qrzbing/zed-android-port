@@ -85,7 +85,7 @@ The trick: a custom `gpui_android` platform backend (Vulkan surface lifecycle, J
 
 ## Hardware tested
 
-Verified daily on a **Samsung Galaxy Tab S9 Ultra** (Snapdragon 8 Gen 2 / Adreno 740, Android 14, One UI 6). Compiles for any aarch64 Android 8+ with Vulkan 1.1; Adreno is the only driver exercised — Mali / Xclipse will run but may want shader tweaks.
+Verified daily on a **Samsung Galaxy Tab S9 Ultra** (Snapdragon 8 Gen 2 / Adreno 740, Android 16, One UI 8). Compiles for any aarch64 Android 8+ with Vulkan 1.1; Adreno is the only driver exercised — Mali / Xclipse will run but may want shader tweaks.
 
 Best experience needs a hardware keyboard. Tablet + Bluetooth keyboard, foldable in tablet mode, or DeX/desktop-mode session with monitor + keyboard + mouse all work great. Phone-sized screens technically run but are explicitly de-prioritized — see [`crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md`](crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md).
 
