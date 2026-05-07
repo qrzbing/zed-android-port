@@ -616,6 +616,14 @@ impl MultiWorkspace {
         self.is_workspace_retained(&self.active_workspace)
     }
 
+    /// Active inner `Workspace` entity. Exposed so callers outside this
+    /// crate (e.g. the Android port's noexec move modal) can push status
+    /// toasts onto the active workspace's toast layer without needing to
+    /// reach into private state.
+    pub fn active_workspace(&self) -> &Entity<Workspace> {
+        &self.active_workspace
+    }
+
     pub fn retained_workspaces(&self) -> &[Entity<Workspace>] {
         &self.retained_workspaces
     }

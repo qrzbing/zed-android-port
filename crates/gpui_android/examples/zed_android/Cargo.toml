@@ -55,6 +55,7 @@ outline = { path = "../../../outline" }
 outline_panel = { path = "../../../outline_panel" }
 log = "0.4"
 multi_buffer = { path = "../../../multi_buffer" }
+notifications = { path = "../../../notifications" }
 paths = { path = "../../../paths" }
 project = { path = "../../../project" }
 project_panel = { path = "../../../project_panel" }

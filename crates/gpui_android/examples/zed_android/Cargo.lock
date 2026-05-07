@@ -17727,6 +17727,7 @@ dependencies = [
  "menu",
  "multi_buffer",
  "node_runtime",
+ "notifications",
  "onboarding",
  "outline",
  "outline_panel",

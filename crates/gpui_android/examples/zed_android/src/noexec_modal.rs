@@ -12,12 +12,15 @@
 //! "Trust and Continue".
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
     AppContext as _, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, Styled, Window, rems,
 };
-use log::{error, info};
+use log::{error, info, warn};
+use notifications::status_toast::StatusToast;
 use theme::ActiveTheme;
 use ui::{
     AlertModal, Button, ButtonCommon, ButtonStyle, Checkbox, Clickable, Color, ElevationIndex,
@@ -100,25 +103,112 @@ impl NoexecMoveModal {
             src.display(),
             dst.display()
         );
+        // Cancel flag wired from the toast's Cancel button to copy_tree's
+        // per-iteration check. dst was just allocated above via the
+        // `<basename>-imported-N` collision loop, so it provably didn't
+        // contain user data before this call — `remove_dir_all(dst)` on
+        // cancel only touches files we just wrote.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_button = cancel.clone();
+        let dst_label = dst
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dst.display().to_string());
+
+        // Show a status toast with a Cancel action so the user has both
+        // visual confirmation that something is happening and an escape
+        // hatch. The toast lives on the active workspace's toast layer;
+        // see Workspace::toggle_status_toast.
+        let toast = StatusToast::new(
+            format!("Copying to ~/projects/{dst_label}…"),
+            cx,
+            move |this, _cx| {
+                let cancel_clone = cancel_for_button.clone();
+                this.icon(Icon::new(IconName::FolderOpen).color(Color::Info))
+                    .auto_dismiss(false)
+                    .action("Cancel", move |_, _| {
+                        cancel_clone.store(true, Ordering::Relaxed);
+                    })
+            },
+        );
+        // Push the toast onto the workspace's toast layer. Active window
+        // is expected to be a MultiWorkspace at this point; if it's not,
+        // we silently skip the toast (the copy still runs and completes).
+        if let Some(mw) = cx
+            .active_window()
+            .and_then(|w| w.downcast::<MultiWorkspace>())
+        {
+            let toast_for_show = toast.clone();
+            mw.update(cx, |mw, _window, cx| {
+                let active_ws = mw.active_workspace().clone();
+                active_ws.update(cx, |ws, cx| ws.toggle_status_toast(toast_for_show, cx));
+            })
+            .ok();
+        }
+
         cx.spawn(async move |this, cx| {
             let dst_for_copy = dst.clone();
             let src_for_copy = src.clone();
+            let cancel_for_worker = cancel.clone();
             let copy_result = cx
                 .background_spawn(async move {
-                    gpui_android::storage::copy_tree(&src_for_copy, &dst_for_copy)
+                    gpui_android::storage::copy_tree(
+                        &src_for_copy,
+                        &dst_for_copy,
+                        &cancel_for_worker,
+                        &|_| {
+                            // Progress callback intentionally a no-op
+                            // for v0.1.1: StatusToast's text is static
+                            // (no public setter), and re-rendering on
+                            // every entry would require a custom widget
+                            // we don't have time for in this patch. The
+                            // toast just shows "Copying…" with a Cancel
+                            // button; user knows the operation is live
+                            // and can bail out.
+                        },
+                    )
                 })
                 .await;
+
+            // Always dismiss the toast (whether complete, cancelled,
+            // or errored). Failure to update — toast already gone — is
+            // fine and ignored.
+            let _ = toast.update(cx, |_, cx| cx.emit(DismissEvent));
+
             match copy_result {
-                Ok(bytes) => info!(
-                    "noexec-modal: copied {bytes} bytes to {}",
-                    dst.display()
-                ),
+                Ok(gpui_android::storage::CopyOutcome::Completed { bytes, files }) => {
+                    info!(
+                        "noexec-modal: copied {bytes} bytes / {files} files to {}",
+                        dst.display()
+                    );
+                }
+                Ok(gpui_android::storage::CopyOutcome::Cancelled) => {
+                    info!(
+                        "noexec-modal: cancelled, removing partial dst {}",
+                        dst.display()
+                    );
+                    if let Err(err) = std::fs::remove_dir_all(&dst) {
+                        warn!(
+                            "noexec-modal: cleanup of partial dst {} failed: {err:#}",
+                            dst.display()
+                        );
+                    }
+                    let _ = this.update(cx, |_, cx| cx.emit(DismissEvent));
+                    return;
+                }
                 Err(err) => {
                     error!("noexec-modal: copy failed: {err:#}");
+                    if let Err(rm_err) = std::fs::remove_dir_all(&dst) {
+                        warn!(
+                            "noexec-modal: cleanup of failed dst {} failed: {rm_err:#}",
+                            dst.display()
+                        );
+                    }
                     let _ = this.update(cx, |_, cx| cx.emit(DismissEvent));
                     return;
                 }
             }
+
             let mw = cx.update(|cx| {
                 cx.active_window()
                     .and_then(|w| w.downcast::<MultiWorkspace>())
