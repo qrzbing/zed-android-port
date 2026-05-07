@@ -1,6 +1,60 @@
+import java.net.URL
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     kotlin("android")
+}
+
+// Bootstrap-zip distribution.
+//
+// `bootstrap-aarch64.zip` is the rebuilt Termux userland (~239 MB) that the
+// app extracts into its private data dir at first launch. It is too large
+// to ship via git (GitHub's hard cap is 100 MB/file) so it lives as a
+// GitHub Release asset instead. Anyone cloning + building gets it auto-
+// fetched via the `downloadBootstrap` task below — zero manual steps.
+//
+// Updating: when you cut a fresh bootstrap (e.g. on a GitHub Actions
+// Linux runner running the termux-packages bootstrap-build), bump
+// `bootstrapVersion` here AND `BOOTSTRAP_VERSION` in
+// `crates/gpui_android/src/termux_bootstrap.rs` to match. The two strings
+// have to agree because the Rust side checks them at extract time to
+// decide whether to wipe and re-extract $PREFIX.
+val bootstrapVersion = "2026.05.06-r2"
+val bootstrapDownloadUrl =
+    "https://github.com/Dylanmurzello/zed-android-port/releases/download/" +
+        "bootstrap-${bootstrapVersion}/bootstrap-aarch64.zip"
+
+val bootstrapAsset = file("src/main/assets/bootstrap-aarch64.zip")
+val bootstrapAssetDir = bootstrapAsset.parentFile
+
+tasks.register("downloadBootstrap") {
+    description = "Fetch bootstrap-aarch64.zip from the GitHub Release if it's not present locally."
+    group = "build setup"
+
+    outputs.file(bootstrapAsset)
+    outputs.upToDateWhen { bootstrapAsset.exists() }
+
+    doLast {
+        if (bootstrapAsset.exists()) {
+            logger.lifecycle("downloadBootstrap: ${bootstrapAsset.name} already present (${bootstrapAsset.length() / 1024 / 1024} MB); skipping download")
+            return@doLast
+        }
+        bootstrapAssetDir.mkdirs()
+        logger.lifecycle("downloadBootstrap: fetching bootstrap-${bootstrapVersion} from $bootstrapDownloadUrl")
+        URL(bootstrapDownloadUrl).openStream().use { input ->
+            bootstrapAsset.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        logger.lifecycle("downloadBootstrap: wrote ${bootstrapAsset.length() / 1024 / 1024} MB to ${bootstrapAsset}")
+    }
+}
+
+// Make every variant's `mergeAssets` wait on the download. preBuild is
+// the simplest hook that runs before assets are read.
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn("downloadBootstrap")
 }
 
 android {

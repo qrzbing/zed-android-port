@@ -1,14 +1,16 @@
 target/
-Cargo.lock
 android/.gradle/
 android/.idea/
 android/build/
 android/app/build/
 android/app/src/main/jniLibs/
 android/local.properties
-# 158MB bootstrap rebuilt on Vultr and SCP'd in. Tracked by sha256
-# inside `crates/gpui_android/src/termux_bootstrap.rs` BOOTSTRAP_VERSION,
-# not by git.
+# ~239 MB bootstrap. Too big for git (GitHub hard cap = 100 MB/file).
+# Hosted as a GitHub Release asset; the `downloadBootstrap` Gradle task
+# in `android/app/build.gradle.kts` fetches it automatically at build
+# time. The exact version is pinned by `bootstrapVersion` in that
+# build script and must match `BOOTSTRAP_VERSION` in
+# `crates/gpui_android/src/termux_bootstrap.rs`.
 android/app/src/main/assets/bootstrap-aarch64.zip
 *.iml
 .DS_Store
