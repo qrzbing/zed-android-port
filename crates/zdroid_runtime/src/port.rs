@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 use crate::config::RuntimeId;
@@ -44,6 +45,14 @@ pub struct SpawnRequest {
     /// pass-through `setsid -c`, source a login shell, etc. Non-tty
     /// spawns (LSPs, git, formatters) skip those costs.
     pub interactive: bool,
+
+    /// Stdio fds to pass to the child. Indexed 0=stdin, 1=stdout,
+    /// 2=stderr. Typically `[0, 1, 2]` for "inherit the caller's
+    /// stdio". Adapters that bridge across processes (chroot via
+    /// daemon, external Termux via intent) duplicate these fds across
+    /// the boundary using `SCM_RIGHTS` or equivalent. The fds remain
+    /// valid for the caller; ownership is not transferred.
+    pub stdio: [RawFd; 3],
 }
 
 /// A running child process spawned through an adapter. Exact mechanism
