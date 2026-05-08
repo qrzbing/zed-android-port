@@ -53,7 +53,12 @@ fi
 
 mkdir -p "$ZD_RUNTIME_DIR"
 
-# These are the conventional Linux PATH dirs we'll mirror.
+# PATH dirs we'll mirror. Includes the standard system bins AND
+# user-local paths that /etc/profile/.profile typically prepend (npm
+# global, pip user, cargo install, rustup, etc.). These show up when
+# the rootfs's bash is invoked as a login shell — which zd-exec does
+# unconditionally — so we need symlinks for the same names so Zed's
+# PATH lookup (outside the chroot) can find them.
 PATH_DIRS=(
     /usr/local/sbin
     /usr/local/bin
@@ -61,6 +66,10 @@ PATH_DIRS=(
     /usr/bin
     /sbin
     /bin
+    /root/.local/bin
+    /root/.cargo/bin
+    /root/.npm-global/bin
+    /root/go/bin
 )
 
 # Wipe and rebuild. Atomic-ish: rename old dir aside, build new, swap.

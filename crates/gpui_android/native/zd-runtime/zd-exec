@@ -144,13 +144,24 @@ run_chroot_root() {
         exit 1
     fi
 
-    # Run NetHunter's mount setup. It's idempotent (greps /proc/mounts
-    # before mounting). The $0/readlink-based sibling sourcing inside
-    # bootkali_init means we have to invoke it as a subprocess with
-    # argv[0] set to the script's full path — dot-sourcing breaks it.
-    /system/bin/sh -c ". /data/data/com.offsec.nethunter/scripts/bootkali_init" \
-        /data/data/com.offsec.nethunter/scripts/bootkali_init \
-        >/dev/null 2>&1 || true
+    # bootkali_init is "idempotent" but each invocation forks ~10
+    # grep+mount processes to verify /proc/mounts. When Zed spawns
+    # subprocesses in rapid succession (the welcome screen alone fires
+    # multiple wrapper calls — `head`, `readlink`, etc.), these stack
+    # up and the device's load avg climbs into double digits within a
+    # minute. Fast-path: if our mount marker (chroot's /sdcard, which
+    # bootkali_init mounts last) is already a mountpoint, mounts are
+    # all up — skip the bootkali_init dance entirely. ~1ms instead of
+    # several seconds.
+    #
+    # The $0/readlink-based sibling sourcing inside bootkali_init means
+    # we still have to invoke it as a subprocess with argv[0] set to
+    # the script's full path — dot-sourcing breaks it.
+    if ! "$BUSYBOX" mountpoint -q "$RUNTIME_ROOT/sdcard" 2>/dev/null; then
+        /system/bin/sh -c ". /data/data/com.offsec.nethunter/scripts/bootkali_init" \
+            /data/data/com.offsec.nethunter/scripts/bootkali_init \
+            >/dev/null 2>&1 || true
+    fi
 
     # Bind-mount Zdroid's home into the rootfs at RUNTIME_HOME_BIND.
     local bind_target="$RUNTIME_ROOT$RUNTIME_HOME_BIND"
@@ -171,10 +182,26 @@ run_chroot_root() {
     #     resolves to the bind-mounted /zed; ~/.bashrc would load from
     #     Zdroid's Termux home instead of /root, breaking colored
     #     prompts and ls --color aliases).
+    # `-l` (login) is non-negotiable: it sources /etc/profile and
+    # ~/.profile, which on Debian/Kali add user-local bin dirs like
+    # ~/.local/bin and ~/.cargo/bin to PATH. Tools installed via
+    # `pip --user`, `npm install -g` (when prefix is per-user),
+    # `cargo install`, or rustup live there. Without -l the wrapper
+    # invocation has the system default PATH and any user-local tool
+    # is invisible — claude installed at /root/.local/bin/claude was
+    # the symptom that surfaced this. Cost is a profile-source (~10ms)
+    # per spawn; cheap relative to the chroot+su overhead, and the
+    # alternative is "every user has to fix their PATH every time."
     exec "$BUSYBOX" chroot "$RUNTIME_ROOT" /usr/bin/sudo -E PATH="$NH_PATH" \
-        $SETSID_PREFIX /bin/bash -c "
+        $SETSID_PREFIX /bin/bash -lc "
             export TERM='${TERM:-xterm-256color}' COLORTERM='${COLORTERM:-truecolor}'
             export HOME=/root USER=root LOGNAME=root SHELL=/bin/bash
+            # Prepend user-local bin dirs AFTER profile sourcing.
+            # Kali's stock /root/.profile hardcodes PATH with a literal
+            # assignment, clobbering anything we'd put in via sudo's
+            # -E PATH=... or pre-bash export. So we add our additions
+            # here, post-profile, where they actually stick.
+            export PATH=/root/.local/bin:/root/.cargo/bin:/root/.npm-global/bin:/root/go/bin:\$PATH
             cd '$ROOTFS_CWD' 2>/dev/null || cd /root
             exec '$TARGET'$quoted_args
         "
@@ -207,9 +234,10 @@ dispatch_proot() {
         -r "$RUNTIME_ROOT" \
         -b "/data/data/com.zdroid/files/home:$RUNTIME_HOME_BIND" \
         -b "/storage/emulated/0:/sdcard" \
-        -- /bin/bash -c "
+        -- /bin/bash -lc "
             export TERM='${TERM:-xterm-256color}' COLORTERM='${COLORTERM:-truecolor}'
             export HOME=/root USER=root LOGNAME=root SHELL=/bin/bash
+            export PATH=/root/.local/bin:/root/.cargo/bin:/root/.npm-global/bin:/root/go/bin:\$PATH
             cd '$ROOTFS_CWD' 2>/dev/null || cd /root
             exec '$TARGET'$quoted_args
         "
