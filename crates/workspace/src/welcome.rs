@@ -1,15 +1,14 @@
 use crate::{
-    NewFile, Open, OpenMode, PathList, SerializedWorkspaceLocation, ToggleWorkspaceSidebar,
-    Workspace, WorkspaceId,
+    NewFile, Open, OpenMode, PathList, RecentWorkspace, SerializedWorkspaceLocation,
+    ToggleWorkspaceSidebar, Workspace,
     item::{Item, ItemEvent},
     persistence::WorkspaceDb,
 };
 use agent_settings::AgentSettings;
-use chrono::{DateTime, Utc};
 use git::Clone as GitClone;
 use gpui::{
     Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    ParentElement, Render, Styled, Task, Window, actions,
+    ParentElement, Render, Styled, Task, TaskExt, Window, actions,
 };
 use gpui::{WeakEntity, linear_color_stop, linear_gradient};
 use menu::{SelectNext, SelectPrevious};
@@ -242,14 +241,7 @@ pub struct WelcomePage {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     fallback_to_recent_projects: bool,
-    recent_workspaces: Option<
-        Vec<(
-            WorkspaceId,
-            SerializedWorkspaceLocation,
-            PathList,
-            DateTime<Utc>,
-        )>,
-    >,
+    recent_workspaces: Option<Vec<RecentWorkspace>>,
 }
 
 impl WelcomePage {
@@ -310,14 +302,11 @@ impl WelcomePage {
         cx: &mut Context<Self>,
     ) {
         if let Some(recent_workspaces) = &self.recent_workspaces {
-            if let Some((_workspace_id, location, paths, _timestamp)) =
-                recent_workspaces.get(action.index)
-            {
-                let is_local = matches!(location, SerializedWorkspaceLocation::Local);
+            if let Some(workspace) = recent_workspaces.get(action.index) {
+                let is_local = matches!(workspace.location, SerializedWorkspaceLocation::Local);
 
                 if is_local {
-                    let paths = paths.clone();
-                    let paths = paths.paths().to_vec();
+                    let paths = workspace.paths.paths().to_vec();
                     self.workspace
                         .update(cx, |workspace, cx| {
                             workspace
@@ -448,21 +437,19 @@ impl Render for WelcomePage {
                     .map(|h| std::path::PathBuf::from(h).join("projects"));
                 let mut workspace_entries: Vec<gpui::AnyElement> = Vec::new();
                 let mut external_entries: Vec<gpui::AnyElement> = Vec::new();
-                for (index, (_, loc, paths, _)) in
-                    recent_projects_data.iter().enumerate()
-                {
+                for (index, workspace) in recent_projects_data.iter().enumerate() {
                     let is_workspace = workspace_root
                         .as_ref()
                         .and_then(|root| {
-                            paths.paths().first().map(|p| p.starts_with(root))
+                            workspace.paths.paths().first().map(|p| p.starts_with(root))
                         })
                         .unwrap_or(false);
                     let rendered = self
                         .render_recent_project(
                             index,
                             first_section_entries + index,
-                            loc,
-                            paths,
+                            &workspace.location,
+                            &workspace.identity_paths,
                         )
                         .into_any_element();
                     if is_workspace {
@@ -495,12 +482,12 @@ impl Render for WelcomePage {
                 let recent_projects = recent_projects_data
                     .iter()
                     .enumerate()
-                    .map(|(index, (_, loc, paths, _))| {
+                    .map(|(index, workspace)| {
                         self.render_recent_project(
                             index,
                             first_section_entries + index,
-                            loc,
-                            paths,
+                            &workspace.location,
+                            &workspace.identity_paths,
                         )
                     })
                     .collect::<Vec<_>>();
