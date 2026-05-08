@@ -34,9 +34,23 @@ $(OUT): zd-spawnd.c
 clean:
 	rm -f $(OUT)
 
-# Convenience: stage the binary + Magisk module skeleton into a
-# build/ directory ready to zip. (Magisk module structure is created
-# in a separate task; this is a placeholder.)
-install-magisk-module: $(OUT)
-	@echo "Magisk module packaging is in a separate task — see"
-	@echo "crates/gpui_android/native/zd-spawnd/magisk-module/ once added."
+# Package the daemon + magisk-module/ into a flashable Magisk zip.
+# Output: build/zdroid-spawnd-<version>.zip in this directory.
+MODULE_DIR    := magisk-module
+MODULE_VERSION ?= $(shell grep '^version=' $(MODULE_DIR)/module.prop | cut -d= -f2)
+ZIP_NAME      := zdroid-spawnd-$(MODULE_VERSION).zip
+BUILD_DIR     := build
+
+magisk-module: $(OUT)
+	@rm -rf $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR)/staging
+	@cp -r $(MODULE_DIR)/. $(BUILD_DIR)/staging/
+	@cp $(OUT) $(BUILD_DIR)/staging/zd-spawnd
+	@cd $(BUILD_DIR)/staging && zip -r ../$(ZIP_NAME) . >/dev/null
+	@echo "built $(BUILD_DIR)/$(ZIP_NAME)"
+	@unzip -l $(BUILD_DIR)/$(ZIP_NAME) | tail -n +4
+
+clean-magisk-module:
+	rm -rf $(BUILD_DIR)
+
+.PHONY: magisk-module clean-magisk-module
