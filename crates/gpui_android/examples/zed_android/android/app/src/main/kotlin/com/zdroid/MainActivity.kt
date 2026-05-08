@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Process
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.app.ActivityCompat
@@ -147,6 +148,33 @@ class MainActivity : GameActivity() {
         return props.dnsServers
             .mapNotNull { it.hostAddress }
             .joinToString(",")
+    }
+
+    /// Force a clean process exit when the Activity is destroyed.
+    ///
+    /// gpui_android has multiple static-state init paths (event channels,
+    /// JNI globals, OnceLock guards) that assume process-scoped uniqueness.
+    /// Android keeps the .so resident across Activity destroy/recreate
+    /// cycles when memory pressure or AL_Kill reaps just the Activity but
+    /// not the whole process. The next `android_main` re-entry then tries
+    /// to re-initialize those statics, which either panics outright
+    /// (multi_window event channel: "called twice") or silently leaves the
+    /// new gpui state observing stale callbacks bound to the previous
+    /// Activity.
+    ///
+    /// We've declared every config-change axis we care about in
+    /// AndroidManifest.xml (`android:configChanges="orientation|...|
+    /// uiMode|fontScale|..."`), so rotation, DeX, dark-mode flips, etc.
+    /// don't destroy the Activity in the first place — those keep the
+    /// process and Activity continuous, no re-entry. The only paths that
+    /// reach `onDestroy` are genuine teardowns: user closed the app,
+    /// system killed for memory, finishAndRemoveTask. For those, killing
+    /// the process here guarantees the next launch starts fresh with
+    /// zero stale static state.
+    override fun onDestroy() {
+        Log.i(TAG, "onDestroy isFinishing=$isFinishing — exiting process for clean restart")
+        super.onDestroy()
+        Process.killProcess(Process.myPid())
     }
 
     override fun onRequestPermissionsResult(

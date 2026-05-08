@@ -116,20 +116,28 @@ static EXTRA_ACTIVITY_REFS: Mutex<Option<HashMap<u64, GlobalRef>>> = Mutex::new(
 /// it can't be the source of truth.
 static REGISTERED_WINDOWS: Mutex<Option<std::collections::HashSet<u64>>> = Mutex::new(None);
 
-/// Sender side of the ongoing event channel. Initialized once when
+/// Sender side of the ongoing event channel. Replaced each time
 /// `AndroidPlatform::new` calls [`init_event_channel`]. Cloned per JNI
 /// callback for thread-safe sends.
-static EVENT_TX: OnceLock<mpsc::UnboundedSender<ExtraWindowEvent>> = OnceLock::new();
+///
+/// We use a Mutex (not a OnceLock) because Android may recreate the
+/// hosting Activity within the same OS process — e.g. after a
+/// configuration change, an OOM-recovery kill that didn't actually
+/// free the .so, or DeX windowing-mode flips. Each Activity recreation
+/// re-enters `android_main`, which constructs a fresh AndroidPlatform
+/// and expects a fresh receiver. Panicking on the second init is the
+/// "activity-recreation-idempotency" trap our docs warn about.
+static EVENT_TX: Mutex<Option<mpsc::UnboundedSender<ExtraWindowEvent>>> = Mutex::new(None);
 
-/// Set up the ongoing event channel. Must be called exactly once during
-/// platform construction. Returns the receiver, which the platform drains
-/// each iteration of its event loop.
+/// Set up the ongoing event channel. Safe to call multiple times: each
+/// invocation creates a fresh sender/receiver pair. Any previous sender
+/// is dropped (which closes its receiver in the prior platform instance,
+/// but that platform is being torn down anyway). Returns the new
+/// receiver, which the current platform drains each iteration of its
+/// event loop.
 pub(crate) fn init_event_channel() -> mpsc::UnboundedReceiver<ExtraWindowEvent> {
     let (tx, rx) = mpsc::unbounded();
-    EVENT_TX
-        .set(tx)
-        .ok()
-        .expect("multi_window::init_event_channel called twice");
+    *EVENT_TX.lock().unwrap() = Some(tx);
     rx
 }
 
@@ -497,7 +505,8 @@ fn call_finish_and_remove_task(_android_app: &AndroidApp, activity: &GlobalRef) 
 }
 
 fn dispatch_event(event: ExtraWindowEvent) {
-    let Some(tx) = EVENT_TX.get() else {
+    let guard = EVENT_TX.lock().unwrap();
+    let Some(tx) = guard.as_ref() else {
         log::warn!("multi_window: event arrived before init_event_channel");
         return;
     };
