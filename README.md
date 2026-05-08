@@ -44,11 +44,9 @@ The trick was basically a custom `gpui_android` platform backend (Vulkan surface
 
 - **Editor.** Vulkan rendering, multi-pane workspace, vim mode, syntax highlighting, project panel, fuzzy file finder, command palette, buffer + project search.
 - **Git.** Git panel with staging, full git-graph commit history, diff view.
-- **Termux, in-process.** apt, bash, ssh, node, go, git, python, openjdk all native. No SSH bridge, no proot. Integrated terminal opens straight into it.
 - **LSPs.** rust-analyzer baked in. gopls, ts-server, pyright, jdtls install in one `pkg`/`npm`/`go install`.
 - **Extensions.** Browse, install, manage. Themes, language configs, grammars, slash commands.
 - **Remote SSH.** Server-picker pill in the title bar, persisted server list, native askpass.
-- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked Termux packages (go, openssh, etc.) as "unowned" and remove them.
 - **Input.** Hardware keyboard, mouse, trackpad. Two-finger and long-press right-click.
 - **Multi-window.** Android freeform and DeX, each extra window is a real Activity with OS chrome.
 - **Edge-to-edge** rendering with content under the display cutout.
@@ -86,6 +84,54 @@ adb shell am start -n com.zdroid/.MainActivity
 ```
 
 Or sideload via your file manager. Android prompts for unknown-source installs. First launch extracts a 250 MB Termux userland into the app's private data dir; takes about 30 seconds. Subsequent launches are instant.
+
+---
+
+## <img src="https://api.iconify.design/lucide:hammer.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Build from source
+
+You'll need:
+
+- Rust toolchain with `aarch64-linux-android` (`rustup target add aarch64-linux-android`)
+- [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) (`cargo install cargo-ndk`)
+- Android NDK r27 (`sdkmanager "ndk;27.0.12077973"`)
+- Gradle 8+, `adb` on `$PATH`
+- A device with USB debugging on
+
+```sh
+cd crates/gpui_android/examples/zed_android
+
+ANDROID_NDK_HOME=/path/to/ndk/27.0.12077973 \
+  cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build
+
+cd android
+gradle assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.zdroid/.MainActivity
+
+adb logcat -d | grep -E "zed_android|RustPanic|FATAL"
+```
+
+First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Gradle re-pack a few seconds.
+
+---
+
+## <img src="https://api.iconify.design/lucide:cog.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Architecture
+
+Deep-dives in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/). Highlights:
+
+- **AChoreographer-driven vsync** via NDK FFI. No JNI hop per frame.
+- **SAF integration** for picker → POSIX-path translation.
+- **Multi-activity OS-chromed extra windows.** DeX freeform shows extra windows with Android's own task chrome.
+
+---
+
+## <img src="https://api.iconify.design/lucide:server.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Userland
+
+- **Termux, in-process.** apt, bash, ssh, node, go, git, python, openjdk all native. No SSH bridge, no proot. Integrated terminal opens straight into it.
+- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked Termux packages (go, openssh, etc.) as "unowned" and remove them.
+- **Termux rebuilt under `com.zdroid`.** apt/dpkg/bash userland with our package name baked into RUNPATHs and shebangs.
+- **`/etc/resolv.conf` hex-patch.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. We rewrite the literal in the binary's `.rodata` and in our musl libc to point at `/sdcard/.zed/r`, populated by JNI from `ConnectivityManager.getActiveDnsServers()`.
+- **`apply_runtime_patches`** stack at every boot: npm wrapper, launcher-gen patchelf, askpass helper, profile.d shim, DNS file refresh.
 
 ---
 
@@ -135,47 +181,6 @@ Themes, grammars, and language configs from the Extensions pane always work. Som
 
 ---
 
-## <img src="https://api.iconify.design/lucide:hammer.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Build from source
-
-You'll need:
-
-- Rust toolchain with `aarch64-linux-android` (`rustup target add aarch64-linux-android`)
-- [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) (`cargo install cargo-ndk`)
-- Android NDK r27 (`sdkmanager "ndk;27.0.12077973"`)
-- Gradle 8+, `adb` on `$PATH`
-- A device with USB debugging on
-
-```sh
-cd crates/gpui_android/examples/zed_android
-
-ANDROID_NDK_HOME=/path/to/ndk/27.0.12077973 \
-  cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build
-
-cd android
-gradle assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.zdroid/.MainActivity
-
-adb logcat -d | grep -E "zed_android|RustPanic|FATAL"
-```
-
-First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Gradle re-pack a few seconds.
-
----
-
-## <img src="https://api.iconify.design/lucide:cog.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Architecture
-
-Deep-dives in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/). Highlights:
-
-- **Termux rebuilt under `com.zdroid`.** apt/dpkg/bash userland with our package name baked into RUNPATHs and shebangs.
-- **`/etc/resolv.conf` hex-patch.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. We rewrite the literal in the binary's `.rodata` and in our musl libc to point at `/sdcard/.zed/r`, populated by JNI from `ConnectivityManager.getActiveDnsServers()`.
-- **AChoreographer-driven vsync** via NDK FFI. No JNI hop per frame.
-- **SAF integration** for picker → POSIX-path translation.
-- **Multi-activity OS-chromed extra windows.** DeX freeform shows extra windows with Android's own task chrome.
-- **`apply_runtime_patches`** stack at every boot: npm wrapper, launcher-gen patchelf, askpass helper, profile.d shim, DNS file refresh.
-
----
-
 <a id="caveats"></a>
 ## <img src="https://api.iconify.design/lucide:triangle-alert.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Caveats
 
@@ -203,9 +208,9 @@ GPL-3.0-or-later, same as upstream Zed. The bundled `bootstrap-aarch64.zip` cont
 ## <img src="https://api.iconify.design/lucide:handshake.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Acknowledgments
 
 - [Zed Industries](https://zed.dev/) for [`gpui`](https://github.com/zed-industries/zed/tree/main/crates/gpui) being platform-agnostic enough that an Android port is plumbing rather than a rewrite.
+- The [`wgpu`](https://github.com/gfx-rs/wgpu) and [`blade-graphics`](https://github.com/kvark/blade) maintainers for a Vulkan abstraction that just works on Adreno.
 - [The Termux project](https://termux.dev/) for [a decade of Linux-on-Android](https://github.com/termux/termux-app). Most of our `apt install` machinery is their patches with the package name swapped.
 - [Alpine Linux](https://alpinelinux.org/) for [musl libc](https://musl.libc.org/), which lets Bun-compiled musl binaries (claude-code, codex) execve cleanly on bionic.
-- The [`wgpu`](https://github.com/gfx-rs/wgpu) and [`blade-graphics`](https://github.com/kvark/blade) maintainers for a Vulkan abstraction that just works on Adreno.
 
 ---
 
