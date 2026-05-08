@@ -126,9 +126,21 @@ impl AndroidCommon {
         let (dispatcher, main_receiver) = AndroidDispatcher::new(android_app);
         let dispatcher = Arc::new(dispatcher);
 
-        let text_system: Arc<dyn PlatformTextSystem> = Arc::new(
-            gpui_wgpu::CosmicTextSystem::new_without_system_fonts("Lilex"),
-        );
+        // `new_without_system_fonts` skips fontdb's automatic
+        // platform-font discovery (which on Android scans /system/fonts/
+        // anyway, but we previously avoided it because the cost was
+        // unbounded). Now we opt back in to /system/fonts/ specifically
+        // — that dir alone is well-bounded (~70 .ttf/.otf files, ~60ms
+        // first-load on Snapdragon 8 Gen 2) and surfaces NotoSansSymbols2,
+        // NotoColorEmoji, DroidSansMono, plus the full Noto family for
+        // CJK / Cyrillic / Arabic / etc. Without this fallback, prompts
+        // and statuslines that use powerline glyphs (`❯` U+276F),
+        // dingbats (`✻` U+273B), or any non-Latin codepoint render as
+        // tofu boxes because Lilex + IBM Plex Sans only cover basic
+        // Latin / extended Latin.
+        let cosmic = gpui_wgpu::CosmicTextSystem::new_without_system_fonts("Lilex");
+        cosmic.load_fonts_dir("/system/fonts");
+        let text_system: Arc<dyn PlatformTextSystem> = Arc::new(cosmic);
 
         Self {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),

@@ -80,6 +80,17 @@ impl CosmicTextSystem {
             system_font_fallback: system_font_fallback.to_string(),
         }))
     }
+
+    /// Recursively register every font file found under `dir` into the
+    /// underlying fontdb. Used by platforms (Android) that opt out of
+    /// `FontSystem::new()`'s automatic system-font discovery via
+    /// `new_without_system_fonts`, but still want a specific dir
+    /// (e.g. `/system/fonts/` on Android) to provide glyph-coverage
+    /// fallback for misc-symbol / emoji / box-drawing codepoints that
+    /// the explicit `add_fonts(...)` set doesn't cover.
+    pub fn load_fonts_dir(&self, dir: impl AsRef<std::path::Path>) {
+        self.0.write().font_system.db_mut().load_fonts_dir(dir);
+    }
 }
 
 impl PlatformTextSystem for CosmicTextSystem {
