@@ -47,11 +47,24 @@ fi
 
 # Re-exec via su if we need to read a root-only rootfs path.
 # proot mode is userspace; no root needed.
-if [ "$RUNTIME_TYPE" = "chroot" ] && [ "$(id -u)" != "0" ]; then
+if [ "$RUNTIME_TYPE" = "chroot" ] && [ "$EUID" != "0" ]; then
     exec env -u LD_PRELOAD "$RUNTIME_SU" -c "'$0' $*"
 fi
 
 mkdir -p "$ZD_RUNTIME_DIR"
+
+# Install the dpkg Post-Invoke hook + apt config inside the rootfs.
+# Idempotent: cp clobbers if mtime differs, no-op if identical.
+# Source files ship alongside zd-runtime-sync at $PREFIX/share/zd-runtime/.
+HOOK_SRC=/data/data/com.zdroid/files/usr/share/zd-runtime/zd-runtime-hook
+APT_CFG_SRC=/data/data/com.zdroid/files/usr/share/zd-runtime/99-zd-runtime
+if [ "$RUNTIME_TYPE" = "chroot" ] && [ -f "$HOOK_SRC" ] && [ -f "$APT_CFG_SRC" ]; then
+    HOOK_DST="$RUNTIME_ROOT/usr/local/sbin/zd-runtime-hook"
+    APT_CFG_DST="$RUNTIME_ROOT/etc/apt/apt.conf.d/99-zd-runtime"
+    mkdir -p "${HOOK_DST%/*}" "${APT_CFG_DST%/*}"
+    cp "$HOOK_SRC" "$HOOK_DST" 2>/dev/null && chmod 755 "$HOOK_DST"
+    cp "$APT_CFG_SRC" "$APT_CFG_DST" 2>/dev/null && chmod 644 "$APT_CFG_DST"
+fi
 
 # PATH dirs we'll mirror. Includes the standard system bins AND
 # user-local paths that /etc/profile/.profile typically prepend (npm
