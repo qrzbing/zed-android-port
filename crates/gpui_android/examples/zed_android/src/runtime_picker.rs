@@ -32,8 +32,14 @@ use workspace::{ModalView, Workspace};
 use zdroid_runtime::{
     HealthStatus, RuntimeId, RuntimeProvider,
     adapters,
-    config::{BootstrapConfig, ChrootConfig, ExternalTermuxConfig},
+    config::{BootstrapConfig, ChrootConfig, ExternalTermuxConfig, RuntimeFile},
 };
+
+/// Where Zdroid stores the active-adapter selection. Lives inside
+/// `$PREFIX/etc/` so the bootstrap-extraction step doesn't clobber it
+/// (extraction doesn't touch `etc/`), and so it persists across
+/// editor APK updates the same way other user state does.
+const RUNTIME_TOML_PATH: &str = "/data/data/com.zdroid/files/usr/etc/zd-runtime.toml";
 
 actions!(
     zdroid_runtime,
@@ -73,6 +79,10 @@ struct AdapterEntry {
 pub struct RuntimePicker {
     focus_handle: FocusHandle,
     entries: Vec<AdapterEntry>,
+    /// The currently active adapter (from disk). Marked with a
+    /// "Current" badge in the UI; `Select` is a no-op if the user
+    /// picks the same one.
+    current: Option<RuntimeId>,
 }
 
 impl RuntimePicker {
@@ -80,14 +90,39 @@ impl RuntimePicker {
         Self {
             focus_handle: cx.focus_handle(),
             entries: build_entries(),
+            current: detect_current(),
         }
     }
 
     fn select(&mut self, id: RuntimeId, _window: &mut Window, cx: &mut Context<Self>) {
-        // v1: log the selection, dismiss. Persistence to runtime.toml
-        // + restart prompt land in the next iteration once we've
-        // settled where the file lives in Zdroid's data dir.
-        log::info!("zdroid_runtime_picker: user selected adapter {:?}", id);
+        if Some(id) == self.current {
+            log::info!(
+                "zdroid_runtime_picker: {:?} already active; closing picker",
+                id
+            );
+            cx.emit(DismissEvent);
+            return;
+        }
+
+        let path = std::path::PathBuf::from(RUNTIME_TOML_PATH);
+        let file = RuntimeFile::with_defaults(id);
+        match file.save(&path) {
+            Ok(()) => {
+                log::info!(
+                    "zdroid_runtime_picker: selected {:?} → wrote {}; restart Zdroid to apply",
+                    id,
+                    path.display()
+                );
+                self.current = Some(id);
+            }
+            Err(err) => {
+                log::error!(
+                    "zdroid_runtime_picker: failed to write {}: {:#}",
+                    path.display(),
+                    err
+                );
+            }
+        }
         cx.emit(DismissEvent);
     }
 }
@@ -139,7 +174,7 @@ impl Render for RuntimePicker {
                     self.entries
                         .iter()
                         .enumerate()
-                        .map(|(idx, entry)| render_card(idx, entry, cx)),
+                        .map(|(idx, entry)| render_card(idx, entry, self.current, cx)),
                 ),
             )
     }
@@ -148,10 +183,12 @@ impl Render for RuntimePicker {
 fn render_card(
     idx: usize,
     entry: &AdapterEntry,
+    current: Option<RuntimeId>,
     cx: &mut Context<RuntimePicker>,
 ) -> AnyElement {
     let theme_colors = cx.theme().colors();
     let id = entry.id;
+    let is_current = current == Some(id);
     let name = id.display_name();
     let tagline = entry.tagline;
 
@@ -175,7 +212,11 @@ fn render_card(
         .p_4()
         .w_full()
         .border_1()
-        .border_color(theme_colors.border_variant)
+        .border_color(if is_current {
+            theme_colors.border_focused
+        } else {
+            theme_colors.border_variant
+        })
         .rounded_md()
         // Allow inner flex children to shrink below their content
         // width (CSS `min-width: 0` equivalent) — without this the
@@ -297,5 +338,15 @@ fn default_termux_config() -> ExternalTermuxConfig {
         package: "com.termux".into(),
         prefix: PathBuf::from("/data/data/com.termux/files/usr"),
     }
+}
+
+/// Read the active adapter id from `runtime.toml`. Returns `None` if
+/// the file is missing (first-launch state) or unparseable; the picker
+/// just doesn't render a "Current" badge in those cases.
+fn detect_current() -> Option<RuntimeId> {
+    RuntimeFile::load(std::path::Path::new(RUNTIME_TOML_PATH))
+        .ok()
+        .flatten()
+        .map(|file| file.runtime.kind)
 }
 

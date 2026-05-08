@@ -158,6 +158,73 @@ pub enum AdapterConfig {
 }
 
 impl RuntimeFile {
+    /// Construct a `RuntimeFile` whose `[runtime] type =` is set to
+    /// `id` and whose only populated section is the matching one,
+    /// using on-device defaults. Used by the picker UI to write a
+    /// fresh `runtime.toml` when the user selects an adapter for the
+    /// first time.
+    pub fn with_defaults(id: RuntimeId) -> Self {
+        let runtime = RuntimeSelection { kind: id };
+        match id {
+            RuntimeId::Chroot => Self {
+                runtime,
+                chroot: Some(ChrootConfig {
+                    root: PathBuf::from("/data/local/nhsystem/kali-arm64"),
+                    home_bind: PathBuf::from("/zed"),
+                    spawnd_socket: PathBuf::from("/data/data/com.zdroid/files/run/zd-spawn"),
+                    su_path: PathBuf::from("/product/bin/su"),
+                }),
+                bootstrap: None,
+                external_termux: None,
+            },
+            RuntimeId::Bootstrap => Self {
+                runtime,
+                chroot: None,
+                bootstrap: Some(BootstrapConfig {
+                    prefix: PathBuf::from("/data/data/com.zdroid/files/usr"),
+                    proot_rootfs: None,
+                    release_repo: "Dylanmurzello/zdroid-bootstrap".into(),
+                }),
+                external_termux: None,
+            },
+            RuntimeId::ExternalTermux => Self {
+                runtime,
+                chroot: None,
+                bootstrap: None,
+                external_termux: Some(ExternalTermuxConfig {
+                    package: "com.termux".into(),
+                    prefix: PathBuf::from("/data/data/com.termux/files/usr"),
+                }),
+            },
+        }
+    }
+
+    /// Read + parse `runtime.toml` from `path`. Returns `Ok(None)` if
+    /// the file doesn't exist (first-launch state); errors only on
+    /// parse / I/O failures.
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Option<Self>> {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => Ok(Some(toml::from_str(&raw)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Atomically serialize and write `runtime.toml` to `path`. Writes
+    /// to a sibling `path.tmp`, then renames into place — so a partial
+    /// write doesn't leave a half-formed config that breaks the
+    /// adapter dispatch on next launch.
+    pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let serialized = toml::to_string_pretty(self)?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, serialized)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
     /// Pick the active section based on `runtime.type` and return it
     /// as a [`ResolvedConfig`]. Errors if the matching section is
     /// missing — `runtime.toml` declared chroot but no `[chroot]`
