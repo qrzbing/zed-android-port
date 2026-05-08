@@ -1,0 +1,19 @@
+[package]
+name = "zdroid_runtime"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+description = "Hexagonal port + adapters for the Zdroid userland runtime (chroot / bootstrap / external Termux)"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/zdroid_runtime.rs"
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+toml.workspace = true

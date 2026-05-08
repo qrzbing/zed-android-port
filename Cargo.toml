@@ -225,6 +225,7 @@ members = [
     "crates/worktree",
     "crates/worktree_benchmarks",
     "crates/x_ai",
+    "crates/zdroid_runtime",
     "crates/zed",
     "crates/zed_actions",
     "crates/windows_resources",
