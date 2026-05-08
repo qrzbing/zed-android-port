@@ -72,39 +72,62 @@ PATH_DIRS=(
     /root/go/bin
 )
 
-# Wipe and rebuild. Atomic-ish: rename old dir aside, build new, swap.
-# `ln -sfn` is the per-link operation; we skip the per-entry readlink
-# check because that adds 5000+ external invocations and takes minutes
-# on a tablet. Wholesale rebuild is faster and produces the same end
-# state.
+# Wipe and rebuild. Atomic-ish: build a staging dir, swap into place.
+#
+# Performance: each `ln -sfn` is fork+exec (~30ms on Android via su).
+# Sequentially that's ~5 minutes for 10k binaries. We parallelize via
+# `xargs -P` to keep it under a minute.
+#
+# The pipeline:
+#   1. Walk PATH dirs, emit one binary basename per line.
+#   2. xargs -P N reads basenames, forks N workers in parallel, each
+#      runs `ln -sfn $ZD_EXEC $STAGING/<name>`.
+#   3. Atomic-ish swap.
 STAGING="${ZD_RUNTIME_DIR}.new"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
-count=0
+# Concurrency. 16 keeps the load avg manageable on tablet-class CPUs;
+# higher just contends on the same bottleneck (su mediation, SELinux
+# policy lookup) without speeding things up much.
+JOBS=16
+
+# Collect names. Use a tmp file so xargs gets a stable input.
+NAMES_FILE=$(mktemp)
+trap 'rm -f "$NAMES_FILE"' EXIT
+
 for path_dir in "${PATH_DIRS[@]}"; do
     abs="$RUNTIME_ROOT$path_dir"
     [ -d "$abs" ] || continue
-
     for entry in "$abs"/*; do
-        [ -e "$entry" ] || continue
-        [ -x "$entry" ] || continue
-        [ -d "$entry" ] && continue
-
-        name="${entry##*/}"
-        # `ln -sfn` is idempotent: -f overwrites, -n keeps existing
-        # symlink-to-dir as a symlink (defensive). For a fresh staging
-        # dir it's just `ln -s`.
-        ln -sfn "$ZD_EXEC" "$STAGING/$name"
-        count=$((count + 1))
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        # Symlinks: keep unconditionally — `-x` follows the link, and
+        # many rootfs symlinks point at chroot-only paths (e.g.,
+        # /root/.local/bin/claude → /root/.local/share/claude/...).
+        # The link target is meaningful only inside the chroot, so
+        # `-x` returns false from outside and we'd skip a wrapper that
+        # works fine post-chroot.
+        # Regular files: must be executable AND not a directory.
+        if [ -L "$entry" ] || { [ -f "$entry" ] && [ -x "$entry" ]; }; then
+            echo "${entry##*/}" >> "$NAMES_FILE"
+        fi
     done
 done
 
-# Atomic-ish swap: ensure old is gone, rename new in place. Doing the
-# swap as `rm + mv` avoids the rare case where a Zed subprocess is
-# mid-PATH-lookup against the old dir; in practice subprocess lookup
-# is point-in-time and the brief gap is harmless.
+# Dedupe names (a binary can show up in multiple PATH dirs). sort -u
+# is plenty fast for ~10k lines and lets xargs work on a clean set.
+sort -u "$NAMES_FILE" -o "$NAMES_FILE"
+total=$(wc -l < "$NAMES_FILE" | tr -d ' ')
+
+# xargs -n 1 to give each worker exactly one name. The trailing `_`
+# is a placeholder that becomes $0 inside the sh -c body; xargs then
+# appends the actual name from stdin as $1. (toybox xargs doesn't
+# honor -I{} so we use this positional-arg pattern.)
+xargs -P "$JOBS" -n 1 -a "$NAMES_FILE" \
+    sh -c "ln -sfn \"$ZD_EXEC\" \"$STAGING/\$1\"" _
+
+# Atomic-ish swap.
 rm -rf "$ZD_RUNTIME_DIR"
 mv "$STAGING" "$ZD_RUNTIME_DIR"
 
-echo "zd-runtime-sync: $count wrappers in $ZD_RUNTIME_DIR"
+echo "zd-runtime-sync: $total wrappers in $ZD_RUNTIME_DIR"
