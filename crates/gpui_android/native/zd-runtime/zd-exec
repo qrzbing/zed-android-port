@@ -76,7 +76,20 @@ HOST_CWD="$PWD"
 # Zdroid's app data dir; both map to RUNTIME_HOME_BIND. NetHunter's
 # bootkali_init bind-mounts /storage/emulated/0 at /sdcard inside the
 # chroot, so external-storage paths map straight through.
+#
+# We also accept already-chroot-relative paths (/zed/..., /root/...,
+# /usr/..., /etc/..., /opt/..., /var/..., /tmp/..., /home/...) as
+# pass-through. Zed's terminal-state persistence saves the post-chroot
+# pwd (the path that bash showed *inside* the chroot), then on restore
+# passes that path back as the spawn's host cwd. Without pass-through
+# those landed at /root (the catch-all fallback) and the user saw
+# every restored terminal reset to ~ regardless of where they had it
+# before. Pass-through means a saved cwd of /zed/projects/test
+# round-trips correctly.
 case "$HOST_CWD" in
+    /zed|/zed/*|/root|/root/*|/usr|/usr/*|/etc|/etc/*|/var|/var/*|/tmp|/tmp/*|/home|/home/*|/opt|/opt/*|/srv|/srv/*)
+        ROOTFS_CWD="$HOST_CWD"
+        ;;
     /data/data/com.zdroid/files/home/*)
         ROOTFS_CWD="${RUNTIME_HOME_BIND}/${HOST_CWD#/data/data/com.zdroid/files/home/}"
         ;;
@@ -84,6 +97,15 @@ case "$HOST_CWD" in
         ROOTFS_CWD="${RUNTIME_HOME_BIND}/${HOST_CWD#/data/user/0/com.zdroid/files/home/}"
         ;;
     /data/data/com.zdroid/files/home|/data/user/0/com.zdroid/files/home)
+        ROOTFS_CWD="${RUNTIME_HOME_BIND}"
+        ;;
+    # $HOME / app data root — maps to /zed (the home bind-mount).
+    # Zed's terminal-spawn defaults to $HOME on Android (which is the
+    # app data root, not the bash home subdir), AND saved terminal
+    # cwd state in the DB has this exact path. Without this case the
+    # wrapper falls through to /root and every "default" or "restored"
+    # terminal lands at ~.
+    /data/data/com.zdroid/files|/data/user/0/com.zdroid/files)
         ROOTFS_CWD="${RUNTIME_HOME_BIND}"
         ;;
     /storage/emulated/0/*)
@@ -102,6 +124,7 @@ case "$HOST_CWD" in
         ROOTFS_CWD="/root"
         ;;
 esac
+
 
 # Stdin a tty? Use setsid -c (force-takeover) so the target can own the
 # pty and do job control. Non-tty: skip setsid entirely.
