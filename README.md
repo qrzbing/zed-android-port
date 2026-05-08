@@ -12,6 +12,8 @@
 
 > **Experimental.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
 >
+> Under the hood this is **Termux + bionic libc**, not a real Linux distro. The kernel is Android's, `/usr/bin/env` doesn't exist, `/tmp` doesn't exist, `/etc/resolv.conf` doesn't exist, and any precompiled binary that assumes a glibc Linux runtime can fail in surprising ways. We hex-patch / shim the common cases (claude, npm tools, apt, dpkg) but each new tool you install is a fresh roll of the dice. If something errors with `dlopen failed: library "libfoo.so" not found` or `execve: no such file or directory` on a binary that "should" work, that's why.
+>
 > _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed)._
 
 ---
