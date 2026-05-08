@@ -54,3 +54,12 @@ crates/docs_preprocessor/actions.json
 # Local documentation audit files
 /december-2025-releases.md
 /docs/december-2025-documentation-gaps.md
+
+# Zdroid release artifacts. APKs land in `crates/.../app/build/...` (already
+# ignored by `**/target` indirectly via gradle), but if one ever gets copied
+# to the repo root for inspection or staged for upload, don't commit it.
+# Also catches stray release-notes drafts and signing-staging copies.
+*.apk
+*.aab
+release-notes-draft*.md
+/release-staging/

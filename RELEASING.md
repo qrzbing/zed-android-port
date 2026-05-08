@@ -1,0 +1,178 @@
+# Releasing Zdroid
+
+Process for cutting a Zdroid release. Read end-to-end before doing one.
+
+## Inviolable rules
+
+1. **Never `--clobber` an existing release asset.** Doing so deletes the asset, which resets its download counter to zero. Cumulative download history is gone forever. Cut a new tag instead.
+2. **Never delete an old release.** `/total` download badge sums across every release that exists. Deleting v0.1.0 wipes its accumulated downloads from the count. Old releases are read-only history; leave them alone.
+3. **Never release without device-verifying every README-claimed feature** that the changes in this release touched. Compile + install + boot is *not* shipped. See "Smoke checklist" below.
+
+A shell-level guardrail blocking `gh release upload --clobber` against this repo lives in `~/.zshrc` (see the `gh()` function added during v0.1.1). It refuses the destructive command before it can run. If you're on a different machine, paste the same function from your dotfiles backup before doing release work.
+
+## Versioning
+
+Semver-flavored, `vMAJOR.MINOR.PATCH`:
+
+- **MAJOR** is reserved for "the user-facing flow changed materially" or "we broke compatibility with installed APKs from an earlier major" — bumping the keystore, dropping a feature, restructuring `~/projects` layout, etc. Currently 0.
+- **MINOR** for any user-visible feature addition. Multiple fixes can ride along.
+- **PATCH** for bug-fix-only releases. No new features.
+
+Don't reuse a tag. Don't add a new version with a hyphen suffix (e.g. `v0.1.1-hotfix`) — just bump PATCH.
+
+## End-to-end flow
+
+### 1. Make sure code is on `main` and pushed
+
+```sh
+git status   # working tree should be clean
+git log --oneline origin/main..HEAD  # nothing local; if there is, push first
+```
+
+If commits since last release tag aren't on `main`, this release won't reflect them. `gh release create vX.Y.Z` defaults to the latest commit on the default branch.
+
+### 2. Inventory the changes since last release
+
+```sh
+LAST_TAG=$(git describe --tags --abbrev=0)
+git log --oneline "$LAST_TAG..HEAD" -- ':!README.md' ':!docs/'
+```
+
+Read that list. Note user-visible behavior changes vs internal/refactor commits. The user-visible ones go in release notes.
+
+### 3. Build the release APK
+
+```sh
+cd crates/gpui_android/examples/zed_android
+ANDROID_NDK_HOME=/opt/homebrew/share/android-commandlinetools/ndk/27.0.12077973 \
+  cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build --release
+cd android
+gradle assembleRelease
+```
+
+APK lands at `app/build/outputs/apk/release/app-release.apk`. ~9 minutes for a clean release build, ~1 minute incremental.
+
+Confirm signing — should match the persistent zdroid-release keystore fingerprint:
+
+```sh
+APKSIGNER=$(find /opt/homebrew/share/android-commandlinetools/build-tools -name apksigner | sort -V | tail -1)
+"$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk | grep -i sha-256
+# expect: 25:68:A2:A3:81:2D:8B:C3:A4:E8:E7:56:68:5C:5C:F7:25:40:EA:A2:94:37:F4:C1:25:8A:0C:81:73:BF:AB:4E
+```
+
+A different cert means users would have to uninstall/reinstall to upgrade — never let that happen. If the keystore is missing, restore it from your backup before continuing.
+
+### 4. Smoke checklist on a real device
+
+`adb install -r app/build/outputs/apk/release/app-release.apk` over the previous release (same cert preserves data dir), then:
+
+- [ ] App boots cleanly. No `RustPanic` / `Fatal signal 11` in `adb logcat -d`.
+- [ ] Welcome screen reads "Welcome to Zdroid" / "Welcome back to Zdroid". Logo is the orb mark.
+- [ ] Menu bar reads "Zdroid". Settings has no Auto Update or Telemetry sections.
+- [ ] **Open Project** from the welcome screen pops the SAF picker. Pick a folder, project loads.
+- [ ] **Clone Repository** from the welcome screen pops the URL modal. Submit a small public repo URL. Toast appears with Cancel button. Clone completes, project opens.
+- [ ] Open a folder on `/sdcard/`. Yellow Move chip appears in the title bar. Tap, confirm Copy. Toast with Cancel button shows. Cancel mid-copy: dst at `~/projects/<name>` is removed cleanly.
+- [ ] Integrated terminal opens. `pkg install npm && npm install -g @anthropic-ai/claude-code && claude` runs, claude responds.
+- [ ] Powerline-style prompt characters (`❯`, `✻`, etc.) render as glyphs not boxes (font fallback to /system/fonts).
+- [ ] Touch a `.rs` file in a worktree. Editor opens, syntax highlighting active.
+- [ ] Git panel opens, shows current branch / staging.
+
+If any check fails, do **not** proceed to step 5. Triage the regression, push a fix to `main`, restart at step 3.
+
+### 5. Tag + push
+
+```sh
+VERSION=v0.1.X
+git tag -a "$VERSION" -m "Zdroid ${VERSION#v}"
+git push origin "$VERSION"
+```
+
+### 6. Stage the APK + write release notes
+
+Copy the APK to a versioned name and write notes to a temp file:
+
+```sh
+mkdir -p /tmp/zdroid-release-build
+cp crates/gpui_android/examples/zed_android/android/app/build/outputs/apk/release/app-release.apk \
+   "/tmp/zdroid-release-build/Zdroid-${VERSION#v}.apk"
+
+# verify, copy these into the notes
+shasum -a 256 "/tmp/zdroid-release-build/Zdroid-${VERSION#v}.apk"
+git rev-parse HEAD
+```
+
+Release notes style — patch-notes form, terse:
+
+- **No em-dashes (`—`).** Periods, colons, parens. The user has called this out repeatedly.
+- **No "first public APK" / "first build of Zdroid" duplication** — the title already conveys it.
+- **No License section** — GitHub renders the LICENSE file in the sidebar already.
+- **Title** is just `Zdroid X.Y.Z`. No tagline.
+- Sections: `Install`, `Highlights` (or `Fixes` for patch releases), `Caveats`, `Verification`. Skip `Highlights` for pure-bugfix releases; replace with `Fixes`.
+- Install instructions favor sideload (file manager / download notification), with `adb install -r` as a parenthetical for dev iteration.
+- The Caveats list inherits from previous release — include items still relevant. Drop items the new release fixed.
+
+Template (replace the bracketed bits):
+
+```markdown
+### Install
+
+Download `Zdroid-X.Y.Z.apk` below and open it on your Android device. Allow "install from unknown sources" when prompted, then tap the Zdroid icon.
+
+For dev iteration: `adb install -r Zdroid-X.Y.Z.apk`.
+
+This is an in-place upgrade over [previous] — same signing cert, your existing data dir is preserved.
+
+### Fixes
+
+* [terse bullet, lead with the user-visible change, then the why]
+
+### Caveats
+
+* [carry over relevant items from the previous release]
+
+### Verification
+
+* APK SHA-256: `<sha>`
+* Signing cert SHA-256: `25:68:A2:A3:81:2D:8B:C3:A4:E8:E7:56:68:5C:5C:F7:25:40:EA:A2:94:37:F4:C1:25:8A:0C:81:73:BF:AB:4E`
+* Built from commit `<short SHA>`
+* Bootstrap: [bootstrap-2026.05.06-r2](https://github.com/Dylanmurzello/zed-android-port/releases/tag/bootstrap-2026.05.06-r2)
+```
+
+### 7. Cut the release
+
+```sh
+gh release create "$VERSION" \
+  --repo Dylanmurzello/zed-android-port \
+  --title "Zdroid ${VERSION#v}" \
+  --notes-file /tmp/zdroid-release-build/release-notes.md \
+  --latest \
+  "/tmp/zdroid-release-build/Zdroid-${VERSION#v}.apk"
+```
+
+`--latest` is intentional — every new release should be the latest entry on the public page. Bootstrap zip stays as a pre-release; it never competes for the latest slot.
+
+### 8. Verify the public release works for anonymous users
+
+```sh
+URL="https://github.com/Dylanmurzello/zed-android-port/releases/download/${VERSION}/Zdroid-${VERSION#v}.apk"
+curl -sIL -A "Mozilla/5.0" "$URL" | grep -E "^HTTP|^content-length"
+```
+
+Should return `302 → 200` with a content-length matching the APK byte count. If it 404s, the release didn't go public — check `gh release view "$VERSION" --json isDraft` and un-draft if needed.
+
+### 9. After release
+
+- The README badge / `/releases/latest` link auto-updates to point at the new version. No README changes needed unless install instructions changed.
+- The bootstrap GitHub Release stays unchanged unless the bootstrap zip itself was rebuilt for this version.
+- No need to manually update download counts — the worker / shields.io badges do it.
+
+## Common mistakes (and what they cost)
+
+- **Forgot to push `main` first → release tags an old commit.** Symptom: release notes don't reflect what's actually in the APK. Fix: delete the tag, push, re-tag.
+- **Forgot the smoke checklist → user-visible bug ships.** Symptom: bug report on the issue tracker within hours, repo's reputation takes a hit. Fix: smoke check before EVERY release, no exceptions.
+- **Used `--clobber` reflexively → counter resets.** Should be impossible if the shell guardrail is loaded. If it isn't, the rule is stop, source `.zshrc`, then continue.
+- **Drafted release for "later" → actual files leak via the GitHub releases JSON API even while drafted.** Drafts aren't private; only un-published. If you need to gate visibility, keep the repo private until the release is finalized.
+
+## What goes wrong if you ignore this guide
+
+The numbers (downloads, stars) and the trust (cert continuity, fix-this-week cadence) compound. They can also unwind in one botched release. Slow is smooth, smooth is fast.
