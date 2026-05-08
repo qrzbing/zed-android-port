@@ -8814,6 +8814,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.1",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -17575,6 +17576,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zdroid_runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "log",
+ "nix 0.29.0",
+ "serde",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "zed-font-kit"
 version = "0.14.1-zed"
 source = "git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269#94b0f28166665e8fd2f53ff6d268a14955c82269"
@@ -17765,6 +17778,7 @@ dependencies = [
  "watch",
  "which_key",
  "workspace",
+ "zdroid_runtime",
  "zed_actions",
 ]
 
