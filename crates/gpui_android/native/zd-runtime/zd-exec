@@ -233,8 +233,26 @@ dispatch_chroot() {
         # transit (Magisk's su -c default), so the re-execed instance
         # re-reads CONF and re-derives everything. That's fine — the
         # script is idempotent.
-        exec env -u LD_PRELOAD "$RUNTIME_SU" -c \
-            "ZD_EXEC_REENTERED=1 '$0'$(printf ' %q' "$TARGET")$quoted_args"
+        #
+        # The re-exec form depends on how we were invoked. If we ARE
+        # zd-exec (direct call: `zd-exec foo --bar`), TARGET came from
+        # $1 and $@ has the rest; we need to pass TARGET back as the
+        # first positional so the re-execed instance can re-derive it.
+        # If we were invoked via a wrapper symlink (PATH lookup of
+        # `foo` hit $PREFIX/zd-runtime/foo → us), argv[0] basename IS
+        # the target and the re-execed instance will derive it the
+        # same way. Passing TARGET separately in the symlink case
+        # double-applies it: argv would become [wrapper, TARGET, ...]
+        # and the inner exec ends up as `exec '$TARGET' TARGET ...`,
+        # which bash interprets as TARGET wanting to read a script
+        # file named TARGET — error: cannot execute binary file.
+        if [ "$SELF_NAME" = "zd-exec" ]; then
+            exec env -u LD_PRELOAD "$RUNTIME_SU" -c \
+                "ZD_EXEC_REENTERED=1 '$0'$(printf ' %q' "$TARGET")$quoted_args"
+        else
+            exec env -u LD_PRELOAD "$RUNTIME_SU" -c \
+                "ZD_EXEC_REENTERED=1 '$0'$quoted_args"
+        fi
     fi
 }
 
