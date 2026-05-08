@@ -46,7 +46,7 @@ The trick was basically a custom `gpui_android` platform backend (Vulkan surface
 - **LSPs.** rust-analyzer baked in. gopls, ts-server, pyright, jdtls install in one `pkg`/`npm`/`go install`.
 - **Extensions.** Browse, install, manage. Themes, language configs, grammars, slash commands.
 - **Remote SSH.** Server-picker pill in the title bar, persisted server list, native askpass.
-- **Claude Code.** `pkg install npm && npm install -g @anthropic-ai/claude-code`, then `claude` works.
+- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked Termux packages (go, openssh, etc.) as "unowned" and remove them.
 - **Input.** Hardware keyboard, mouse, trackpad. Two-finger and long-press right-click.
 - **Multi-window.** Android freeform and DeX, each extra window is a real Activity with OS chrome.
 - **Edge-to-edge** rendering with content under the display cutout.
