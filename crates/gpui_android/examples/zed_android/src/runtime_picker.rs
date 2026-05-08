@@ -108,7 +108,7 @@ impl Render for RuntimePicker {
         v_flex()
             .key_context("RuntimePicker")
             .track_focus(&self.focus_handle)
-            .w(px(620.0))
+            .w(px(560.0))
             .max_h(px(720.0))
             .p_6()
             .gap_4()
@@ -116,6 +116,11 @@ impl Render for RuntimePicker {
             .border_1()
             .border_color(theme_colors.border)
             .rounded_lg()
+            // Clip card content that overflows the modal's nominal
+            // width — without this, gpui flexbox lets long taglines
+            // grow past the modal box and the Select button drifts
+            // off into editor space.
+            .overflow_hidden()
             .child(
                 v_flex()
                     .gap_1()
@@ -168,12 +173,18 @@ fn render_card(
         .id(("adapter-card", idx))
         .gap_4()
         .p_4()
+        .w_full()
         .border_1()
         .border_color(theme_colors.border_variant)
         .rounded_md()
+        // Allow inner flex children to shrink below their content
+        // width (CSS `min-width: 0` equivalent) — without this the
+        // long tagline labels push the layout past the modal's edge.
+        .min_w_0()
         .child(
             v_flex()
                 .flex_1()
+                .min_w_0()
                 .gap_2()
                 .child(
                     h_flex()
