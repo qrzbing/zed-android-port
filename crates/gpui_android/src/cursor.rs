@@ -41,7 +41,6 @@ fn pointer_icon_type(style: CursorStyle) -> jint {
         CursorStyle::DragLink => 1010,                 // TYPE_ALIAS
         CursorStyle::DragCopy => 1011,                 // TYPE_COPY
         CursorStyle::ContextualMenu => 1001,           // TYPE_CONTEXT_MENU
-        CursorStyle::None => 0,                        // TYPE_NULL (hidden)
     }
 }
 

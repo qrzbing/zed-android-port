@@ -106,7 +106,6 @@ dependencies = [
  "collections",
  "context_server",
  "db",
- "derive_more",
  "feature_flags",
  "fs",
  "futures",
@@ -2665,7 +2664,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
- "async-process",
  "async-trait",
  "base64 0.22.1",
  "collections",
@@ -4140,7 +4138,7 @@ dependencies = [
 name = "edit_prediction_metrics"
 version = "0.1.0"
 dependencies = [
- "language",
+ "imara-diff",
  "serde",
  "serde_json",
  "similar",
@@ -4207,6 +4205,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "assets",
+ "base64 0.22.1",
  "breadcrumbs",
  "buffer_diff",
  "client",
@@ -4757,6 +4756,7 @@ dependencies = [
 name = "feedback"
 version = "0.1.0"
 dependencies = [
+ "client",
  "extension_host",
  "gpui",
  "system_specs",
@@ -13912,7 +13912,6 @@ name = "system_specs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "client",
  "gpui",
  "human_bytes",
  "pciid-parser",

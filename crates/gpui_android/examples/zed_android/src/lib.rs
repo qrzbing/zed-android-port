@@ -21,7 +21,7 @@ use fs::{Fs, RealFs};
 use node_runtime::NodeRuntime;
 use project::Project;
 use session::{AppSession, Session};
-use gpui::{App, AppContext as _, UpdateGlobal as _};
+use gpui::{App, AppContext as _, TaskExt as _, UpdateGlobal as _};
 use log::{error, info};
 use settings::{Settings as _, SettingsStore};
 use util::ResultExt as _;
