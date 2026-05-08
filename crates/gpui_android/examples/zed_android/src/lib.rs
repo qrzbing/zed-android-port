@@ -195,38 +195,34 @@ fn android_main(app: AndroidApp) {
             }
             // PATH order from highest precedence to lowest:
             //
-            //   1. `$PREFIX/zd-runtime/` — runtime-swap wrapper symlinks.
-            //      Each one points at $PREFIX/bin/zd-exec, which reads its
-            //      argv[0] basename and dispatches into the user-configured
-            //      Linux rootfs (chroot or proot). When Zed spawns
-            //      `git`, `rust-analyzer`, `node`, etc., this is what gets
-            //      hit, and the actual binary executes inside the rootfs
-            //      with stdio passed through transparently. Populated by
-            //      $PREFIX/bin/zd-runtime-sync.
-            //
-            //   2. `$PREFIX/.zed/bin` — our apt-untouched shim namespace
+            //   1. `$PREFIX/.zed/bin` — our apt-untouched shim namespace
             //      (npm wrapper, etc.). Holds anything we want to shadow
-            //      regardless of what apt installs. Falls through to here
-            //      when the rootfs doesn't have a binary the wrapper
-            //      target would dispatch to.
+            //      regardless of what apt installs.
             //
-            //   3. `$PREFIX/bin` — Termux/bionic bin dir. Final bionic
-            //      fallback for binaries that aren't in the rootfs. Will
-            //      shrink as the runtime swap rolls out.
+            //   2. `$PREFIX/bin` — Termux/bionic bin dir.
             //
-            //   4. The pre-existing PATH (Android system dirs, etc.).
+            //   3. The pre-existing PATH (Android system dirs, etc.).
             //
-            // PATH search ignores non-existent dirs, so listing
-            // `zd-runtime` here is safe even if zd-runtime-sync hasn't
-            // yet populated it (fresh install, no rootfs configured) —
-            // resolution falls through to `$PREFIX/.zed/bin` and onward.
-            let zd_runtime = prefix.join("zd-runtime");
+            // The runtime-swap wrapper dir `$PREFIX/zd-runtime/` is
+            // DELIBERATELY OMITTED here while zd-spawnd (the persistent
+            // root spawn daemon) is being built. Putting zd-runtime/ on
+            // PATH today means every `Command::new` Zed makes (head,
+            // readlink, env, …) re-execs through `/product/bin/su -c`,
+            // which Magisk's su mediates serially per call (~200ms each).
+            // Under Zed's startup load that produces a fork-avalanche
+            // and saturates the device's su queue. Once zd-spawnd lands
+            // (one su at boot, per-spawn becomes a socket roundtrip +
+            // fork+chroot, ~5ms), restore zd-runtime/ to the front of
+            // PATH. See memory: project_runtime_swap_architecture.md.
+            //
+            // The wrappers in `$PREFIX/zd-runtime/` still exist on disk
+            // (zd-runtime-sync populates them) and can be invoked by
+            // explicit absolute path when needed. They just don't
+            // resolve via Zed's PATH lookup yet.
             let zed_bin = prefix.join(".zed/bin");
             let prefix_bin = prefix.join("bin");
             let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = std::ffi::OsString::from(&zd_runtime);
-            new_path.push(":");
-            new_path.push(&zed_bin);
+            let mut new_path = std::ffi::OsString::from(&zed_bin);
             new_path.push(":");
             new_path.push(&prefix_bin);
             new_path.push(":");
@@ -255,8 +251,7 @@ fn android_main(app: AndroidApp) {
             // set it per-spawn (in the LSP launcher / terminal-panel
             // pty bringup), not as a global env var.
             log::info!(
-                "zed_android: PATH prefixed with {}, {}, and {}",
-                zd_runtime.display(),
+                "zed_android: PATH prefixed with {} and {}",
                 zed_bin.display(),
                 prefix_bin.display()
             );

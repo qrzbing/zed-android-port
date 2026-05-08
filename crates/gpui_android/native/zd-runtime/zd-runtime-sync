@@ -109,6 +109,30 @@ JOBS=16
 NAMES_FILE=$(mktemp)
 trap 'rm -f "$NAMES_FILE"' EXIT
 
+# Names we DELIBERATELY don't wrap. These are utility commands Zed (and
+# any reasonable Linux tool) invokes constantly during startup, env
+# loading, prompt detection, and shell-substitution. Routing them
+# through chroot+su+setsid+sudo+bash adds 50-200ms each AND queues on
+# Magisk's su mediator. Zed's startup fires hundreds of these in
+# sequence, which under su-queue contention turns into a fork
+# avalanche that backs up the OS.
+#
+# All these have bionic equivalents in $PREFIX/bin/ that work fine for
+# their intended use. The runtime swap is for tools that NEED glibc
+# (LSPs, language compilers, claude, etc.) — not for `cat`.
+#
+# When a name in this list appears in the rootfs, we just don't create
+# a wrapper. Zed's PATH (with $PREFIX/bin BEFORE $PREFIX/zd-runtime/)
+# falls through to bionic for these.
+SKIP_NAMES=" env sh bash dash ash zsh head tail cat ls cp mv rm mkdir \
+rmdir touch chmod chown ln readlink stat file find xargs basename \
+dirname tr cut sort uniq sed awk grep egrep fgrep wc which command \
+true false test [ sleep echo printf expr id whoami pwd date hostname \
+uname tee yes seq od hexdump xxd md5sum sha1sum sha256sum tar gzip \
+gunzip zcat unzip cmp diff patch ps kill killall ps "
+# Trailing/leading spaces matter for the substring test below.
+
+skipped_count=0
 for path_dir in "${PATH_DIRS[@]}"; do
     abs="$RUNTIME_ROOT$path_dir"
     [ -d "$abs" ] || continue
@@ -122,7 +146,15 @@ for path_dir in "${PATH_DIRS[@]}"; do
         # works fine post-chroot.
         # Regular files: must be executable AND not a directory.
         if [ -L "$entry" ] || { [ -f "$entry" ] && [ -x "$entry" ]; }; then
-            echo "${entry##*/}" >> "$NAMES_FILE"
+            name="${entry##*/}"
+            # Skip if in the bionic-equivalent opt-out list.
+            case "$SKIP_NAMES" in
+                *" $name "*)
+                    skipped_count=$((skipped_count + 1))
+                    continue
+                    ;;
+            esac
+            echo "$name" >> "$NAMES_FILE"
         fi
     done
 done
@@ -143,4 +175,4 @@ xargs -P "$JOBS" -n 1 -a "$NAMES_FILE" \
 rm -rf "$ZD_RUNTIME_DIR"
 mv "$STAGING" "$ZD_RUNTIME_DIR"
 
-echo "zd-runtime-sync: $total wrappers in $ZD_RUNTIME_DIR"
+echo "zd-runtime-sync: $total wrappers in $ZD_RUNTIME_DIR (skipped $skipped_count bionic-equivalents)"
