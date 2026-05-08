@@ -1,0 +1,101 @@
+#!/data/data/com.zdroid/files/usr/bin/bash
+# zd-runtime-sync — Populate $PREFIX/zd-runtime/ with one symlink per
+# binary in the rootfs's PATH directories, all pointing at zd-exec.
+#
+# After running, $PREFIX/zd-runtime/git, $PREFIX/zd-runtime/node,
+# $PREFIX/zd-runtime/rust-analyzer etc. all exist as symlinks to
+# $PREFIX/bin/zd-exec. When Zed has $PREFIX/zd-runtime/ on PATH (ahead
+# of $PREFIX/bin/), every Command::new resolves naturally through the
+# wrapper and into the rootfs.
+#
+# Idempotent. Run on:
+#   - first boot (orchestrated by the app)
+#   - apt install / apt remove inside the rootfs (via dpkg post-invoke)
+#   - manually, via a Zdroid command-palette action
+#
+# Walking the chroot's PATH dirs needs read access to those paths from
+# the host side. NetHunter's /data/local/nhsystem is mode 700 / owned
+# by root, so this script needs to run as root. It re-execs itself
+# through su when not.
+
+set -eu
+
+# Same PATH-pinning logic as zd-exec: exclude $PREFIX/zd-runtime/ to
+# prevent any external (find, ln, mkdir, ls, wc, tr) from PATH-resolving
+# back to the wrapper symlinks and recursing.
+export PATH=/data/data/com.zdroid/files/usr/bin:/system/bin:/system/xbin
+
+PREFIX=/data/data/com.zdroid/files/usr
+ZD_RUNTIME_DIR="$PREFIX/zd-runtime"
+ZD_EXEC="$PREFIX/bin/zd-exec"
+CONF="$PREFIX/etc/zd-runtime.conf"
+
+# Defaults (mirrors zd-exec).
+RUNTIME_TYPE=chroot
+RUNTIME_ROOT=/data/local/nhsystem/kali-arm64
+RUNTIME_SU=/product/bin/su
+
+if [ -r "$CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$CONF"
+fi
+
+if [ ! -x "$ZD_EXEC" ]; then
+    echo "zd-runtime-sync: $ZD_EXEC missing or not executable" >&2
+    exit 1
+fi
+
+# Re-exec via su if we need to read a root-only rootfs path.
+# proot mode is userspace; no root needed.
+if [ "$RUNTIME_TYPE" = "chroot" ] && [ "$(id -u)" != "0" ]; then
+    exec env -u LD_PRELOAD "$RUNTIME_SU" -c "'$0' $*"
+fi
+
+mkdir -p "$ZD_RUNTIME_DIR"
+
+# These are the conventional Linux PATH dirs we'll mirror.
+PATH_DIRS=(
+    /usr/local/sbin
+    /usr/local/bin
+    /usr/sbin
+    /usr/bin
+    /sbin
+    /bin
+)
+
+# Wipe and rebuild. Atomic-ish: rename old dir aside, build new, swap.
+# `ln -sfn` is the per-link operation; we skip the per-entry readlink
+# check because that adds 5000+ external invocations and takes minutes
+# on a tablet. Wholesale rebuild is faster and produces the same end
+# state.
+STAGING="${ZD_RUNTIME_DIR}.new"
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
+
+count=0
+for path_dir in "${PATH_DIRS[@]}"; do
+    abs="$RUNTIME_ROOT$path_dir"
+    [ -d "$abs" ] || continue
+
+    for entry in "$abs"/*; do
+        [ -e "$entry" ] || continue
+        [ -x "$entry" ] || continue
+        [ -d "$entry" ] && continue
+
+        name="${entry##*/}"
+        # `ln -sfn` is idempotent: -f overwrites, -n keeps existing
+        # symlink-to-dir as a symlink (defensive). For a fresh staging
+        # dir it's just `ln -s`.
+        ln -sfn "$ZD_EXEC" "$STAGING/$name"
+        count=$((count + 1))
+    done
+done
+
+# Atomic-ish swap: ensure old is gone, rename new in place. Doing the
+# swap as `rm + mv` avoids the rare case where a Zed subprocess is
+# mid-PATH-lookup against the old dir; in practice subprocess lookup
+# is point-in-time and the brief gap is harmless.
+rm -rf "$ZD_RUNTIME_DIR"
+mv "$STAGING" "$ZD_RUNTIME_DIR"
+
+echo "zd-runtime-sync: $count wrappers in $ZD_RUNTIME_DIR"
