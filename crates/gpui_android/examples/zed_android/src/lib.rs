@@ -6,6 +6,7 @@
 mod header;
 mod menu_bar;
 mod noexec_modal;
+mod runtime_picker;
 mod title_bar;
 
 use std::borrow::Cow;
@@ -785,6 +786,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     project::agent_server_store::AllAgentServersSettings::register(cx);
     onboarding::init(cx);
     menu_bar::register_actions(cx);
+    runtime_picker::register(cx);
     info!(
         "zed_android: workspace + diagnostics + search + file_finder + outline_panel + onboarding + menu_bar init complete"
     );
