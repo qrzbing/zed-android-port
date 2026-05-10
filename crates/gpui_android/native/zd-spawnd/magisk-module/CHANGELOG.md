@@ -1,5 +1,22 @@
 # Zdroid Spawn Daemon changelog
 
+## v1.1.4 (2026-05-10)
+
+Reactive boot design + Magisk Remove revert.
+
+### Fixes
+
+* **service.sh now waits on the right signals, not blind retries.** v1.1.3 hit a 60s wall before the user unlocked the device for the first time post-boot. On Android FBE (file-based encryption), `/data/data/com.zdroid` is in user-0's credential-encrypted storage and unreadable until the user unlocks; `sys.boot_completed=1` fires before that. v1.1.4 watches three canonical AOSP signals instead:
+  1. `sys.boot_completed=1` (system_server alive)
+  2. `pm list packages -U com.zdroid` returning a uid (PackageManager-based, lives in DE space, no FBE wait needed for the lookup)
+  3. `sys.user.0.ce_available=true` (set by `vold` in `OnUserUnlocked`, AOSP-universal across OEMs)
+  
+  Each `getprop` call is microseconds against Android's shared-memory property service, so the polls are cheap. When all three are met, the daemon starts. No timeouts on the operation, no "give up after N seconds". If Zdroid is reinstalled while the supervisor is waiting, it picks up the new uid automatically.
+
+### New
+
+* **`uninstall.sh`** — runs at the next boot after Magisk Remove (or `magisk --remove-modules`). Restores `/root/.bash_profile` and `/root/.profile` from the `.zdroid-orig` backups inside the chroot, and `rmdir`s the empty `/zed` bind-mount target. Magisk Remove now actually reverts; previously the chroot's bash startup stayed Zdroid-flavored forever. Audit log at `/data/adb/zdroid-spawnd-uninstall.log` survives the module dir removal.
+
 ## v1.1.3 (2026-05-10)
 
 Three production fixes from real-device testing of v1.1.2.

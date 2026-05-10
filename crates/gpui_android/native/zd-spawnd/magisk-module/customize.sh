@@ -32,13 +32,21 @@ set_perm "$MODPATH/chroot-init.sh" 0 0 0755
 # its in-app console.
 set_perm "$MODPATH/action.sh" 0 0 0755
 
+# Uninstall hook: runs at next boot after Magisk Remove. Restores
+# /root/.bash_profile and /root/.profile from .zdroid-orig backups
+# inside the chroot, and rmdirs the empty /zed bind-mount target.
+# Without this, "uninstall the module" leaves the chroot's bash
+# startup permanently patched — surprising and wrong.
+set_perm "$MODPATH/uninstall.sh" 0 0 0755
+
 # Logs dir, world-unreadable; daemon writes here.
 mkdir -p "$MODPATH/log"
 set_perm "$MODPATH/log" 0 0 0750
 
 ui_print "- Files installed:"
 ui_print "    $MODPATH/zd-spawnd       (daemon binary)"
-ui_print "    $MODPATH/service.sh      (boot trigger, with uid retry)"
+ui_print "    $MODPATH/service.sh      (boot trigger; reactive uid + CE wait)"
+ui_print "    $MODPATH/uninstall.sh    (Magisk Remove hook: restores rootfs)"
 ui_print "    $MODPATH/chroot-init.sh  (rootfs patcher; also called from WebUI)"
 ui_print "    $MODPATH/action.sh       (Magisk Action button: status snapshot)"
 ui_print "    $MODPATH/webroot/        (WebUI: status, logs, interactive actions)"
