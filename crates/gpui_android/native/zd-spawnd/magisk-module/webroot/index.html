@@ -5,166 +5,345 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Zdroid Spawn Daemon</title>
 <style>
-  /* Dark-first card layout. No external CSS so the page stays a single
-     self-contained file with no build step. */
-
+  /* Material 3 dark surface tokens. The "thick" feel comes from the
+     elevation tonal palette plus generous padding, not box-shadows
+     (shadows on dark surfaces wash out). All surfaces are tinted
+     greys, no pure black, no thin 1px borders that look "AI default". */
   :root {
     color-scheme: dark light;
-    --bg: #0f1115;
-    --card: #1a1d24;
-    --border: #2a2f3a;
-    --text: #e6e8eb;
-    --muted: #8b94a3;
-    --accent: #6aa2ff;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --err: #f87171;
-    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    /* M3 dark scheme tokens (standard refs). */
+    --md-surface:               #131318;
+    --md-surface-container-low: #1c1b20;
+    --md-surface-container:     #201f25;
+    --md-surface-container-high:#2a292f;
+    --md-surface-container-hi2: #35343a;
+    --md-on-surface:            #e6e1e9;
+    --md-on-surface-variant:    #c8c5d0;
+    --md-outline:               #918f9a;
+    --md-outline-variant:       #46444c;
+    --md-primary:               #b6c4ff;
+    --md-on-primary:            #1a3270;
+    --md-primary-container:     #324577;
+    --md-on-primary-container:  #dce2ff;
+    --md-error:                 #ffb4ab;
+    --md-warn:                  #ffcc80;
+    --md-ok:                    #a8d8b0;
+
+    --terminal-bg:              #0d0e10;
+    --terminal-fg:              #d6d8dd;
+
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Roboto Flex", "Roboto", "Noto Sans",
+            "Segoe UI", system-ui, sans-serif;
   }
+
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f5f5f7;
-      --card: #ffffff;
-      --border: #d1d5db;
-      --text: #111827;
-      --muted: #6b7280;
-      --accent: #2563eb;
+      --md-surface:               #fdfbff;
+      --md-surface-container-low: #f4f3f9;
+      --md-surface-container:     #efedf3;
+      --md-surface-container-high:#e8e6ec;
+      --md-surface-container-hi2: #e2e0e6;
+      --md-on-surface:            #1b1b1f;
+      --md-on-surface-variant:    #46464f;
+      --md-outline:               #76777f;
+      --md-outline-variant:       #c7c6cf;
+      --md-primary:               #2c4a9c;
+      --md-on-primary:            #ffffff;
+      --md-primary-container:     #d8e2ff;
+      --md-on-primary-container:  #001947;
+      --md-error:                 #ba1a1a;
+      --md-warn:                  #ad6800;
+      --md-ok:                    #2f6b3b;
+
+      --terminal-bg:              #1a1b1e;
+      --terminal-fg:              #d6d8dd;
     }
   }
 
   * { box-sizing: border-box; }
-  body {
+
+  html, body {
     margin: 0;
-    padding: env(safe-area-inset-top, 16px) 16px env(safe-area-inset-bottom, 16px);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 0;
+    background: var(--md-surface);
+    color: var(--md-on-surface);
+    font-family: var(--sans);
     font-size: 14px;
     line-height: 1.5;
-    background: var(--bg);
-    color: var(--text);
+    -webkit-font-smoothing: antialiased;
     -webkit-tap-highlight-color: transparent;
   }
 
-  header {
-    margin: 8px 0 16px;
+  .app {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding:
+      max(env(safe-area-inset-top, 16px), 16px)
+      max(env(safe-area-inset-right, 20px), 20px)
+      max(env(safe-area-inset-bottom, 16px), 16px)
+      max(env(safe-area-inset-left, 20px), 20px);
+  }
+
+  /* ---- Header ---- */
+  .app-header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 8px 4px 24px;
   }
-  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
-  header .version { font-family: var(--mono); color: var(--muted); font-size: 12px; }
-  header .lastsync { font-family: var(--mono); color: var(--muted); font-size: 11px; }
+  .app-header h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  .app-header .meta {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--md-on-surface-variant);
+  }
+  .app-header .meta .chip {
+    background: var(--md-surface-container);
+    padding: 6px 12px;
+    border-radius: 999px;
+  }
 
+  /* ---- Main grid: terminal left, sidebar right (>=840px) ---- */
+  .app-main {
+    display: flex;
+    gap: 16px;
+    flex-direction: column;
+  }
+  @media (min-width: 840px) {
+    .app-main {
+      flex-direction: row;
+      align-items: flex-start;
+    }
+    .terminal {
+      flex: 1 1 auto;
+      min-width: 0;
+      order: 1;
+      position: sticky;
+      top: 16px;
+    }
+    .sidebar {
+      width: 380px;
+      flex: 0 0 380px;
+      order: 2;
+    }
+  }
+
+  /* ---- Sidebar ---- */
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* ---- Card primitive (Material 3 surface-container) ---- */
   .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    margin-bottom: 12px;
+    background: var(--md-surface-container);
+    border-radius: 20px;
+    padding: 20px 22px;
+  }
+  .card.high {
+    background: var(--md-surface-container-high);
   }
   .card h2 {
-    margin: 0 0 8px;
-    font-size: 13px;
-    font-weight: 600;
+    margin: 0 0 14px;
+    font-size: 11px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
+    letter-spacing: 0.12em;
+    color: var(--md-on-surface-variant);
   }
-
-  .row {
+  .card .h2-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 0;
     gap: 12px;
+    margin-bottom: 14px;
   }
-  .row + .row { border-top: 1px solid var(--border); }
-  .row .label { color: var(--muted); font-size: 13px; flex-shrink: 0; }
-  .row .value {
+  .card .h2-row h2 { margin: 0; }
+
+  /* ---- Status rows ---- */
+  .status-row {
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    align-items: center;
+    column-gap: 12px;
+    padding: 12px 0;
+  }
+  .status-row + .status-row {
+    border-top: 1px solid var(--md-outline-variant);
+  }
+  .status-row .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--md-outline);
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+    color: var(--md-outline);
+  }
+  .status-row .dot.ok    { background: var(--md-ok);    color: var(--md-ok); }
+  .status-row .dot.warn  { background: var(--md-warn);  color: var(--md-warn); }
+  .status-row .dot.err   { background: var(--md-error); color: var(--md-error); }
+  .status-row .label {
+    font-size: 14px;
+    color: var(--md-on-surface);
+  }
+  .status-row .value {
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 12.5px;
+    color: var(--md-on-surface-variant);
     text-align: right;
     word-break: break-all;
-    min-width: 0;
+    max-width: 220px;
   }
 
-  .dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 6px;
-    vertical-align: middle;
-    background: var(--muted);
+  /* ---- Info rows: same skeleton, no leading dot ---- */
+  .info-row {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 10px 0;
   }
-  .dot.ok { background: var(--ok); }
-  .dot.warn { background: var(--warn); }
-  .dot.err { background: var(--err); }
+  .info-row + .info-row {
+    border-top: 1px solid var(--md-outline-variant);
+  }
+  .info-row .label {
+    font-size: 13px;
+    color: var(--md-on-surface-variant);
+  }
+  .info-row .value {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--md-on-surface);
+    word-break: break-all;
+    text-align: right;
+  }
 
-  button {
+  /* ---- Buttons ---- */
+  .btn {
     appearance: none;
-    border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--text);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 14px;
     font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    border-radius: 16px;
+    padding: 14px 20px;
+    background: var(--md-surface-container-hi2);
+    color: var(--md-on-surface);
     cursor: pointer;
     width: 100%;
     text-align: left;
-    transition: background 0.15s, border-color 0.15s;
+    min-height: 56px;
+    line-height: 1.3;
+    transition: background 120ms;
   }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:active:not(:disabled) { background: var(--bg); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.danger { color: var(--err); }
-  button.danger:hover:not(:disabled) { border-color: var(--err); }
-  button .desc {
+  .btn:hover  { background: var(--md-surface-container-high); }
+  .btn:active { background: var(--md-outline-variant); }
+  .btn .desc {
     display: block;
+    font-size: 12.5px;
+    color: var(--md-on-surface-variant);
+    margin-top: 4px;
+    font-weight: 400;
+  }
+  .btn.primary {
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+  .btn.primary .desc { color: color-mix(in srgb, var(--md-on-primary-container) 75%, transparent); }
+  .btn.danger {
+    background: color-mix(in srgb, var(--md-error) 12%, var(--md-surface-container-hi2));
+    color: var(--md-error);
+  }
+  .btn.danger .desc { color: color-mix(in srgb, var(--md-error) 70%, var(--md-on-surface-variant)); }
+  .btn.tiny {
+    width: auto;
+    min-height: 36px;
+    padding: 8px 14px;
+    border-radius: 12px;
     font-size: 12px;
-    color: var(--muted);
-    margin-top: 2px;
+    font-weight: 500;
   }
 
-  .actions { display: flex; flex-direction: column; gap: 8px; }
+  .actions { display: flex; flex-direction: column; gap: 10px; }
 
+  /* ---- Terminal panel (logs) ---- */
+  .terminal {
+    background: var(--terminal-bg);
+    border-radius: 20px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    /* On mobile this card grows to its content; on landscape we let
+       the sticky position keep it on screen with bounded height. */
+  }
+  @media (min-width: 840px) {
+    .terminal { max-height: calc(100vh - 32px); }
+  }
+  .terminal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .terminal-header .title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--md-on-surface-variant);
+  }
+  .terminal-header .title::before {
+    content: "";
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--md-ok);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--md-ok) 18%, transparent);
+  }
+  .terminal-toolbar { display: flex; gap: 8px; }
   pre.log {
     margin: 0;
-    padding: 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--terminal-bg) 80%, black);
+    border-radius: 12px;
     font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--text);
-    max-height: 320px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--terminal-fg);
     overflow: auto;
     white-space: pre-wrap;
     word-break: break-all;
+    flex: 1;
+    min-height: 280px;
   }
   pre.log:empty::before {
     content: "(no log lines yet)";
-    color: var(--muted);
+    color: var(--md-on-surface-variant);
     font-style: italic;
   }
 
-  .toolbar {
-    display: flex;
-    gap: 8px;
-    margin-top: 8px;
-  }
-  .toolbar button {
-    width: auto;
-    padding: 6px 10px;
-    font-size: 12px;
-  }
-
+  /* ---- Modal (action result) ---- */
   .modal-bg {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: color-mix(in srgb, black 60%, transparent);
     display: none;
     align-items: center;
     justify-content: center;
@@ -173,150 +352,170 @@
   }
   .modal-bg.open { display: flex; }
   .modal {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    max-width: 480px;
+    background: var(--md-surface-container-high);
+    border-radius: 24px;
+    padding: 24px;
+    max-width: 520px;
     width: 100%;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
+    gap: 16px;
   }
-  .modal h3 { margin: 0 0 8px; font-size: 15px; }
+  .modal h3 { margin: 0; font-size: 18px; font-weight: 500; }
   .modal pre {
     flex: 1;
     overflow: auto;
-    margin: 8px 0;
-    padding: 8px;
-    background: var(--bg);
-    border-radius: 6px;
+    margin: 0;
+    padding: 14px 16px;
+    background: var(--terminal-bg);
+    color: var(--terminal-fg);
+    border-radius: 12px;
     font-family: var(--mono);
     font-size: 12px;
+    line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-all;
-    min-height: 60px;
+    min-height: 80px;
     max-height: 50vh;
   }
   .modal .modal-actions {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
-    margin-top: 8px;
   }
-  .modal .modal-actions button { width: auto; }
+  .modal .modal-actions .btn { width: auto; }
 </style>
 </head>
 <body>
-  <header>
+<div class="app">
+  <header class="app-header">
     <h1>Zdroid Spawn Daemon</h1>
-    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
-      <span class="version" id="moduleVersion">…</span>
-      <span class="lastsync" id="lastSync"></span>
+    <div class="meta">
+      <span class="chip" id="moduleVersion">…</span>
+      <span id="lastSync"></span>
     </div>
   </header>
 
-  <section class="card">
-    <h2>Status</h2>
-    <div class="row">
-      <span class="label"><span class="dot" id="dotDaemon"></span>Daemon</span>
-      <span class="value" id="valDaemon">…</span>
-    </div>
-    <div class="row">
-      <span class="label"><span class="dot" id="dotSocket"></span>Socket</span>
-      <span class="value" id="valSocket">…</span>
-    </div>
-    <div class="row">
-      <span class="label"><span class="dot" id="dotMount"></span>Bind mount</span>
-      <span class="value" id="valMount">…</span>
-    </div>
-    <div class="row">
-      <span class="label"><span class="dot" id="dotChroot"></span>Chroot patches</span>
-      <span class="value" id="valChroot">…</span>
-    </div>
-    <div class="toolbar">
-      <button onclick="refreshStatus()">Refresh status</button>
-      <button onclick="refreshLogs()">Refresh logs</button>
-    </div>
-  </section>
+  <main class="app-main">
 
-  <section class="card">
-    <h2>Actions</h2>
-    <div class="actions">
-      <button onclick="restartDaemon()">
-        Restart daemon
-        <span class="desc">SIGTERM the daemon; service.sh supervisor re-spawns within ~5s.</span>
-      </button>
-      <button onclick="reapplyPatches()">
-        Re-apply rootfs patches
-        <span class="desc">Re-runs chroot-init.sh. Useful after `apt upgrade` overwrote .bash_profile / .profile.</span>
-      </button>
-      <button class="danger" onclick="restoreOriginals()">
-        Restore rootfs originals
-        <span class="desc">Moves *.zdroid-orig back. Reverts patches without uninstalling the module.</span>
-      </button>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Logs (last 100 lines)</h2>
-    <pre class="log" id="logTail"></pre>
-    <div class="toolbar">
-      <button class="danger" onclick="clearLogs()">Clear log file</button>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Info</h2>
-    <div class="row">
-      <span class="label">Chroot path</span>
-      <span class="value">/data/local/nhsystem/kali-arm64</span>
-    </div>
-    <div class="row">
-      <span class="label">Bind: source</span>
-      <span class="value">/data/data/com.zdroid/files/home</span>
-    </div>
-    <div class="row">
-      <span class="label">Bind: target</span>
-      <span class="value">/data/local/nhsystem/kali-arm64/zed</span>
-    </div>
-    <div class="row">
-      <span class="label">Socket</span>
-      <span class="value">/data/data/com.zdroid/files/run/zd-spawn</span>
-    </div>
-    <div class="row">
-      <span class="label">Zdroid uid</span>
-      <span class="value" id="infoUid">…</span>
-    </div>
-  </section>
-
-  <div class="modal-bg" id="modalBg" onclick="closeModalIfBg(event)">
-    <div class="modal">
-      <h3 id="modalTitle">Result</h3>
-      <pre id="modalBody"></pre>
-      <div class="modal-actions">
-        <button onclick="closeModal()">Close</button>
+    <!-- Logs / "terminal" panel (left on desktop, bottom on mobile) -->
+    <section class="terminal" aria-label="Daemon log">
+      <div class="terminal-header">
+        <div class="title">Daemon log</div>
+        <div class="terminal-toolbar">
+          <button class="btn tiny" onclick="refreshLogs()">Refresh</button>
+          <button class="btn tiny danger" onclick="clearLogs()">Clear</button>
+        </div>
       </div>
+      <pre class="log" id="logTail"></pre>
+    </section>
+
+    <!-- Sidebar: Status (static), Info (static), Actions (dynamic) -->
+    <aside class="sidebar">
+
+      <section class="card">
+        <div class="h2-row">
+          <h2>Status</h2>
+          <button class="btn tiny" onclick="refreshStatus()">Refresh</button>
+        </div>
+
+        <div class="status-row">
+          <span class="dot" id="dotDaemon"></span>
+          <span class="label">Daemon</span>
+          <span class="value" id="valDaemon">…</span>
+        </div>
+        <div class="status-row">
+          <span class="dot" id="dotSocket"></span>
+          <span class="label">Socket</span>
+          <span class="value" id="valSocket">…</span>
+        </div>
+        <div class="status-row">
+          <span class="dot" id="dotMount"></span>
+          <span class="label">Bind mount</span>
+          <span class="value" id="valMount">…</span>
+        </div>
+        <div class="status-row">
+          <span class="dot" id="dotChroot"></span>
+          <span class="label">Chroot patches</span>
+          <span class="value" id="valChroot">…</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Info</h2>
+        <div class="info-row">
+          <span class="label">Chroot</span>
+          <span class="value">/data/local/nhsystem/kali-arm64</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Bind src</span>
+          <span class="value">/data/data/com.zdroid/files/home</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Bind dst</span>
+          <span class="value">/data/local/nhsystem/kali-arm64/zed</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Socket</span>
+          <span class="value">/data/data/com.zdroid/files/run/zd-spawn</span>
+        </div>
+        <div class="info-row">
+          <span class="label">App uid</span>
+          <span class="value" id="infoUid">…</span>
+        </div>
+      </section>
+
+      <section class="card high">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button class="btn primary" onclick="restartDaemon()">
+            Restart daemon
+            <span class="desc">SIGTERM the daemon; supervisor re-spawns within ~5 s.</span>
+          </button>
+          <button class="btn" onclick="reapplyPatches()">
+            Re-apply rootfs patches
+            <span class="desc">Re-runs chroot-init.sh. Useful after apt upgrade overwrote .bash_profile / .profile.</span>
+          </button>
+          <button class="btn danger" onclick="restoreOriginals()">
+            Restore rootfs originals
+            <span class="desc">Move *.zdroid-orig back. Reverts the patches without uninstalling the module.</span>
+          </button>
+        </div>
+      </section>
+
+    </aside>
+  </main>
+</div>
+
+<div class="modal-bg" id="modalBg" onclick="closeModalIfBg(event)">
+  <div class="modal">
+    <h3 id="modalTitle">Result</h3>
+    <pre id="modalBody"></pre>
+    <div class="modal-actions">
+      <button class="btn tiny" onclick="closeModal()">Close</button>
     </div>
   </div>
+</div>
 
 <script>
-// ---------------------------------------------------------------------
-// Design notes
-// ---------------------------------------------------------------------
-// Every ksu.exec call triggers a Magisk superuser grant prompt/log
-// and a fork+su+shell roundtrip. v1.1.2 polled every 5s with FOUR
-// separate exec calls per refresh = 48 su grants/min. That spammed the
-// Magisk log and the user's Magisk Manager grant ledger.
-//
-// v1.1.3 fixes both knobs:
-//   1. Status checks are batched into ONE shell command. Output is
-//      KEY=value lines parsed client-side. One su grant per refresh.
-//   2. NO background polling. The page refreshes on initial load and
-//      after the user runs an action; a manual Refresh button exists
-//      for everything else. WebUI viewers run inside the Magisk
-//      grant scope, so a quiet page = a quiet su log.
-// ---------------------------------------------------------------------
+// Single batched status-fetch script. One ksu.exec call = one Magisk
+// su grant per refresh. No background polling — explicit user action
+// (load, click Refresh, run an action) drives all reads. See v1.1.3
+// changelog for the rationale.
+const STATUS_SCRIPT = `
+PID=$(pgrep -x zd-spawnd | head -1)
+echo "DAEMON_PID=$PID"
+if [ -n "$PID" ]; then
+  echo "DAEMON_INFO=$(ps -o pid,etime,comm -p $PID 2>/dev/null | tail -n +2 | tr -s ' ' | sed 's/^ //')"
+fi
+echo "SOCKET=$([ -S /data/data/com.zdroid/files/run/zd-spawn ] && echo ok || echo missing)"
+echo "MOUNT_COUNT=$(mount | grep -c '/data/local/nhsystem/kali-arm64/zed')"
+echo "CHROOT=$([ -f /data/local/nhsystem/kali-arm64/root/.bash_profile.zdroid-orig ] && [ -f /data/local/nhsystem/kali-arm64/root/.profile.zdroid-orig ] && echo applied || echo missing)"
+echo "ZUID=$(stat -c %u /data/data/com.zdroid 2>/dev/null)"
+`;
+
+const LOG_PATH = "/data/adb/zdroid-spawnd/log/zd-spawnd.log";
 
 function exec(command) {
   return new Promise((resolve, reject) => {
@@ -335,27 +534,10 @@ function exec(command) {
 }
 
 function toast(msg) {
-  try { ksu.toast(msg); } catch (e) { /* viewer might not impl; no-op */ }
+  try { ksu.toast(msg); } catch (e) { /* viewer might not impl */ }
 }
 
-// ----- Status (batched) -----------------------------------------------
-//
-// Single shell command emits KEY=value lines. Parse client-side. The
-// batching is the only reason this view is polite to Magisk's su
-// auditor — a hand-written expansion of these checks would be 5
-// separate su grants per refresh.
-
-const STATUS_SCRIPT = `
-PID=$(pgrep -x zd-spawnd | head -1)
-echo "DAEMON_PID=$PID"
-if [ -n "$PID" ]; then
-  echo "DAEMON_INFO=$(ps -o pid,etime,comm -p $PID 2>/dev/null | tail -n +2 | tr -s ' ' | sed 's/^ //')"
-fi
-echo "SOCKET=$([ -S /data/data/com.zdroid/files/run/zd-spawn ] && echo ok || echo missing)"
-echo "MOUNT_COUNT=$(mount | grep -c '/data/local/nhsystem/kali-arm64/zed')"
-echo "CHROOT=$([ -f /data/local/nhsystem/kali-arm64/root/.bash_profile.zdroid-orig ] && [ -f /data/local/nhsystem/kali-arm64/root/.profile.zdroid-orig ] && echo applied || echo missing)"
-echo "ZUID=$(stat -c %u /data/data/com.zdroid 2>/dev/null)"
-`;
+// ----- Status panel ---------------------------------------------------
 
 async function refreshStatus() {
   setRow("Daemon", "checking…", "");
@@ -372,18 +554,21 @@ async function refreshStatus() {
 
   if (fields.DAEMON_PID) {
     const info = fields.DAEMON_INFO || `${fields.DAEMON_PID} ?`;
-    setRow("Daemon", `pid ${fields.DAEMON_PID} (${info.split(" ")[1] || "?"} uptime)`, "ok");
+    setRow("Daemon", `pid ${fields.DAEMON_PID} (${info.split(" ")[1] || "?"})`, "ok");
   } else {
     setRow("Daemon", "not running", "err");
   }
 
-  setRow("Socket", fields.SOCKET === "ok" ? "reachable" : "missing",
+  setRow("Socket",
+         fields.SOCKET === "ok" ? "reachable" : "missing",
          fields.SOCKET === "ok" ? "ok" : "err");
 
-  setRow("Mount", (fields.MOUNT_COUNT || "0") !== "0" ? "/zed bound" : "not bound",
+  setRow("Mount",
+         (fields.MOUNT_COUNT || "0") !== "0" ? "/zed bound" : "not bound",
          (fields.MOUNT_COUNT || "0") !== "0" ? "ok" : "warn");
 
-  setRow("Chroot", fields.CHROOT === "applied" ? "applied (.zdroid-orig present)" : "not applied",
+  setRow("Chroot",
+         fields.CHROOT === "applied" ? "applied" : "not applied",
          fields.CHROOT === "applied" ? "ok" : "warn");
 
   document.getElementById("infoUid").textContent =
@@ -403,20 +588,20 @@ function setRow(which, value, dotClass) {
   }
 }
 
-// ----- Logs -----------------------------------------------------------
+// ----- Logs panel -----------------------------------------------------
 
 async function refreshLogs() {
-  const r = await exec("tail -n 100 /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log 2>/dev/null");
+  const r = await exec(`tail -n 100 ${LOG_PATH} 2>/dev/null`);
   const el = document.getElementById("logTail");
   el.textContent = r.stdout || "";
   el.scrollTop = el.scrollHeight;
 }
 
 async function clearLogs() {
-  if (!confirm("Clear /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log? The supervisor will re-create it on next write.")) {
+  if (!confirm(`Clear ${LOG_PATH}? The daemon will start writing fresh on the next event.`)) {
     return;
   }
-  const r = await exec(": > /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log");
+  const r = await exec(`: > ${LOG_PATH}`);
   if (r.errno === 0) {
     toast("Log cleared");
     refreshLogs();
@@ -428,7 +613,7 @@ async function clearLogs() {
 // ----- Actions --------------------------------------------------------
 
 async function restartDaemon() {
-  if (!confirm("Restart zd-spawnd? Active spawns will be SIGTERMed; supervisor re-spawns within ~5s.")) {
+  if (!confirm("Restart zd-spawnd? In-flight spawns will be SIGTERMed; supervisor re-spawns within ~5 s.")) {
     return;
   }
   const r = await exec("pkill -TERM -x zd-spawnd; sleep 2; pgrep -x zd-spawnd | head -1");
@@ -440,6 +625,7 @@ async function restartDaemon() {
     showResult("Restart failed", r.stderr || `errno ${r.errno}`);
   }
   refreshStatus();
+  refreshLogs();
 }
 
 async function reapplyPatches() {
@@ -452,7 +638,7 @@ async function reapplyPatches() {
 }
 
 async function restoreOriginals() {
-  if (!confirm("Restore the NetHunter-stock .bash_profile and .profile from .zdroid-orig?\n\nThis reverts the patches. Zdroid's integrated terminal will lose the project-cwd landing and ~/.local/bin PATH prepend until you re-apply.")) {
+  if (!confirm("Restore the NetHunter-stock .bash_profile and .profile from .zdroid-orig?\n\nReverts the patches. Zdroid's integrated terminal will lose project-cwd landing and ~/.local/bin PATH prepend until you re-apply.")) {
     return;
   }
   const r = await exec(`
@@ -490,19 +676,14 @@ function closeModalIfBg(e) {
 }
 
 // ----- Init -----------------------------------------------------------
-// Page load fires ONE batched status + ONE log tail. After that, no
-// background polling — the user explicitly refreshes via buttons or
-// re-runs actions, each of which triggers a single status refresh.
 
 async function init() {
   try {
     const info = JSON.parse(ksu.moduleInfo());
-    document.getElementById("moduleVersion").textContent = info.version
-      ? `${info.version}` : "";
+    document.getElementById("moduleVersion").textContent = info.version || "";
   } catch (e) {
     document.getElementById("moduleVersion").textContent = "";
   }
-
   await refreshStatus();
   await refreshLogs();
 }

@@ -1,5 +1,21 @@
 # Zdroid Spawn Daemon changelog
 
+## v1.1.5 (2026-05-10)
+
+WebUI redesign, log persistence + per-spawn instrumentation, action button bridge.
+
+### New
+
+* **Action button now opens the WebUI directly.** Magisk's Action button used to dump a static status snapshot into the in-app console. v1.1.5 has it issue an Android intent against KSU WebUI Standalone's `WebUIActivity` (component `io.github.a13e300.ksuwebui/.WebUIActivity`, extras `id` + `name`) and land you in the interactive panel for THIS module. Falls back to the snapshot if KSU WebUI isn't installed, with a link to the install page.
+* **Per-spawn timing in the daemon.** Two new log lines per request: `INFO spawn '<prog>' argc=<n> cwd=<x> child=<pid> fork=<ms>ms` and `INFO child <pid> exited rc=<rc> duration=<ms>ms`. Validates the per-spawn-cost claim from real-device data instead of static text.
+* **WebUI redesign** to Material 3 thick aesthetic. Two-column layout on landscape/tablet (>=840 px): logs as a sticky terminal panel on the left, status/info/actions stacked on the right. Single column on phone with sidebar first, logs below. Replaces the v1.1.4 thin-bordered card layout.
+* **Sidebar reorder**: Status, Info (both static), then Actions (dynamic) for cohesion. Logs are always visible as the left panel rather than buried below cards.
+
+### Fixes
+
+* **Daemon log moved out of the module dir.** Was at `/data/adb/modules/zdroid_spawnd/log/zd-spawnd.log` (also: a typo'd `zdroid-spawnd` path inside the C source meant the daemon's own writes silently fell back to stderr). Now at `/data/adb/zdroid-spawnd/log/zd-spawnd.log`, sibling of `modules/`. Survives module updates instead of getting wiped on every reinstall.
+* **Log rotation**: rotates to `.log.1` when the live log passes 1 MB. Cap on disk usage; check runs lazily (once per 100 log calls), so the cost is amortized.
+
 ## v1.1.4 (2026-05-10)
 
 Reactive boot design + Magisk Remove revert.

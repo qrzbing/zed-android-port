@@ -38,7 +38,20 @@
 
 #define SOCKET_PATH "/data/data/com.zdroid/files/run/zd-spawn"
 #define SOCKET_DIR  "/data/data/com.zdroid/files/run"
-#define LOG_PATH    "/data/adb/modules/zdroid-spawnd/zd-spawnd.log"
+
+/* Log lives OUTSIDE the module dir at /data/adb/modules/<id>/, so it
+ * survives module updates (Magisk replaces the module dir wholesale on
+ * each install). Sibling under /data/adb/. Both daemon and supervisor
+ * (service.sh) write here. WebUI + action.sh tail it. */
+#define LOG_DIR_PARENT "/data/adb/zdroid-spawnd"
+#define LOG_DIR        "/data/adb/zdroid-spawnd/log"
+#define LOG_PATH       "/data/adb/zdroid-spawnd/log/zd-spawnd.log"
+#define LOG_PATH_OLD   "/data/adb/zdroid-spawnd/log/zd-spawnd.log.1"
+
+/* Rotate when the live log exceeds this. We keep one previous file as
+ * .log.1 and drop the older one. 1 MB is enough for ~5k spawn lines
+ * without going stale, and rotation is cheap (rename + reopen). */
+#define LOG_MAX_BYTES  (1024 * 1024)
 
 #define MAGIC      0x5A445350u  /* "ZDSP" little-endian */
 #define VERSION    1u
@@ -69,15 +82,44 @@ static const char *g_home_bind_target =
 /* ===== logging ============================================================ */
 
 static FILE *g_log = NULL;
+static unsigned long g_log_calls = 0;
 
 static void open_log(void) {
+    /* Ensure the log dir exists. mkdir errors out cleanly with EEXIST
+     * if it's already there; anything else means we'll fall through to
+     * stderr. mkdir(2) doesn't create parents, so do both levels. */
+    mkdir(LOG_DIR_PARENT, 0755);
+    mkdir(LOG_DIR, 0755);
+
     g_log = fopen(LOG_PATH, "a");
     /* If we can't open the log, fall back to stderr. */
     if (!g_log) g_log = stderr;
     setvbuf(g_log, NULL, _IOLBF, 0);
 }
 
+/* Rotate the log if it exceeds LOG_MAX_BYTES. Cheap (rename + reopen),
+ * called lazily — once every 100 logf() calls so we don't stat() on
+ * every line. The check itself costs one stat() on the rare hit. */
+static void maybe_rotate_log(void) {
+    if (++g_log_calls % 100 != 0) return;
+    if (g_log == stderr) return;
+
+    struct stat st;
+    if (stat(LOG_PATH, &st) != 0) return;
+    if (st.st_size <= LOG_MAX_BYTES) return;
+
+    unlink(LOG_PATH_OLD);
+    if (rename(LOG_PATH, LOG_PATH_OLD) != 0) return;
+
+    fclose(g_log);
+    g_log = fopen(LOG_PATH, "a");
+    if (!g_log) g_log = stderr;
+    setvbuf(g_log, NULL, _IOLBF, 0);
+}
+
 static void logf(const char *level, const char *fmt, ...) {
+    maybe_rotate_log();
+
     char tsbuf[64];
     time_t now = time(NULL);
     struct tm tm;
@@ -90,6 +132,16 @@ static void logf(const char *level, const char *fmt, ...) {
     vfprintf(g_log, fmt, ap);
     va_end(ap);
     fputc('\n', g_log);
+}
+
+/* Monotonic-clock millisecond delta, for per-spawn timing instrumentation.
+ * CLOCK_MONOTONIC is unaffected by clock adjustments and the call is
+ * vDSO-backed so the cost is ~30 ns per read. */
+static long ms_since(const struct timespec *t0) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - t0->tv_sec) * 1000L +
+           (now.tv_nsec - t0->tv_nsec) / 1000000L;
 }
 
 /* ===== protocol I/O helpers =============================================== */
@@ -412,6 +464,14 @@ static int check_peer_creds(int conn, uid_t expected_uid) {
 /* ===== connection handling ================================================ */
 
 static void handle_connection(int conn, uid_t expected_uid) {
+    /* Per-spawn timing. t_start: connection accepted (entering this
+     * function). t_forked: spawn_child returned with the child PID.
+     * t_exit: waitpid reaped the child. The "fork latency" we publish
+     * in the log is t_forked - t_start, which is the daemon-side cost
+     * being compared to the ~200ms Magisk su mediation queue baseline. */
+    struct timespec t_start;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
     if (check_peer_creds(conn, expected_uid) < 0) {
         close(conn);
         return;
@@ -435,6 +495,17 @@ static void handle_connection(int conn, uid_t expected_uid) {
         return;
     }
 
+    long fork_ms = ms_since(&t_start);
+
+    /* Count argv (excluding the trailing NULL) for the log line. */
+    int argc = 0;
+    if (req.argv) for (; req.argv[argc]; argc++) {}
+
+    logf("INFO", "spawn '%s' argc=%d cwd=%s child=%d fork=%ldms",
+         req.prog, argc,
+         (req.cwd && req.cwd[0]) ? req.cwd : "/",
+         pid, fork_ms);
+
     /* Reply that the spawn succeeded. */
     if (send_spawned(conn, 0, (uint32_t)pid) < 0) {
         kill(pid, SIGKILL);
@@ -443,6 +514,9 @@ static void handle_connection(int conn, uid_t expected_uid) {
         close(conn);
         return;
     }
+
+    struct timespec t_forked;
+    clock_gettime(CLOCK_MONOTONIC, &t_forked);
 
     /* Wait for the child. */
     int status;
@@ -456,10 +530,15 @@ static void handle_connection(int conn, uid_t expected_uid) {
         }
     }
 
+    long duration_ms = ms_since(&t_forked);
+
     int32_t exit_code;
     if (WIFEXITED(status))         exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status))  exit_code = -WTERMSIG(status);
     else                            exit_code = -1;
+
+    logf("INFO", "child %d exited rc=%d duration=%ldms",
+         pid, exit_code, duration_ms);
 
     send_exited(conn, exit_code);
     request_free(&req);

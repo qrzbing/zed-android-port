@@ -39,9 +39,13 @@ set_perm "$MODPATH/action.sh" 0 0 0755
 # startup permanently patched — surprising and wrong.
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
 
-# Logs dir, world-unreadable; daemon writes here.
-mkdir -p "$MODPATH/log"
-set_perm "$MODPATH/log" 0 0 0750
+# Persistent log dir, OUTSIDE the module path so it survives future
+# module updates. Magisk replaces /data/adb/modules/<id>/ wholesale on
+# each install; logs there get wiped. Sibling at /data/adb/zdroid-spawnd/
+# stays put across versions, which is the audit trail we want.
+mkdir -p /data/adb/zdroid-spawnd/log
+chmod 0750 /data/adb/zdroid-spawnd /data/adb/zdroid-spawnd/log
+chown 0:0  /data/adb/zdroid-spawnd /data/adb/zdroid-spawnd/log
 
 ui_print "- Files installed:"
 ui_print "    $MODPATH/zd-spawnd       (daemon binary)"

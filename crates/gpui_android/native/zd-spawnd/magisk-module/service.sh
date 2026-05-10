@@ -32,9 +32,14 @@
 # unlock event for an app that doesn't exist.
 
 MODDIR=${0%/*}
-LOG="$MODDIR/log/zd-spawnd.log"
 
-mkdir -p "$MODDIR/log"
+# Log dir lives outside the module so it survives module updates
+# (Magisk replaces /data/adb/modules/<id>/ wholesale on each install).
+# Daemon, supervisor, and tooling all share this path.
+LOG_DIR="/data/adb/zdroid-spawnd/log"
+LOG="$LOG_DIR/zd-spawnd.log"
+
+mkdir -p "$LOG_DIR"
 
 log() {
     echo "$(date -Iseconds) [service] $*" >> "$LOG"
