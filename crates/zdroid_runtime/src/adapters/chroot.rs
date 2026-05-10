@@ -14,6 +14,19 @@ use crate::config::{ChrootConfig, RuntimeId};
 use crate::health::{HealthStatus, ProgressSink};
 use crate::port::{RuntimeProvider, SpawnHandle, SpawnRequest};
 
+/// GitHub releases page for the `zdroid-spawnd` Magisk module — the
+/// thing the chroot adapter needs running to function. Surfaced in
+/// health-check hints and in the runtime-picker UI when the daemon
+/// socket is missing, so the user has a one-click path from "this
+/// adapter doesn't work" to "here's how to fix it".
+///
+/// `releases/latest` (not a pinned tag) so we don't bit-rot every time
+/// the module ships a patch. Magisk Manager's own update mechanism
+/// (`updateJson` in `module.prop`) handles in-place upgrades after
+/// first install.
+pub const SPAWND_RELEASE_URL: &str =
+    "https://github.com/Dylanmurzello/zed-android-port/releases/latest";
+
 /// Wire-protocol magic; matches `MAGIC` in `zd-spawnd.c`. ASCII "ZDSP"
 /// little-endian.
 #[allow(dead_code)]
@@ -68,16 +81,39 @@ mod android_impl {
             .with_context(|| format!("connect zd-spawnd at {}", socket.display()))
     }
 
-    pub(super) fn send_request(conn: &mut UnixStream, req: &SpawnRequest) -> Result<()> {
+    pub(super) fn send_request(
+        conn: &mut UnixStream,
+        config: &ChrootConfig,
+        req: &SpawnRequest,
+    ) -> Result<()> {
+        // Translate cwd from host space to chroot space. The editor
+        // reports cwd in the Android sandbox (/data/data/com.zdroid/
+        // files/...), but inside the chroot that path doesn't exist.
+        // home_bind is where Zdroid's home lands; map it. Done before
+        // sanitize_env so we can also export it as $INIT_PWD, which
+        // NetHunter's /etc/profile.d/init-pwd.sh hooks to cd into.
+        let cwd_translated = translate_cwd_for_chroot(config, req.cwd.as_deref());
+
+        // Sanitize env at the chroot boundary. Zed runs with Android-
+        // sandbox-specific env (PATH=$PREFIX/zd-runtime:..., HOME=
+        // /data/data/..., TERMUX__*, PREFIX, etc.) — none of those
+        // paths exist inside the chroot, so passing them through means
+        // PATH lookup for `bash` finds nothing, the child silently
+        // exec-fails with 127, and the user sees a dead PTY.
+        //
+        // Replace with a chroot-native baseline: standard kali PATH,
+        // HOME pointing at the bind-mounted home, common display vars
+        // preserved from the caller.
+        let env = sanitize_env_for_chroot(config, &req.env, cwd_translated.as_deref());
+
         let prog_bytes = req.program.as_bytes();
-        let cwd_bytes: Vec<u8> = req
-            .cwd
+        let cwd_bytes: Vec<u8> = cwd_translated
             .as_deref()
             .map(|p| p.as_os_str().as_bytes().to_vec())
             .unwrap_or_default();
 
         let argc = req.args.len() as u32;
-        let envc = req.env.len() as u32;
+        let envc = env.len() as u32;
         let flags = if req.interactive { FLAG_INTERACTIVE } else { 0 };
 
         // Header: 7 × u32 little-endian.
@@ -106,7 +142,7 @@ mod android_impl {
         }
 
         // envp: KEY=VALUE strings, length-prefixed.
-        for (key, value) in &req.env {
+        for (key, value) in &env {
             let entry = encode_env_entry(key, value);
             conn.write_all(&(entry.len() as u32).to_le_bytes())?;
             conn.write_all(&entry)?;
@@ -140,6 +176,126 @@ mod android_impl {
         buf.push(b'=');
         buf.extend_from_slice(value_bytes);
         buf
+    }
+
+    /// Build the env that the chrooted child will run under. Pulls a
+    /// small allow-list of display-related vars from the caller (TERM,
+    /// COLORTERM, LANG, …) and pins everything else to chroot-native
+    /// defaults. Anything Android-sandbox-specific (PATH pointing at
+    /// $PREFIX/bin/, TERMUX__*, ZED_*) is dropped — those paths don't
+    /// resolve inside the rootfs and would silently break exec / shell
+    /// startup.
+    ///
+    /// Sets HOME=/root and USER=root explicitly. Empirical finding:
+    /// bash does NOT do `getpwuid(uid)` to fill HOME on its own — it
+    /// expects HOME to be in the inherited env, the way login(1) /
+    /// sshd / a desktop session manager would set it. With HOME unset,
+    /// `~/.local/bin` in the chrooted .profile expands to `/.local/bin`
+    /// which never exists, so user-installed tools (claude, pip --user
+    /// installs, cargo binaries) silently disappear from PATH. /root
+    /// is hardcoded because this adapter is debian-rootfs-shaped: uid 0
+    /// → /root in /etc/passwd. (Don't set HOME=home_bind — that would
+    /// make bash source `<home_bind>/.bashrc` instead of
+    /// `/root/.bashrc`, losing the kali prompt + aliases + actual user
+    /// dotfiles.)
+    ///
+    /// Sets `INIT_PWD=<chroot_cwd>` when a translated cwd is supplied.
+    /// NetHunter ships `/etc/profile.d/init-pwd.sh` which does
+    /// `cd "$INIT_PWD"` if the var is set and the dir exists; combined
+    /// with the customize.sh patch that gates `/root/.bash_profile`'s
+    /// `cd /root` and `cd ~` on the same var, this is what makes a
+    /// chrooted login shell actually land at the project path instead
+    /// of bouncing to /root.
+    pub(super) fn sanitize_env_for_chroot(
+        _config: &ChrootConfig,
+        caller_env: &std::collections::HashMap<String, OsString>,
+        init_pwd: Option<&Path>,
+    ) -> Vec<(String, OsString)> {
+        // Display / locale vars worth carrying across the boundary so
+        // the inner shell renders correctly. Add to this list cautiously
+        // — anything path-shaped is an exec-failure waiting to happen.
+        const PASSTHROUGH: &[&str] = &[
+            "TERM",
+            "COLORTERM",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TZ",
+            "DISPLAY",
+        ];
+
+        let mut env: Vec<(String, OsString)> = Vec::new();
+
+        // Bootstrap PATH so `execvpe(bash)` succeeds. Bash itself, on
+        // interactive startup, sources `/etc/profile` and `~/.bashrc`,
+        // which typically PREPEND user-installed tool dirs (e.g.
+        // `~/.npm-global/bin`, `~/.cargo/bin`) — those win over our
+        // bootstrap PATH for any binary the user installed via npm /
+        // cargo / etc. Matches what `getconf PATH` returns in fresh
+        // debian.
+        env.push((
+            "PATH".to_string(),
+            OsString::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+        ));
+
+        // HOME / USER: see docstring. Fixed values for the debian-style
+        // rootfs the chroot adapter targets.
+        env.push(("HOME".to_string(), OsString::from("/root")));
+        env.push(("USER".to_string(), OsString::from("root")));
+        env.push(("LOGNAME".to_string(), OsString::from("root")));
+
+        // Carry display vars across.
+        for key in PASSTHROUGH {
+            if let Some(value) = caller_env.get(*key) {
+                env.push((key.to_string(), value.clone()));
+            }
+        }
+
+        // INIT_PWD: read by NetHunter's /etc/profile.d/init-pwd.sh.
+        // The patched .bash_profile also gates its own `cd /root` /
+        // `cd ~` on this — set means "Zdroid asked for a specific
+        // landing dir, leave it alone".
+        if let Some(pwd) = init_pwd {
+            env.push(("INIT_PWD".to_string(), pwd.as_os_str().to_owned()));
+        }
+
+        env
+    }
+
+    /// Translate a host-space cwd to chroot-space. The chroot's
+    /// `home_bind` directory bind-mounts the editor's home, so any path
+    /// rooted in the host's app sandbox lands at `home_bind/<rel>`
+    /// inside the chroot. Other paths fall back to home_bind so the
+    /// shell starts somewhere sensible (vs `/` which is bare).
+    pub(super) fn translate_cwd_for_chroot(
+        config: &ChrootConfig,
+        host_cwd: Option<&Path>,
+    ) -> Option<std::path::PathBuf> {
+        let host_cwd = host_cwd?;
+
+        // Common Android sandbox prefixes the editor's PWD might use.
+        // Both forms point at the same dir; the kernel resolves the
+        // symlink for us, but our string compare needs both branches.
+        const APP_HOMES: &[&str] = &[
+            "/data/data/com.zdroid/files/home",
+            "/data/user/0/com.zdroid/files/home",
+            "/data/data/com.zdroid/files",
+            "/data/user/0/com.zdroid/files",
+        ];
+
+        for prefix in APP_HOMES {
+            if let Ok(rel) = host_cwd.strip_prefix(prefix) {
+                let mut translated = config.home_bind.clone();
+                if !rel.as_os_str().is_empty() {
+                    translated.push(rel);
+                }
+                return Some(translated);
+            }
+        }
+
+        // No match — likely a path the user opened outside the home.
+        // Fall back to home_bind so the shell starts somewhere readable.
+        Some(config.home_bind.clone())
     }
 
     /// Read the daemon's `response_spawned` (4 × u32). Returns the
@@ -220,7 +376,7 @@ mod android_impl {
         req: SpawnRequest,
     ) -> Result<Box<dyn SpawnHandle>> {
         let mut conn = connect(&config.spawnd_socket)?;
-        send_request(&mut conn, &req)?;
+        send_request(&mut conn, config, &req)?;
         let _pid = read_spawned_response(&mut conn)?;
         Ok(Box::new(ChrootSpawnHandle {
             conn,
@@ -234,13 +390,13 @@ mod android_impl {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 super::HealthStatus::NotInstalled {
                     hint: format!(
-                        "zd-spawnd socket missing at {}. Install the Magisk module to start the daemon.",
-                        config.spawnd_socket.display(),
+                        "zd-spawnd daemon not running. Install the Magisk module from {}, then reboot.",
+                        super::SPAWND_RELEASE_URL,
                     ),
                 }
             }
             Err(e) => super::HealthStatus::Failed {
-                error: format!("connect zd-spawnd: {e}"),
+                error: format!("connect zd-spawnd at {}: {e}", config.spawnd_socket.display()),
             },
         }
     }

@@ -470,6 +470,31 @@ fn install_profile_d_init(data_path: &Path, prefix: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Build a `Command` whose PATH is pinned to the bootstrap's own bin
+/// dirs, regardless of what the editor's process-wide PATH currently
+/// looks like. Use this for every bootstrap-context spawn — `find`
+/// walking `$PREFIX/lib/node_modules`, `readlink` resolving bootstrap
+/// symlinks, the launcher-generator script, etc.
+///
+/// Why this exists: in chroot mode, lib.rs prepends
+/// `$PREFIX/zd-runtime/` to PATH so the editor's tool spawns route
+/// through `zd-exec → zd-spawnd → kali`. Bootstrap helpers MUST NOT
+/// take that route — they operate on bootstrap files (which don't
+/// exist inside the chroot) using bootstrap binaries (which run
+/// natively without daemon round-trips). Override PATH per-spawn so
+/// the helpers always see the bootstrap-flavored world they expect.
+fn bootstrap_command<P: AsRef<std::ffi::OsStr>>(prefix: &Path, program: P) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.env(
+        "PATH",
+        format!(
+            "{prefix}/.zed/bin:{prefix}/bin:/system/bin:/system/xbin",
+            prefix = prefix.display()
+        ),
+    );
+    cmd
+}
+
 /// Fire the launcher generator helper script once at boot. Idempotent —
 /// no-ops if every npm-installed binary is already correctly wrapped.
 /// We invoke it post-cleanup so any chain we just unwound (binary
@@ -481,7 +506,7 @@ fn run_launcher_generator(prefix: &Path) {
     if !helper.is_file() {
         return;
     }
-    match std::process::Command::new(&helper)
+    match bootstrap_command(prefix, &helper)
         .env("PREFIX", prefix)
         .output()
     {
@@ -545,7 +570,7 @@ fn cleanup_legacy_claude_wrapper(prefix: &Path) {
     // wrapper between it and the un-suffixed base, rename the ELF back
     // to `<base>`. The next launcher-gen run sees a clean `<base>` and
     // wraps it to a single level of `<base> -> <base>.real`.
-    if let Ok(walker) = std::process::Command::new("find")
+    if let Ok(walker) = bootstrap_command(prefix, "find")
         .arg(prefix.join("lib/node_modules"))
         .args(["-name", "*.real", "-type", "f"])
         .output()
@@ -635,7 +660,7 @@ fn cleanup_legacy_claude_wrapper(prefix: &Path) {
     // which is fine — the user already has to reinstall to pick up the
     // hex-patch anyway, and the dangling symlink is a clearer signal
     // than a wrapper that proot-errors at runtime.
-    if let Ok(walker) = std::process::Command::new("find")
+    if let Ok(walker) = bootstrap_command(prefix, "find")
         .arg(prefix.join("lib/node_modules"))
         .args(["-type", "f", "-size", "-5k"])
         .output()

@@ -31,9 +31,23 @@ use workspace::{
     open_new,
 };
 use reqwest_client::ReqwestClient;
+use zdroid_runtime::{RuntimeId, config::RuntimeFile};
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
     gpui::WindowOptions::default()
+}
+
+/// Read the active runtime adapter from `runtime.toml`. Both
+/// `android_main` (for env init) and `boot` (for terminal.shell) need
+/// this; cheap enough to re-read in each rather than thread state.
+/// Defaults to Bootstrap when toml is missing or unparseable so first-
+/// launch UX matches today's behavior.
+fn detect_runtime_id(data_path: &std::path::Path) -> RuntimeId {
+    RuntimeFile::load(&data_path.join("usr/etc/zd-runtime.toml"))
+        .ok()
+        .flatten()
+        .map(|f| f.runtime.kind)
+        .unwrap_or(RuntimeId::Bootstrap)
 }
 
 
@@ -113,6 +127,8 @@ fn android_main(app: AndroidApp) {
     // reinherits the post-extract Zed env — but they have no idea
     // that's the workaround). Just always prepend; correctness is
     // unchanged post-extract, fresh-install UX no longer broken.
+    let runtime_id = detect_runtime_id(&data_path);
+
     static ENV_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = ENV_INITIALIZED.get_or_init(|| {
         let prefix = data_path.join("usr");
@@ -194,42 +210,51 @@ fn android_main(app: AndroidApp) {
                 std::env::set_var("SSL_CERT_FILE", &cert_path);
                 std::env::set_var("CURL_CA_BUNDLE", &cert_path);
             }
-            // PATH order from highest precedence to lowest:
+            // PATH + SHELL setup is now adapter-aware. The user's
+            // selection in `runtime.toml` (written by the runtime
+            // picker modal) decides whether sub-spawns route through
+            // `$PREFIX/bin` directly (bootstrap mode, today's default
+            // and what the editor inherits if no toml exists) or
+            // through `$PREFIX/zd-runtime/<name> -> zd-exec` symlinks
+            // that hand off to `zd-spawnd` for chroot dispatch.
             //
-            //   1. `$PREFIX/.zed/bin` — our apt-untouched shim namespace
-            //      (npm wrapper, etc.). Holds anything we want to shadow
-            //      regardless of what apt installs.
+            // The chroot path is now safe to prepend: `zd-runtime/<name>`
+            // re-exec's the Rust `zd-exec` wrapper (not a bash script
+            // that re-shells through `su`), and the wrapper talks
+            // directly to the persistent `zd-spawnd` daemon over a Unix
+            // socket. ~5ms per spawn, no Magisk su mediation, no
+            // fork-bomb risk under Zed's startup load.
             //
-            //   2. `$PREFIX/bin` — Termux/bionic bin dir.
-            //
-            //   3. The pre-existing PATH (Android system dirs, etc.).
-            //
-            // The runtime-swap wrapper dir `$PREFIX/zd-runtime/` is
-            // DELIBERATELY OMITTED here while zd-spawnd (the persistent
-            // root spawn daemon) is being built. Putting zd-runtime/ on
-            // PATH today means every `Command::new` Zed makes (head,
-            // readlink, env, …) re-execs through `/product/bin/su -c`,
-            // which Magisk's su mediates serially per call (~200ms each).
-            // Under Zed's startup load that produces a fork-avalanche
-            // and saturates the device's su queue. Once zd-spawnd lands
-            // (one su at boot, per-spawn becomes a socket roundtrip +
-            // fork+chroot, ~5ms), restore zd-runtime/ to the front of
-            // PATH. See memory: project_runtime_swap_architecture.md.
-            //
-            // The wrappers in `$PREFIX/zd-runtime/` still exist on disk
-            // (zd-runtime-sync populates them) and can be invoked by
-            // explicit absolute path when needed. They just don't
-            // resolve via Zed's PATH lookup yet.
+            // External-Termux mode falls through to bootstrap-style env
+            // until the JNI Intent bridge lands (task #36). At that
+            // point spawning will go through Java not exec, so PATH
+            // doesn't gate it anyway.
+            log::info!("zed_android: runtime adapter = {:?}", runtime_id);
+
             let zed_bin = prefix.join(".zed/bin");
             let prefix_bin = prefix.join("bin");
+            let zd_runtime = prefix.join("zd-runtime");
             let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = std::ffi::OsString::from(&zed_bin);
+            let mut new_path = std::ffi::OsString::new();
+            if matches!(runtime_id, RuntimeId::Chroot) {
+                new_path.push(&zd_runtime);
+                new_path.push(":");
+            }
+            new_path.push(&zed_bin);
             new_path.push(":");
             new_path.push(&prefix_bin);
             new_path.push(":");
             new_path.push(&existing);
             std::env::set_var("PATH", &new_path);
-            std::env::set_var("SHELL", prefix.join("bin/bash"));
+
+            // SHELL points at the wrapper for chroot mode so the
+            // integrated terminal lands inside the rootfs. Bootstrap
+            // mode keeps today's bionic bash — same UX as before.
+            let shell = match runtime_id {
+                RuntimeId::Chroot => prefix.join("bin/zd-exec"),
+                RuntimeId::Bootstrap | RuntimeId::ExternalTermux => prefix.join("bin/bash"),
+            };
+            std::env::set_var("SHELL", &shell);
 
             // DELIBERATELY NOT SET: LD_LIBRARY_PATH.
             //
@@ -252,9 +277,9 @@ fn android_main(app: AndroidApp) {
             // set it per-spawn (in the LSP launcher / terminal-panel
             // pty bringup), not as a global env var.
             log::info!(
-                "zed_android: PATH prefixed with {} and {}",
-                zed_bin.display(),
-                prefix_bin.display()
+                "zed_android: PATH = {}; SHELL = {}",
+                new_path.to_string_lossy(),
+                shell.display(),
             );
         }
     });
@@ -604,14 +629,32 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     })
     .detach();
 
-    // Default `terminal.shell` to $PREFIX/bin/bash once L2a's bootstrap is
-    // on disk. Only writes if the user hasn't already chosen a shell —
-    // explicit user choices (System, a different program, etc.) win. The
-    // first launch *with* the bootstrap mutates the user settings file
-    // exactly once; subsequent launches see Some(...) and short-circuit.
-    let bash_path = data_path.join("usr/bin/bash");
-    if bash_path.is_file() {
-        let bash_str = bash_path.to_string_lossy().to_string();
+    // Adapter-aware `terminal.shell`. The picker writes runtime.toml;
+    // we re-derive the spawn target every launch so flipping the
+    // adapter actually changes where the integrated terminal lands.
+    //
+    // Why overwrite even when the user already has a shell set: the
+    // picker IS the user's terminal-target choice in this app — picking
+    // chroot means "I want the terminal in the chroot's bash". Honoring
+    // a stale settings.shell from a prior adapter would silently
+    // contradict the picker. A user who wants something custom inside
+    // the chroot configures it inside the chroot (their `$SHELL`,
+    // `chsh`, etc.), not at the alacritty entry point.
+    //
+    // Two adapter shells:
+    //   - chroot:  $PREFIX/bin/zd-exec (Rust wrapper → zd-spawnd → kali)
+    //   - else:    $PREFIX/bin/bash    (today's bionic Termux bash)
+    //
+    // alacritty's `pw_shell` lookup on Android returns /system/bin/sh
+    // (the parody) so this explicit Shell::Program is what makes any
+    // useful terminal work at all.
+    let runtime_id = detect_runtime_id(data_path);
+    let shell_path = match runtime_id {
+        RuntimeId::Chroot => data_path.join("usr/bin/zd-exec"),
+        RuntimeId::Bootstrap | RuntimeId::ExternalTermux => data_path.join("usr/bin/bash"),
+    };
+    if shell_path.is_file() {
+        let shell_str = shell_path.to_string_lossy().to_string();
         let fs_for_settings = app_state.fs.clone();
         cx.global::<settings::SettingsStore>().update_settings_file(
             fs_for_settings,
@@ -619,15 +662,21 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 let terminal = content
                     .terminal
                     .get_or_insert_with(settings::TerminalSettingsContent::default);
-                if terminal.project.shell.is_none() {
-                    terminal.project.shell =
-                        Some(settings::Shell::Program(bash_str.clone()));
-                    log::info!(
-                        "zed_android: defaulted terminal.shell to {} (bootstrap detected)",
-                        bash_str
-                    );
-                }
+                let new_shell = settings::Shell::Program(shell_str.clone());
+                let prev = terminal.project.shell.clone();
+                terminal.project.shell = Some(new_shell);
+                log::info!(
+                    "zed_android: terminal.shell -> {} (was {:?}, adapter-derived)",
+                    shell_str,
+                    prev,
+                );
             },
+        );
+    } else {
+        log::warn!(
+            "zed_android: adapter-derived shell {} missing on disk; \
+             leaving terminal.shell as-is",
+            shell_path.display()
         );
     }
 

@@ -12,6 +12,16 @@ workspace = true
 [lib]
 path = "src/zdroid_runtime.rs"
 
+[[bin]]
+# Generic spawn wrapper. Symlinked from `$PREFIX/zd-runtime/<name>` for
+# every program name we want PATH-routed through the active adapter
+# (bash, git, rust-analyzer, …). Reads `runtime.toml`, builds a
+# `SpawnRequest` from current process state, dispatches via
+# `RuntimeProvider::spawn`. Same code path as explicit editor-side
+# callers, so dispatch logic lives in one place.
+name = "zd-exec"
+path = "src/bin/zd-exec.rs"
+
 [dependencies]
 anyhow.workspace = true
 log.workspace = true

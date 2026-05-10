@@ -55,6 +55,17 @@
  * /data/adb/modules/zdroid-spawnd/runtime.conf. */
 static const char *g_chroot_root = "/data/local/nhsystem/kali-arm64";
 
+/* Bind-mount source/target. The host's home dir gets bound onto a
+ * known path inside the chroot so the user's project files are
+ * visible from inside chroot at the same location ChrootAdapter's
+ * cwd-translation expects. Established once at daemon startup;
+ * persists for daemon lifetime, wiped by reboot, re-established by
+ * the next daemon start. */
+static const char *g_home_bind_source =
+    "/data/data/com.zdroid/files/home";
+static const char *g_home_bind_target =
+    "/data/local/nhsystem/kali-arm64/zed";
+
 /* ===== logging ============================================================ */
 
 static FILE *g_log = NULL;
@@ -286,25 +297,45 @@ static int spawn_child(struct request *req) {
 
         /* Replace stdio. */
         for (int i = 0; i < 3; i++) {
-            if (dup2(req->stdio[i], i) < 0) _exit(127);
+            if (dup2(req->stdio[i], i) < 0) {
+                /* Can't dprintf — fd we'd write to may not be set up.
+                 * Map to a unique exit code so the wrapper reports the
+                 * stage that failed. */
+                _exit(120 + i);
+            }
         }
         /* Close received-side fds (now duped). */
         for (int i = 0; i < 3; i++) {
             if (req->stdio[i] != i) close(req->stdio[i]);
         }
 
+        /* From here on, fd 2 is alacritty's PTY slave — anything we
+         * dprintf shows up directly in the user's terminal panel, which
+         * is exactly the diagnostic surface we want for debugging
+         * exec-failure-deep-in-chroot bugs. */
+
         /* Chroot. Requires CAP_SYS_CHROOT, which the daemon has by
          * virtue of being launched by Magisk's service.sh as root. */
-        if (chroot(g_chroot_root) < 0) _exit(127);
+        if (chroot(g_chroot_root) < 0) {
+            dprintf(2, "zd-spawnd: chroot(%s): %s\n",
+                    g_chroot_root, strerror(errno));
+            _exit(125);
+        }
 
         /* CWD inside chroot. If translation went wrong (cwd doesn't
          * exist), fall back to / so the spawn at least starts. */
         if (req->cwd[0] != '\0') {
             if (chdir(req->cwd) < 0) {
-                if (chdir("/") < 0) _exit(127);
+                if (chdir("/") < 0) {
+                    dprintf(2, "zd-spawnd: chdir(/): %s\n", strerror(errno));
+                    _exit(124);
+                }
             }
         } else {
-            if (chdir("/") < 0) _exit(127);
+            if (chdir("/") < 0) {
+                dprintf(2, "zd-spawnd: chdir(/): %s\n", strerror(errno));
+                _exit(124);
+            }
         }
 
         /* For interactive spawns: become session leader so the inner
@@ -322,8 +353,27 @@ static int spawn_child(struct request *req) {
             ioctl(0, TIOCSCTTY, 1);
         }
 
-        /* Exec. envp is our request's, argv is too. */
+        /* Sync the process env's PATH with envp's PATH before exec.
+         *
+         * Bionic's `execvpe` resolves the program name against the
+         * PROCESS env's PATH (`getenv("PATH")`), not the `envp`
+         * argument's PATH — that's a bionic quirk vs glibc, which
+         * uses envp. Without this sync, the daemon's child inherits
+         * Android's stock PATH (`/system/bin:...`), none of which
+         * exists inside the chroot rootfs, so every PATH-resolved
+         * spawn `execvpe`s into ENOENT even when the binary is at
+         * `/usr/bin/<name>` inside the chroot. setenv only affects
+         * the lookup phase; the exec'd child still runs under envp. */
+        for (size_t i = 0; req->envp && req->envp[i]; i++) {
+            if (strncmp(req->envp[i], "PATH=", 5) == 0) {
+                setenv("PATH", req->envp[i] + 5, 1);
+                break;
+            }
+        }
+
         execvpe(req->prog, req->argv, req->envp);
+        dprintf(2, "zd-spawnd: execvpe(%s): %s\n",
+                req->prog, strerror(errno));
         _exit(127);
     }
 
@@ -498,6 +548,27 @@ int main(int argc, char **argv) {
     /* Ignore SIGPIPE — write_full already returns -EPIPE on dead
      * peers and the worker handles that gracefully. */
     signal(SIGPIPE, SIG_IGN);
+
+    /* Bind-mount the host's home into the chroot so the user's
+     * project files are reachable from inside chroot at the path
+     * ChrootAdapter translates host cwds into. Idempotent: EBUSY
+     * means already bound (daemon restart without reboot), which is
+     * fine — the existing bind keeps working. Other failures we log
+     * but don't bail; chroot still functions, just without home
+     * visibility, and the user gets a kali shell with no project
+     * access. */
+    if (mkdir(g_home_bind_target, 0755) < 0 && errno != EEXIST) {
+        logf("WARN", "mkdir %s: %s",
+             g_home_bind_target, strerror(errno));
+    }
+    if (mount(g_home_bind_source, g_home_bind_target,
+              NULL, MS_BIND, NULL) < 0 && errno != EBUSY) {
+        logf("WARN", "mount --bind %s %s: %s",
+             g_home_bind_source, g_home_bind_target, strerror(errno));
+    } else {
+        logf("INFO", "home bind: %s -> %s",
+             g_home_bind_source, g_home_bind_target);
+    }
 
     int listen_fd = setup_socket(zdroid_uid);
     if (listen_fd < 0) return 1;

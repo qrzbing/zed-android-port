@@ -25,13 +25,14 @@ use gpui::{
 };
 use theme::ActiveTheme;
 use ui::{
-    Button, Clickable, Color, FluentBuilder, Headline, HeadlineSize, Icon, IconName, IconSize,
-    Label, LabelCommon, LabelSize, ParentElement, Styled, h_flex, v_flex,
+    Button, Chip, Clickable, Color, FluentBuilder, Headline, HeadlineSize, Icon, IconName,
+    IconSize, Label, LabelCommon, LabelSize, ParentElement, Styled, h_flex, v_flex,
 };
 use workspace::{ModalView, Workspace};
 use zdroid_runtime::{
     HealthStatus, RuntimeId, RuntimeProvider,
     adapters,
+    adapters::chroot::SPAWND_RELEASE_URL,
     config::{BootstrapConfig, ChrootConfig, ExternalTermuxConfig, RuntimeFile},
 };
 
@@ -232,7 +233,19 @@ fn render_card(
                         .gap_2()
                         .items_center()
                         .child(Icon::new(IconName::Server).size(IconSize::Small))
-                        .child(Headline::new(name).size(HeadlineSize::XSmall)),
+                        .child(Headline::new(name).size(HeadlineSize::XSmall))
+                        .when(is_current, |row| {
+                            // Use ui::Chip — the canonical Zed badge
+                            // primitive (same one agent_ui uses for
+                            // "Latest" tags etc.). Matches the rest of
+                            // the editor's design language out of the
+                            // box.
+                            row.child(
+                                Chip::new("Active")
+                                    .icon(IconName::Check)
+                                    .label_color(Color::Accent),
+                            )
+                        }),
                 )
                 .child(
                     Label::new(tagline)
@@ -262,13 +275,40 @@ fn render_card(
                     )
                 }),
         )
-        .child(
-            Button::new(("select", idx), "Select").on_click(cx.listener(
-                move |this, _, window, cx| {
+        .child(if is_current {
+            // The header already shows an "Active" Chip; the right-
+            // hand control on the active card is just decorative
+            // confirmation. Use a plain Chip so it sits in the design
+            // language without trying to look clickable. Same Zed
+            // primitive as the header badge — visually consistent.
+            Chip::new("Selected")
+                .icon(IconName::Check)
+                .label_color(Color::Accent)
+                .into_any_element()
+        } else if id == RuntimeId::Chroot
+            && !matches!(entry.health, HealthStatus::Healthy)
+        {
+            // Chroot adapter requires the zdroid-spawnd Magisk module
+            // to be running. If the daemon socket isn't reachable,
+            // letting the user pick chroot just writes a runtime.toml
+            // that breaks every subsequent spawn. Surface the install
+            // path inline instead: tap "Get module" to jump to the
+            // GitHub releases page where the zip lives. After install
+            // + reboot, re-open the picker and the gate flips to
+            // Healthy → normal Select.
+            Button::new(("get-module", idx), "Get module")
+                .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::Small))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.open_url(SPAWND_RELEASE_URL);
+                }))
+                .into_any_element()
+        } else {
+            Button::new(("select", idx), "Select")
+                .on_click(cx.listener(move |this, _, window, cx| {
                     this.select(id, window, cx);
-                },
-            )),
-        )
+                }))
+                .into_any_element()
+        })
         .into_any_element()
 }
 
