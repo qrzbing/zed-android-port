@@ -31,12 +31,34 @@ done
 
 # Resolve Zdroid's app uid from PackageManager. The daemon needs this
 # to set the socket's group ownership and verify peer credentials.
-ZDROID_UID=$(stat -c %u /data/data/com.zdroid 2>/dev/null)
+#
+# Race we hit in v1.1.2: sys.boot_completed=1 fires when system_server
+# is up, but PackageManager's per-user app data sometimes isn't readable
+# yet (encrypted-storage decryption + first-run /data/data/<pkg> setup
+# can lag). A single stat returns empty, the script bails, daemon never
+# starts, user has to manually run service.sh after login. Real users
+# don't know to do that.
+#
+# Fix: poll for up to 60s. stat returning 0 (root, before app reinstalls
+# fix ownership) also counts as "not ready". Most boots resolve within
+# 1-3s of this loop.
+uid_wait_iters=0
+ZDROID_UID=""
+while [ "$uid_wait_iters" -lt 60 ]; do
+    ZDROID_UID=$(stat -c %u /data/data/com.zdroid 2>/dev/null)
+    if [ -n "$ZDROID_UID" ] && [ "$ZDROID_UID" != "0" ]; then
+        break
+    fi
+    sleep 1
+    uid_wait_iters=$((uid_wait_iters + 1))
+done
+
 if [ -z "$ZDROID_UID" ] || [ "$ZDROID_UID" = "0" ]; then
-    log "com.zdroid not installed (uid empty/root); not starting daemon"
+    log "com.zdroid uid did not resolve within 60s; not starting daemon"
+    log "  (app may not be installed; run 'sh $MODDIR/service.sh' once installed)"
     exit 0
 fi
-log "resolved zdroid uid: $ZDROID_UID"
+log "resolved zdroid uid: $ZDROID_UID (after ${uid_wait_iters}s)"
 
 # Supervise loop. `exec` would replace the service.sh process; we use a
 # subshell so service.sh exits and Magisk's service tracker knows the

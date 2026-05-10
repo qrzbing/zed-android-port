@@ -1,5 +1,19 @@
 # Zdroid Spawn Daemon changelog
 
+## v1.1.3 (2026-05-10)
+
+Three production fixes from real-device testing of v1.1.2.
+
+### Fixes
+
+* **Magisk Manager "Action" button now appears.** Magisk's button-render condition is presence of `action.sh` at the module root, not `webroot/`. v1.1.2 only had `webroot/` so the button never showed. Added `action.sh` that prints a one-shot status snapshot (daemon health, socket, bind mount, chroot patches, last log lines). Stdout streams to Magisk's in-app console.
+* **WebUI no longer hammers Magisk's su grant ledger.** v1.1.2 polled status every 5s with 4 separate `ksu.exec` calls = 48 su grants per minute, spamming the Magisk log and the user's grant prompt history. v1.1.3 batches all status checks into a single shell command (one su grant per refresh) and removes background polling entirely. Refresh is manual, plus an automatic refresh after each action button.
+* **service.sh boot race fixed.** `sys.boot_completed=1` fires before `/data/data/com.zdroid` is reachable on first boot after Zdroid install or major upgrade, so a single `stat -c %u` returned empty and the daemon never started. Replaced with a 60s retry loop that polls every second until the uid resolves. Most boots clear within 1-3s.
+
+### Internal
+
+* `customize.sh` now sets perms on `action.sh` alongside `service.sh` and `chroot-init.sh`.
+
 ## v1.1.2 (2026-05-10)
 
 WebUI for module status, logs, and actions. Visible in KSU WebUI / MMRL. Magisk-only users without a WebUI viewer see no change.

@@ -25,15 +25,23 @@ set_perm "$MODPATH/service.sh" 0 0 0755
 # WebUI later. Set explicit perms so it stays executable across reflashes.
 set_perm "$MODPATH/chroot-init.sh" 0 0 0755
 
+# Action script: presence is what makes Magisk Manager render the
+# "Action" button on the module card (Magisk source: LocalModule.kt
+# `hasAction = base.getChildFile("action.sh").exists()`). Magisk runs
+# `sh action.sh` as root with cwd at the module dir; stdout pipes to
+# its in-app console.
+set_perm "$MODPATH/action.sh" 0 0 0755
+
 # Logs dir, world-unreadable; daemon writes here.
 mkdir -p "$MODPATH/log"
 set_perm "$MODPATH/log" 0 0 0750
 
 ui_print "- Files installed:"
 ui_print "    $MODPATH/zd-spawnd       (daemon binary)"
-ui_print "    $MODPATH/service.sh      (boot trigger)"
-ui_print "    $MODPATH/chroot-init.sh  (rootfs patcher, also called from WebUI)"
-ui_print "    $MODPATH/webroot/        (WebUI: status, logs, actions)"
+ui_print "    $MODPATH/service.sh      (boot trigger, with uid retry)"
+ui_print "    $MODPATH/chroot-init.sh  (rootfs patcher; also called from WebUI)"
+ui_print "    $MODPATH/action.sh       (Magisk Action button: status snapshot)"
+ui_print "    $MODPATH/webroot/        (WebUI: status, logs, interactive actions)"
 ui_print "    $MODPATH/log/             (daemon logs)"
 ui_print ""
 
