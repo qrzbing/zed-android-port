@@ -1,5 +1,19 @@
 # Zdroid Spawn Daemon changelog
 
+## v1.1.2 (2026-05-10)
+
+WebUI for module status, logs, and actions. Visible in KSU WebUI / MMRL. Magisk-only users without a WebUI viewer see no change.
+
+### Highlights
+
+* `webroot/index.html` panel exposes daemon status (PID + uptime, socket reachable, bind mount status, chroot patches applied), tail of `zd-spawnd.log`, and three actions: Restart daemon, Re-apply rootfs patches, Restore originals.
+* Single-file HTML+CSS+JS, no build step. Uses the vanilla `ksu.exec` global so it runs unchanged on KernelSU, KSU WebUI Standalone for Magisk, and MMRL.
+* "Re-apply rootfs patches" handles the case where `apt upgrade` inside the chroot overwrote `.bash_profile` / `.profile`. Previously only fixable by reinstalling the Magisk module.
+
+### Refactor
+
+* Chroot-patching logic moved from `customize.sh` into a standalone `chroot-init.sh`. `customize.sh` and the WebUI's "Re-apply" action both call it. Single source of truth, idempotent.
+
 ## v1.1.1 (2026-05-10)
 
 Fixes for the chroot integrated terminal landing dir and `claude` / cargo / etc. on PATH.

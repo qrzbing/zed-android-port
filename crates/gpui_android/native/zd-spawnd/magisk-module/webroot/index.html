@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Zdroid Spawn Daemon</title>
+<style>
+  /* Design language: card-based, dark-first, minimal. Mirrors the
+     visual weight of Magisk Manager and KSU WebUI's own panels so
+     this doesn't look like a third-party intruder. No external CSS. */
+
+  :root {
+    color-scheme: dark light;
+    --bg: #0f1115;
+    --card: #1a1d24;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --muted: #8b94a3;
+    --accent: #6aa2ff;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f5f5f7;
+      --card: #ffffff;
+      --border: #d1d5db;
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #2563eb;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: env(safe-area-inset-top, 16px) 16px env(safe-area-inset-bottom, 16px);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  header {
+    margin: 8px 0 16px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  header .version {
+    font-family: var(--mono);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    gap: 12px;
+  }
+  .row + .row { border-top: 1px solid var(--border); }
+  .row .label { color: var(--muted); font-size: 13px; flex-shrink: 0; }
+  .row .value {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: right;
+    word-break: break-all;
+    min-width: 0;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+    background: var(--muted);
+  }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+
+  button {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:active:not(:disabled) { background: var(--bg); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { color: var(--err); }
+  button.danger:hover:not(:disabled) { border-color: var(--err); }
+  button .desc {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .actions { display: flex; flex-direction: column; gap: 8px; }
+
+  pre.log {
+    margin: 0;
+    padding: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text);
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  pre.log:empty::before {
+    content: "(no log lines yet)";
+    color: var(--muted);
+    font-style: italic;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .toolbar button {
+    width: auto;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .modal-bg {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 100;
+  }
+  .modal-bg.open { display: flex; }
+  .modal {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    max-width: 480px;
+    width: 100%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal h3 { margin: 0 0 8px; font-size: 15px; }
+  .modal pre {
+    flex: 1;
+    overflow: auto;
+    margin: 8px 0;
+    padding: 8px;
+    background: var(--bg);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 60px;
+    max-height: 50vh;
+  }
+  .modal .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+  .modal .modal-actions button { width: auto; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Zdroid Spawn Daemon</h1>
+    <span class="version" id="moduleVersion">…</span>
+  </header>
+
+  <section class="card">
+    <h2>Status</h2>
+    <div class="row">
+      <span class="label"><span class="dot" id="dotDaemon"></span>Daemon</span>
+      <span class="value" id="valDaemon">checking…</span>
+    </div>
+    <div class="row">
+      <span class="label"><span class="dot" id="dotSocket"></span>Socket</span>
+      <span class="value" id="valSocket">checking…</span>
+    </div>
+    <div class="row">
+      <span class="label"><span class="dot" id="dotMount"></span>Bind mount</span>
+      <span class="value" id="valMount">checking…</span>
+    </div>
+    <div class="row">
+      <span class="label"><span class="dot" id="dotChroot"></span>Chroot patches</span>
+      <span class="value" id="valChroot">checking…</span>
+    </div>
+    <div class="toolbar">
+      <button onclick="refreshStatus()">Refresh</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Actions</h2>
+    <div class="actions">
+      <button onclick="restartDaemon()">
+        Restart daemon
+        <span class="desc">SIGTERM the daemon; service.sh supervisor re-spawns within ~5s.</span>
+      </button>
+      <button onclick="reapplyPatches()">
+        Re-apply rootfs patches
+        <span class="desc">Re-runs chroot-init.sh. Useful after `apt upgrade` inside the chroot overwrote .bash_profile / .profile.</span>
+      </button>
+      <button class="danger" onclick="restoreOriginals()">
+        Restore rootfs originals
+        <span class="desc">Moves *.zdroid-orig back into place. Reverts the patches without uninstalling the module.</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Logs</h2>
+    <pre class="log" id="logTail"></pre>
+    <div class="toolbar">
+      <button onclick="refreshLogs()">Refresh</button>
+      <button class="danger" onclick="clearLogs()">Clear</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Info</h2>
+    <div class="row">
+      <span class="label">Chroot path</span>
+      <span class="value" id="infoChroot">/data/local/nhsystem/kali-arm64</span>
+    </div>
+    <div class="row">
+      <span class="label">Bind: source</span>
+      <span class="value">/data/data/com.zdroid/files/home</span>
+    </div>
+    <div class="row">
+      <span class="label">Bind: target</span>
+      <span class="value">/data/local/nhsystem/kali-arm64/zed</span>
+    </div>
+    <div class="row">
+      <span class="label">Socket</span>
+      <span class="value">/data/data/com.zdroid/files/run/zd-spawn</span>
+    </div>
+    <div class="row">
+      <span class="label">Zdroid uid</span>
+      <span class="value" id="infoUid">…</span>
+    </div>
+  </section>
+
+  <div class="modal-bg" id="modalBg" onclick="closeModalIfBg(event)">
+    <div class="modal">
+      <h3 id="modalTitle">Result</h3>
+      <pre id="modalBody"></pre>
+      <div class="modal-actions">
+        <button onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ksu.exec uses a global-callback pattern; wrap as a Promise. Identical
+// shape to the npm `kernelsu` package's `exec`, just inlined so this
+// page stays a single self-contained file with no build step.
+function exec(command) {
+  return new Promise((resolve, reject) => {
+    const cb = `__ksu_exec_cb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    window[cb] = (errno, stdout, stderr) => {
+      delete window[cb];
+      resolve({ errno, stdout: stdout || "", stderr: stderr || "" });
+    };
+    try {
+      ksu.exec(command, "{}", cb);
+    } catch (e) {
+      delete window[cb];
+      reject(e);
+    }
+  });
+}
+
+function toast(msg) {
+  try { ksu.toast(msg); } catch (e) { /* viewer might not impl; no-op */ }
+}
+
+// ----- Status panel ---------------------------------------------------
+
+async function refreshStatus() {
+  setRow("Daemon", "checking…", "");
+  setRow("Socket", "checking…", "");
+  setRow("Mount", "checking…", "");
+  setRow("Chroot", "checking…", "");
+
+  // Daemon process: pid + uptime via `ps`. zd-spawnd's argv[1] is the
+  // Zdroid uid, so the cmd line looks like `zd-spawnd 10430`. Match on
+  // the comm name to avoid matching ourselves or stray greps.
+  const dRes = await exec("pgrep -x zd-spawnd | head -1");
+  const pid = dRes.stdout.trim();
+  if (!pid) {
+    setRow("Daemon", "not running", "err");
+  } else {
+    const eRes = await exec(`ps -o pid,etime,comm -p ${pid} | tail -n +2`);
+    const line = eRes.stdout.trim() || `${pid} ?`;
+    setRow("Daemon", `pid ${pid} (${(line.split(/\s+/)[1] || "?")} uptime)`, "ok");
+  }
+
+  // Socket file present? The daemon creates this on bind(); absence
+  // means daemon hasn't started OR crashed before bind.
+  const sRes = await exec("[ -S /data/data/com.zdroid/files/run/zd-spawn ] && echo yes || echo no");
+  if (sRes.stdout.trim() === "yes") {
+    setRow("Socket", "reachable", "ok");
+  } else {
+    setRow("Socket", "missing", "err");
+  }
+
+  // Bind mount — the daemon mounts /zed inside the chroot at startup.
+  // Absence after a daemon restart means the mount(2) call failed.
+  const mRes = await exec("mount | grep -c '/data/local/nhsystem/kali-arm64/zed'");
+  if ((mRes.stdout.trim() || "0") !== "0") {
+    setRow("Mount", "/zed bound", "ok");
+  } else {
+    setRow("Mount", "not bound", "warn");
+  }
+
+  // Chroot patches — presence of the .zdroid-orig backup files is the
+  // marker that chroot-init.sh has run at least once. Doesn't guarantee
+  // current files are still patched (apt upgrade could've reverted),
+  // but a missing backup means we never touched the rootfs.
+  const cRes = await exec("[ -f /data/local/nhsystem/kali-arm64/root/.bash_profile.zdroid-orig ] && [ -f /data/local/nhsystem/kali-arm64/root/.profile.zdroid-orig ] && echo applied || echo missing");
+  if (cRes.stdout.trim() === "applied") {
+    setRow("Chroot", "applied (.zdroid-orig present)", "ok");
+  } else {
+    setRow("Chroot", "not applied", "warn");
+  }
+}
+
+function setRow(which, value, dotClass) {
+  const dot = document.getElementById(`dot${which}`);
+  const val = document.getElementById(`val${which}`);
+  if (val) val.textContent = value;
+  if (dot) {
+    dot.className = "dot";
+    if (dotClass) dot.classList.add(dotClass);
+  }
+}
+
+// ----- Logs panel -----------------------------------------------------
+
+async function refreshLogs() {
+  const r = await exec("tail -n 100 /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log 2>/dev/null");
+  const el = document.getElementById("logTail");
+  el.textContent = r.stdout || "";
+  // Scroll to bottom so the freshest line is visible without scrolling.
+  el.scrollTop = el.scrollHeight;
+}
+
+async function clearLogs() {
+  if (!confirm("Clear /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log? The supervisor will re-create it on next write.")) {
+    return;
+  }
+  const r = await exec(": > /data/adb/modules/zdroid_spawnd/log/zd-spawnd.log");
+  if (r.errno === 0) {
+    toast("Log cleared");
+    refreshLogs();
+  } else {
+    showResult("Clear log failed", r.stderr || `errno ${r.errno}`);
+  }
+}
+
+// ----- Actions --------------------------------------------------------
+
+async function restartDaemon() {
+  if (!confirm("Restart zd-spawnd? Active spawns will be SIGKILLed; the supervisor re-spawns the daemon within ~5s.")) {
+    return;
+  }
+  // pkill matches the comm name; if it returns 1 the daemon wasn't
+  // running, which we treat as success-with-note.
+  const r = await exec("pkill -TERM -x zd-spawnd; sleep 1; pgrep -x zd-spawnd | head -1");
+  if (r.errno === 0 && r.stdout.trim()) {
+    toast(`Daemon restarted: pid ${r.stdout.trim()}`);
+  } else if (r.errno === 0) {
+    toast("Daemon was killed; supervisor will respawn shortly");
+  } else {
+    showResult("Restart failed", r.stderr || `errno ${r.errno}`);
+  }
+  refreshStatus();
+}
+
+async function reapplyPatches() {
+  if (!confirm("Re-run chroot-init.sh? This re-applies the .bash_profile and .profile patches. Existing .zdroid-orig backups are preserved.")) {
+    return;
+  }
+  const r = await exec("sh /data/adb/modules/zdroid_spawnd/chroot-init.sh 2>&1");
+  showResult("Re-apply patches", r.stdout || `(no output)\nerrno ${r.errno}`);
+  refreshStatus();
+}
+
+async function restoreOriginals() {
+  if (!confirm("Restore the NetHunter-stock .bash_profile and .profile from .zdroid-orig?\n\nThis reverts the patches. Zdroid's integrated terminal will lose the project-cwd landing and ~/.local/bin PATH prepend until you re-apply.")) {
+    return;
+  }
+  // Restore both. If a .zdroid-orig file is missing, mv complains;
+  // capture stderr so the modal explains.
+  const r = await exec(`
+    set -e
+    BP=/data/local/nhsystem/kali-arm64/root/.bash_profile
+    PR=/data/local/nhsystem/kali-arm64/root/.profile
+    OUT=""
+    if [ -f "$BP.zdroid-orig" ]; then
+      mv "$BP.zdroid-orig" "$BP" && OUT="$OUT.bash_profile restored\n"
+    else
+      OUT="$OUT.bash_profile.zdroid-orig missing (already restored?)\n"
+    fi
+    if [ -f "$PR.zdroid-orig" ]; then
+      mv "$PR.zdroid-orig" "$PR" && OUT="$OUT.profile restored\n"
+    else
+      OUT="$OUT.profile.zdroid-orig missing (already restored?)\n"
+    fi
+    printf "%b" "$OUT"
+  `);
+  showResult("Restore originals", r.stdout || r.stderr || "(no output)");
+  refreshStatus();
+}
+
+// ----- Modal ----------------------------------------------------------
+
+function showResult(title, body) {
+  document.getElementById("modalTitle").textContent = title;
+  document.getElementById("modalBody").textContent = body;
+  document.getElementById("modalBg").classList.add("open");
+}
+function closeModal() {
+  document.getElementById("modalBg").classList.remove("open");
+}
+function closeModalIfBg(e) {
+  if (e.target.id === "modalBg") closeModal();
+}
+
+// ----- Init -----------------------------------------------------------
+
+async function init() {
+  // Module version + name from KSU's bridge. moduleInfo() returns a
+  // JSON string per index.d.ts. KSU WebUI Standalone returns the same
+  // shape.
+  try {
+    const info = JSON.parse(ksu.moduleInfo());
+    const v = info.versionCode || info.version || "";
+    document.getElementById("moduleVersion").textContent = v ? `v${info.version || v}` : "";
+  } catch (e) {
+    document.getElementById("moduleVersion").textContent = "";
+  }
+
+  // Zdroid uid: the daemon stat()s /data/data/com.zdroid to discover it
+  // at boot; we do the same so the user can sanity-check that the
+  // daemon and the app agree. uid 0 / empty means the app isn't installed.
+  const uRes = await exec("stat -c %u /data/data/com.zdroid 2>/dev/null");
+  const uid = uRes.stdout.trim();
+  document.getElementById("infoUid").textContent = uid && uid !== "0" ? uid : "(app not installed)";
+
+  await refreshStatus();
+  await refreshLogs();
+
+  // Poll status every 5s while the WebUI is in the foreground. Pause
+  // when the page is hidden so we don't burn CPU on background tabs.
+  setInterval(() => {
+    if (document.visibilityState === "visible") refreshStatus();
+  }, 5000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>
