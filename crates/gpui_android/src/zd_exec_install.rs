@@ -98,3 +98,109 @@ pub fn ensure_installed(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
     );
     Ok(())
 }
+
+/// Populate `$PREFIX/zd-runtime/` with one symlink per name in
+/// `binaries`, each pointing at `../bin/zd-exec`. This is the
+/// virtual `/usr/bin` the Zed app process gets to see — kernel PATH
+/// lookup of e.g. `java` finds the symlink, exec's `zd-exec`, which
+/// dispatches through the active `RuntimeProvider` to wherever the
+/// binary actually lives.
+///
+/// `binaries` should come from `provider.list_binaries()` so the
+/// dir mirrors the active adapter's filesystem. No hardcoded list:
+/// when the user `apt install`s a new tool inside chroot, the next
+/// boot picks it up; when they switch adapters, the symlink set is
+/// rewritten to match the new env.
+///
+/// Idempotent and self-healing:
+///
+///   - Symlinks pointing at `../bin/zd-exec` whose name is NOT in
+///     `binaries` are removed (so adapter switches and uninstalls
+///     don't leave dead entries).
+///   - Symlinks pointing at `../bin/zd-exec` whose name IS in
+///     `binaries` are left alone.
+///   - Non-symlink entries (file, dir) are left alone — we don't
+///     touch what we didn't create.
+///   - Names in `binaries` that don't yet exist are created.
+pub fn ensure_runtime_symlinks(prefix: &Path, binaries: &[String]) -> Result<()> {
+    let runtime_dir = prefix.join("zd-runtime");
+    fs::create_dir_all(&runtime_dir)
+        .with_context(|| format!("create_dir_all {}", runtime_dir.display()))?;
+    let target = Path::new("../bin/zd-exec");
+
+    let wanted: std::collections::HashSet<&str> =
+        binaries.iter().map(String::as_str).collect();
+
+    // Sweep stale: remove zd-exec-shaped symlinks whose name isn't
+    // wanted anymore (typical after an adapter switch).
+    let mut removed = 0usize;
+    if let Ok(entries) = fs::read_dir(&runtime_dir) {
+        for entry in entries.flatten() {
+            let name = match entry.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if wanted.contains(name.as_str()) {
+                continue;
+            }
+            let path = entry.path();
+            // Only remove if it's a symlink pointing where we'd point.
+            // Anything else (real file, foreign symlink) is left alone.
+            if let Ok(link_target) = fs::read_link(&path)
+                && link_target == target
+            {
+                if let Err(e) = fs::remove_file(&path) {
+                    log::warn!(
+                        "zd_exec_install: failed to remove stale symlink {}: {e}",
+                        path.display(),
+                    );
+                } else {
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    // Create or repair entries for everything in `binaries`.
+    let mut created = 0usize;
+    let mut already = 0usize;
+    let mut skipped = 0usize;
+    for name in binaries {
+        let link = runtime_dir.join(name);
+        match fs::symlink_metadata(&link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if fs::read_link(&link).ok().as_deref() == Some(target) {
+                    already += 1;
+                    continue;
+                }
+                // Symlink exists but points somewhere unexpected. Replace.
+                fs::remove_file(&link).with_context(|| {
+                    format!("removing wrong-target symlink {}", link.display())
+                })?;
+            }
+            Ok(_) => {
+                // Real file / directory at this name. Don't overwrite.
+                skipped += 1;
+                continue;
+            }
+            Err(_) => {} // Doesn't exist yet, create.
+        }
+
+        std::os::unix::fs::symlink(target, &link).with_context(|| {
+            format!("symlink {} -> {}", link.display(), target.display())
+        })?;
+        created += 1;
+    }
+
+    log::info!(
+        "zd_exec_install: zd-runtime ready at {} \
+         (requested {}, created {}, already linked {}, removed stale {}, skipped non-symlinks {})",
+        runtime_dir.display(),
+        binaries.len(),
+        created,
+        already,
+        removed,
+        skipped,
+    );
+    Ok(())
+}

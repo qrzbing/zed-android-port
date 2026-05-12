@@ -543,4 +543,43 @@ impl RuntimeProvider for ChrootAdapter {
             "/data/data/com.zdroid/files/home/.zed-env/chroot",
         )
     }
+
+    fn list_binaries(&self) -> Vec<String> {
+        // Walk the chroot rootfs's bin dirs and return every entry
+        // name. The boot process turns each into a
+        // `$PREFIX/zd-runtime/<name>` symlink to `zd-exec`, which is
+        // how Zed's `Command::new("java")` PATH lookup finds the
+        // chroot's java (or apt-get, or rust-analyzer, or whatever)
+        // through the bridge.
+        //
+        // Order matters in PATH-lookup-equivalent style, but since
+        // every entry routes to the same `zd-exec` and `zd-exec`
+        // doesn't care about discovery order, we collapse duplicates
+        // into a set. The chroot's own internal PATH order applies on
+        // the daemon side when execvpe resolves the binary.
+        let mut names: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for sub in ["usr/bin", "usr/local/bin", "usr/sbin", "bin", "sbin"] {
+            let dir = self.config.root.join(sub);
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str()
+                            && !name.starts_with('.')
+                        {
+                            names.insert(name.to_string());
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::debug!(
+                        "ChrootAdapter::list_binaries: skipping {} ({})",
+                        dir.display(),
+                        e,
+                    );
+                }
+            }
+        }
+        names.into_iter().collect()
+    }
 }

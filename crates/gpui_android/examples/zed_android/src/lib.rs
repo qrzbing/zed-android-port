@@ -364,6 +364,38 @@ fn android_main(app: AndroidApp) {
         );
     }
 
+    // Populate $PREFIX/zd-runtime/ with symlinks for every binary the
+    // active runtime adapter advertises. Each symlink points at
+    // zd-exec; kernel PATH lookup intercepts Zed's
+    // `Command::new("java")` and routes through the bridge to wherever
+    // the binary actually lives. The adapter inspects its OWN
+    // filesystem (chroot walks the rootfs's /usr/bin etc.; bootstrap
+    // walks $PREFIX/bin) — no hardcoded list anywhere. apt-installing
+    // a new tool inside the chroot makes it show up after the next
+    // launch; switching adapters rewrites the set to match the new
+    // env (stale entries get swept).
+    if let Some(provider) = build_active_provider(&data_path) {
+        let binaries = provider.list_binaries();
+        log::info!(
+            "zed_android: zd-runtime: {} binaries from {:?} adapter",
+            binaries.len(),
+            provider.id(),
+        );
+        if let Err(err) =
+            gpui_android::zd_exec_install::ensure_runtime_symlinks(&prefix, &binaries)
+        {
+            log::warn!(
+                "zed_android: zd-runtime symlinks failed: {err:#}; \
+                 LSPs that resolve binaries via PATH will fail to spawn"
+            );
+        }
+    } else {
+        log::info!(
+            "zed_android: zd-runtime: no active adapter; PATH interception \
+             skipped (runtime picker will set one up after first selection)"
+        );
+    }
+
     // Wire askpass to the standalone helper now that
     // apply_runtime_patches has placed it at $PREFIX/bin/zed-askpass-helper.
     // Must happen BEFORE any AskPassSession is created (Open Remote,

@@ -273,4 +273,36 @@ impl RuntimeProvider for BootstrapAdapter {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| self.config.prefix.clone())
     }
+
+    fn list_binaries(&self) -> Vec<String> {
+        // Walk bootstrap's bin dirs. Same shape as the chroot
+        // adapter's walk, just different roots — bootstrap doesn't
+        // have a `/usr/` layout, it puts everything directly under
+        // `$PREFIX/bin/` (Termux-flavored prefix). `sbin` is rarely
+        // populated on Termux but we look anyway.
+        let mut names: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for sub in ["bin", "sbin"] {
+            let dir = self.config.prefix.join(sub);
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str()
+                            && !name.starts_with('.')
+                        {
+                            names.insert(name.to_string());
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::debug!(
+                        "BootstrapAdapter::list_binaries: skipping {} ({})",
+                        dir.display(),
+                        e,
+                    );
+                }
+            }
+        }
+        names.into_iter().collect()
+    }
 }

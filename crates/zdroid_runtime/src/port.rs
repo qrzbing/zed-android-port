@@ -138,4 +138,28 @@ pub trait RuntimeProvider: Send + Sync {
     /// `environment_root` is a separate physical location, populated
     /// independently. Files installed in one never leak into another.
     fn environment_root(&self) -> PathBuf;
+
+    /// Names of binaries reachable in this adapter's PATH. Used by
+    /// boot to populate `$PREFIX/zd-runtime/<name> -> ../bin/zd-exec`
+    /// symlinks, which is what makes Zed's desktop-style PATH lookup
+    /// (`Command::new("java")`) work transparently on Android — the
+    /// kernel finds the symlink, exec's `zd-exec`, which dispatches
+    /// through this provider into the right environment.
+    ///
+    /// On desktop OSes Zed never needs this: `/usr/bin/java` is on
+    /// the user's PATH and lives on the same filesystem as the
+    /// editor. On Android, the editor sits in a separate sandbox
+    /// from the toolchain's filesystem namespace, so PATH lookup
+    /// from the app process can't see the chroot's or bootstrap's
+    /// `bin/` directly. The symlink farm at `zd-runtime/` is the
+    /// virtual `/usr/bin` Zed gets to see; this method tells boot
+    /// what to put in it.
+    ///
+    /// Default impl returns empty — adapters that don't have a
+    /// readable bin layout (e.g. external Termux until the JNI
+    /// bridge lands) opt out cleanly; PATH-based lookup just won't
+    /// find anything, which is the correct fail-closed behavior.
+    fn list_binaries(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
