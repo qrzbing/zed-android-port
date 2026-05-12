@@ -34,9 +34,11 @@ set_perm "$MODPATH/action.sh" 0 0 0755
 
 # Uninstall hook: runs at next boot after Magisk Remove. Restores
 # /root/.bash_profile and /root/.profile from .zdroid-orig backups
-# inside the chroot, and rmdirs the empty /zed bind-mount target.
-# Without this, "uninstall the module" leaves the chroot's bash
-# startup permanently patched — surprising and wrong.
+# inside the chroot, rmdirs the v1.1.6 symmetric bind-mount target
+# dirs, removes the /data/user/0/com.zdroid alias symlink, and also
+# cleans up the legacy v1.1.5- /zed target for upgrade-then-uninstall
+# paths. Without this, "uninstall the module" leaves the chroot's
+# bash startup permanently patched — surprising and wrong.
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
 
 # Persistent log dir, OUTSIDE the module path so it survives future

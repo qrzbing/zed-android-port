@@ -1,5 +1,19 @@
 # Zdroid Spawn Daemon changelog
 
+## v1.1.6 (2026-05-12)
+
+Symmetric bind-mount. Host paths == chroot paths. Translation layer obsoleted.
+
+### Changed
+
+* **Bind source/target switched from `/data/data/com.zdroid/files/home -> /zed` to `/data/data/com.zdroid/files -> /data/data/com.zdroid/files` (symmetric).** The prior asymmetric rename forced the chroot adapter to translate every host path Zed produced into its chroot equivalent. Translation only saw spawn argv; paths shipped over LSP JSON-RPC (e.g. JDTLS's `initialize` bundle list) bypassed it and surfaced inside the chroot as nonexistent paths, dying with NoSuchFileException. Symmetric mount makes any path under `/data/data/com.zdroid/files/...` resolve to the same inode on host bionic and inside the chroot. No translation, no bypass class.
+* **`/data/user/0/com.zdroid -> /data/data/com.zdroid` alias symlink** created in the rootfs by `chroot-init.sh`. Android exposes both path forms; the symlink ensures either form resolves inside the chroot.
+
+### Upgrade notes
+
+* After install + reboot, the chroot's `/zed` directory still exists but is no longer bind-mounted. Any in-chroot script that hardcoded `/zed` should switch to `/data/data/com.zdroid/files/home` (the path Zed already uses on host).
+* Editor APK in lockstep with this release drops the `translate_arg_for_chroot` translation layer; deleting ~150 LOC of path-rewriting machinery + `APP_HOMES` / `ZD_RUNTIME_DIRS` lists.
+
 ## v1.1.5 (2026-05-10)
 
 WebUI redesign, log persistence + per-spawn instrumentation, action button bridge.

@@ -20,6 +20,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -68,16 +69,26 @@
  * /data/adb/modules/zdroid-spawnd/runtime.conf. */
 static const char *g_chroot_root = "/data/local/nhsystem/kali-arm64";
 
-/* Bind-mount source/target. The host's home dir gets bound onto a
- * known path inside the chroot so the user's project files are
- * visible from inside chroot at the same location ChrootAdapter's
- * cwd-translation expects. Established once at daemon startup;
- * persists for daemon lifetime, wiped by reboot, re-established by
- * the next daemon start. */
-static const char *g_home_bind_source =
-    "/data/data/com.zdroid/files/home";
-static const char *g_home_bind_target =
-    "/data/local/nhsystem/kali-arm64/zed";
+/* Symmetric bind-mount source/target. The host's entire app-private
+ * dir is bound onto the SAME path inside the chroot, so any absolute
+ * path Zed produces (settings, extensions, projects, language servers
+ * launched from extension-shipped binaries, JSON-RPC payloads, etc.)
+ * resolves to the same inode whether the resolver runs on the host
+ * bionic process or inside the chroot. No path translation needed.
+ *
+ * Prior to v1.1.6 this was an asymmetric `…/files/home -> /zed` bind.
+ * The rename created a translation requirement that the chroot adapter
+ * couldn't fully serve (LSP JSON-RPC sent paths around the adapter,
+ * env-var leaks bypassed argv rewriting, etc.) — every new path-shaped
+ * payload was a new "did we remember to translate this" bug. Symmetric
+ * mount eliminates the class entirely.
+ *
+ * Established once at daemon startup; persists for daemon lifetime,
+ * wiped by reboot, re-established by the next daemon start. */
+static const char *g_app_bind_source =
+    "/data/data/com.zdroid/files";
+static const char *g_app_bind_target =
+    "/data/local/nhsystem/kali-arm64/data/data/com.zdroid/files";
 
 /* ===== logging ============================================================ */
 
@@ -628,25 +639,48 @@ int main(int argc, char **argv) {
      * peers and the worker handles that gracefully. */
     signal(SIGPIPE, SIG_IGN);
 
-    /* Bind-mount the host's home into the chroot so the user's
-     * project files are reachable from inside chroot at the path
-     * ChrootAdapter translates host cwds into. Idempotent: EBUSY
-     * means already bound (daemon restart without reboot), which is
-     * fine — the existing bind keeps working. Other failures we log
-     * but don't bail; chroot still functions, just without home
-     * visibility, and the user gets a kali shell with no project
-     * access. */
-    if (mkdir(g_home_bind_target, 0755) < 0 && errno != EEXIST) {
-        logf("WARN", "mkdir %s: %s",
-             g_home_bind_target, strerror(errno));
+    /* Create the target mount point in the chroot rootfs and bind the
+     * host's entire `/data/data/com.zdroid/files` onto it. After this,
+     * any host path under `/data/data/com.zdroid/files/...` resolves
+     * to the same inode whether read from host bionic or from inside
+     * the chroot — no rename, no translation. See `g_app_bind_*` for
+     * the architectural rationale.
+     *
+     * mkdir(2) does not create parents, so walk the segments of the
+     * target and create each one in turn. Skip leading slash. Errors
+     * other than EEXIST we log but don't bail on — chroot still
+     * functions, just without app-data visibility, and the user gets
+     * a kali shell with no project access.
+     *
+     * Idempotent: EBUSY on mount() means already bound (daemon
+     * restart without reboot). */
+    {
+        char path[PATH_MAX];
+        size_t target_len = strlen(g_app_bind_target);
+        if (target_len < sizeof(path)) {
+            for (size_t i = 1; i <= target_len; i++) {
+                if (g_app_bind_target[i] == '/' ||
+                    g_app_bind_target[i] == '\0') {
+                    memcpy(path, g_app_bind_target, i);
+                    path[i] = '\0';
+                    if (mkdir(path, 0755) < 0 && errno != EEXIST) {
+                        logf("WARN", "mkdir %s: %s",
+                             path, strerror(errno));
+                    }
+                }
+            }
+        } else {
+            logf("WARN", "bind target path too long: %zu bytes",
+                 target_len);
+        }
     }
-    if (mount(g_home_bind_source, g_home_bind_target,
+    if (mount(g_app_bind_source, g_app_bind_target,
               NULL, MS_BIND, NULL) < 0 && errno != EBUSY) {
         logf("WARN", "mount --bind %s %s: %s",
-             g_home_bind_source, g_home_bind_target, strerror(errno));
+             g_app_bind_source, g_app_bind_target, strerror(errno));
     } else {
-        logf("INFO", "home bind: %s -> %s",
-             g_home_bind_source, g_home_bind_target);
+        logf("INFO", "app bind: %s -> %s",
+             g_app_bind_source, g_app_bind_target);
     }
 
     int listen_fd = setup_socket(zdroid_uid);

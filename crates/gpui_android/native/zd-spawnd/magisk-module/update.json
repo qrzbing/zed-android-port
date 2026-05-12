@@ -1,6 +1,6 @@
 {
-  "version": "v1.1.5",
-  "versionCode": 7,
-  "zipUrl": "https://github.com/Dylanmurzello/zed-android-port/releases/download/zdroid-spawnd-v1.1.5/zdroid-spawnd-v1.1.5.zip",
+  "version": "v1.1.6",
+  "versionCode": 8,
+  "zipUrl": "https://github.com/Dylanmurzello/zed-android-port/releases/download/zdroid-spawnd-v1.1.6/zdroid-spawnd-v1.1.6.zip",
   "changelog": "https://raw.githubusercontent.com/Dylanmurzello/zed-android-port/main/crates/gpui_android/native/zd-spawnd/magisk-module/CHANGELOG.md"
 }

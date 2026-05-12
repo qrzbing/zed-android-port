@@ -83,11 +83,12 @@ else
     echo "[ERR]  Socket missing at $SOCKET"
 fi
 
-if mount | grep -q "$CHROOT_ROOT/zed"; then
-    SRC=$(mount | grep "$CHROOT_ROOT/zed" | head -1 | awk '{print $1}')
-    echo "[OK]   /zed bind active (backing: $SRC)"
+APP_BIND="$CHROOT_ROOT/data/data/com.zdroid/files"
+if mount | grep -q "$APP_BIND"; then
+    SRC=$(mount | grep "$APP_BIND" | head -1 | awk '{print $1}')
+    echo "[OK]   app bind active (backing: $SRC)"
 else
-    echo "[WARN] /zed bind NOT active"
+    echo "[WARN] app bind NOT active"
     echo "       Daemon establishes this at startup. Check service log."
 fi
 

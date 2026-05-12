@@ -55,18 +55,33 @@ else
     log ".profile.zdroid-orig missing; nothing to restore"
 fi
 
-# Remove the bind-mount target dir if it's empty. The bind itself died
+# Remove the bind-mount target dirs if they're empty. The bind died
 # with the daemon — at this boot the daemon hasn't run (module being
 # removed). If the dir is empty, it's just an mkdir we did at install
 # and rmdir leaves the chroot tidy. If something else is there
 # (shouldn't be), rmdir fails and we leave it for the user.
-ZED_DIR="$CHROOT_ROOT/zed"
-if [ -d "$ZED_DIR" ]; then
-    if rmdir "$ZED_DIR" 2>/dev/null; then
-        log "removed empty bind-mount target $ZED_DIR"
-    else
-        log "$ZED_DIR is non-empty; left in place"
+#
+# Walks the v1.1.6 symmetric path bottom-up. Also cleans up the legacy
+# v1.1.5- `/zed` target so users upgrading then uninstalling don't get
+# stale dirs left behind.
+for d in \
+    "$CHROOT_ROOT/data/data/com.zdroid/files" \
+    "$CHROOT_ROOT/data/data/com.zdroid" \
+    "$CHROOT_ROOT/data/user/0/com.zdroid" \
+    "$CHROOT_ROOT/data/user/0" \
+    "$CHROOT_ROOT/zed"
+do
+    if [ -d "$d" ] || [ -L "$d" ]; then
+        # `rm` first for the symlink case (rmdir won't remove a symlink),
+        # `rmdir` for the dir case (won't remove non-empty dirs).
+        if [ -L "$d" ]; then
+            rm -f "$d" 2>/dev/null && log "removed symlink $d" || log "$d symlink rm failed"
+        elif rmdir "$d" 2>/dev/null; then
+            log "removed empty bind-mount target $d"
+        else
+            log "$d is non-empty; left in place"
+        fi
     fi
-fi
+done
 
 log "cleanup done"

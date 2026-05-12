@@ -450,11 +450,11 @@
         </div>
         <div class="info-row">
           <span class="label">Bind src</span>
-          <span class="value">/data/data/com.zdroid/files/home</span>
+          <span class="value">/data/data/com.zdroid/files</span>
         </div>
         <div class="info-row">
           <span class="label">Bind dst</span>
-          <span class="value">/data/local/nhsystem/kali-arm64/zed</span>
+          <span class="value">/data/local/nhsystem/kali-arm64/data/data/com.zdroid/files</span>
         </div>
         <div class="info-row">
           <span class="label">Socket</span>
@@ -510,7 +510,7 @@ if [ -n "$PID" ]; then
   echo "DAEMON_INFO=$(ps -o pid,etime,comm -p $PID 2>/dev/null | tail -n +2 | tr -s ' ' | sed 's/^ //')"
 fi
 echo "SOCKET=$([ -S /data/data/com.zdroid/files/run/zd-spawn ] && echo ok || echo missing)"
-echo "MOUNT_COUNT=$(mount | grep -c '/data/local/nhsystem/kali-arm64/zed')"
+echo "MOUNT_COUNT=$(mount | grep -c '/data/local/nhsystem/kali-arm64/data/data/com.zdroid/files')"
 echo "CHROOT=$([ -f /data/local/nhsystem/kali-arm64/root/.bash_profile.zdroid-orig ] && [ -f /data/local/nhsystem/kali-arm64/root/.profile.zdroid-orig ] && echo applied || echo missing)"
 echo "ZUID=$(stat -c %u /data/data/com.zdroid 2>/dev/null)"
 `;
@@ -564,7 +564,7 @@ async function refreshStatus() {
          fields.SOCKET === "ok" ? "ok" : "err");
 
   setRow("Mount",
-         (fields.MOUNT_COUNT || "0") !== "0" ? "/zed bound" : "not bound",
+         (fields.MOUNT_COUNT || "0") !== "0" ? "app bind active" : "not bound",
          (fields.MOUNT_COUNT || "0") !== "0" ? "ok" : "warn");
 
   setRow("Chroot",

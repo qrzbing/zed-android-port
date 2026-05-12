@@ -154,4 +154,56 @@ chmod 0644 "$PR"
 chown 0:0 "$PR"
 echo "  .profile installed (prepends ~/.local/bin etc., merges .bashrc PATH)"
 
+# Android-alias symlink: /data/user/0/com.zdroid -> /data/data/com.zdroid.
+#
+# Android exposes the same app-private inode at TWO paths via a
+# system-managed symlink in host /data: /data/user/0/<pkg> resolves
+# to /data/data/<pkg>. Code on the host can hand out either form,
+# and `paths::custom_data_dir()` / Zed's spawn arg construction
+# uses whichever the kernel happens to return at any given call site.
+#
+# Inside the chroot rootfs, /data/user/0 doesn't exist by default —
+# Kali's `/data` is just an empty placeholder. zd-spawnd's symmetric
+# bind only mounts `/data/data/com.zdroid/files`. So a host path
+# starting `/data/user/0/com.zdroid/files/...` fails inside the chroot
+# unless we recreate the alias.
+#
+# Recreate it as a static symlink in the rootfs: `/data/user/0/com.zdroid
+# -> /data/data/com.zdroid`. After this, paths that arrive in either
+# form resolve to the same inode whether the resolver runs on host
+# bionic or inside the chroot. No path normalization needed at the
+# adapter or spawn layer.
+#
+# Idempotent IFF dest is nonexistent or the correct symlink. Gotcha:
+# `ln -sfn target dest` does NOT replace an existing DIRECTORY at
+# `dest`. The `-n` flag only prevents dereferencing when `dest` is a
+# symlink-to-dir; with `dest` an actual directory, ln drops the link
+# INSIDE it (`dest/<target-basename>`) one level too deep.
+#
+# Observed on v1.1.6 first-install: some earlier process created
+# `/data/user/0/com.zdroid` as a directory before this script ran, our
+# `ln -sfn` then created `/data/user/0/com.zdroid/com.zdroid` as a
+# nested symlink, and chroot spawns proceeded to populate
+# `/data/user/0/com.zdroid/files/.cache/...` as a real dir (shadow
+# state), masking the bind we actually wanted visible. Diagnostic:
+# `chdir(/data/user/0/com.zdroid/files/home/projects/test)` failed
+# inside the chroot because the path resolved into the nested dir, not
+# through the intended symlink.
+#
+# Defensive cleanup: if dest exists and isn't already the correct
+# symlink, nuke it before re-creating. Whatever's inside would be
+# garbage from this same misconfiguration we're fixing.
+mkdir -p "$CHROOT_ROOT/data/user/0"
+ALIAS_DEST="$CHROOT_ROOT/data/user/0/com.zdroid"
+ALIAS_TARGET="/data/data/com.zdroid"
+current_target="$(readlink "$ALIAS_DEST" 2>/dev/null || true)"
+if [ "$current_target" != "$ALIAS_TARGET" ]; then
+    if [ -e "$ALIAS_DEST" ] || [ -L "$ALIAS_DEST" ]; then
+        rm -rf "$ALIAS_DEST"
+        echo "  removed stale entry at $ALIAS_DEST (was non-symlink or wrong target)"
+    fi
+    ln -sfn "$ALIAS_TARGET" "$ALIAS_DEST"
+fi
+echo "  android-alias symlink ready (\$CHROOT/data/user/0/com.zdroid -> $ALIAS_TARGET)"
+
 echo "done"
