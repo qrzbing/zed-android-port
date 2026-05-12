@@ -65,24 +65,6 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Zed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Per-environment data root, only set when something at startup
-/// declares the active "environment" (e.g. the Zdroid Android port's
-/// chroot/bootstrap/external-Termux runtime adapter). When set, the
-/// env-aware path functions (languages_dir, extensions_dir,
-/// debug_adapters_dir, copilot_dir, default_prettier_dir,
-/// remote_servers_dir, devcontainer_dir, external_agents_dir,
-/// remote_extensions_dir, remote_extensions_uploads_dir) derive from
-/// it instead of `data_dir()`. Lets each environment own its own LSP /
-/// extension / debug-adapter installs so switching environments is a
-/// workspace switch, not a path-clobber. Env-agnostic state (settings,
-/// keymap, themes, sqlite DB) continues to live under `data_dir()` and
-/// is untouched by this override.
-///
-/// On platforms / contexts that don't set this, the env-aware paths
-/// fall back to `data_dir().join("…")` — i.e. the historical layout.
-/// Upstream Zed sees no behavior change.
-static ENVIRONMENT_ROOT: OnceLock<PathBuf> = OnceLock::new();
-
 /// Returns the relative path to the zed_server directory on the ssh host.
 pub fn remote_server_dir_relative() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
@@ -136,34 +118,6 @@ pub fn set_custom_data_dir(dir: &str) -> &'static PathBuf {
     })
 }
 
-/// Override the per-environment data root used by the env-aware path
-/// functions (languages, extensions, debug adapters, copilot, prettier,
-/// remote servers, devcontainer, external agents, remote extensions).
-///
-/// This is the seam the Zdroid Android port uses to give each runtime
-/// adapter (chroot / bootstrap / external Termux) its own isolated tree
-/// for downloaded LSPs / extensions / etc. Without this override, those
-/// paths derive from `data_dir()` exactly like upstream Zed.
-///
-/// MUST be called before any env-aware path function runs. The path is
-/// `create_dir_all`'d if missing; nothing is canonicalized (the caller
-/// is expected to pass an absolute path that already represents the
-/// correct host view — relevant for chrooted setups where the same
-/// bytes are visible at two different absolute paths from different
-/// namespaces).
-pub fn set_environment_root(dir: PathBuf) -> &'static PathBuf {
-    ENVIRONMENT_ROOT.get_or_init(|| {
-        std::fs::create_dir_all(&dir).expect("failed to create environment root directory");
-        dir
-    })
-}
-
-/// Returns the per-environment data root. Falls back to `data_dir()`
-/// when no override has been set, so historical Zed behavior is
-/// preserved for every consumer that hasn't opted in.
-pub fn environment_root() -> &'static PathBuf {
-    ENVIRONMENT_ROOT.get_or_init(|| data_dir().clone())
-}
 
 /// Returns the path to the configuration directory used by Zed.
 pub fn config_dir() -> &'static PathBuf {
@@ -240,6 +194,21 @@ pub fn state_dir() -> &'static PathBuf {
 pub fn temp_dir() -> &'static PathBuf {
     static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
     TEMP_DIR.get_or_init(|| {
+        // When a custom data dir is set (Zdroid's per-adapter root),
+        // co-locate temp inside it. Without this, scratch lives on a
+        // different mount than the destination dirs (languages/,
+        // extensions/, etc.) which causes rename(2) to fail with EXDEV
+        // when the destination is under a bind-mount boundary — Android
+        // FBE namespaces expose the same f2fs partition at two paths
+        // that the kernel treats as separate mounts. Keeping temp under
+        // the custom data dir ensures src + dst share a mount.
+        //
+        // For upstream Zed (no override), fall through to platform
+        // defaults — behavior is unchanged.
+        if let Some(custom_dir) = CUSTOM_DATA_DIR.get() {
+            return custom_dir.join("tmp");
+        }
+
         if cfg!(target_os = "macos") {
             return dirs::cache_dir()
                 .expect("failed to determine cachesDirectory directory")
@@ -368,7 +337,14 @@ pub fn debug_scenarios_file() -> &'static PathBuf {
 /// This is where installed extensions are stored.
 pub fn extensions_dir() -> &'static PathBuf {
     static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    EXTENSIONS_DIR.get_or_init(|| environment_root().join("extensions"))
+    // ENV-AGNOSTIC. Extensions hold themes, grammars, icon themes,
+    // language config, and WASM modules that run inside Zed's
+    // wasmtime — never spawned into the runtime adapter's environment.
+    // The LSP binaries an extension references get downloaded
+    // separately to `languages_dir()` which IS env-aware. Sharing
+    // extensions across adapters means a theme installed in
+    // bootstrap mode is visible in chroot mode and vice versa.
+    EXTENSIONS_DIR.get_or_init(|| data_dir().join("extensions"))
 }
 
 /// Returns the path to the extensions directory.
@@ -376,7 +352,8 @@ pub fn extensions_dir() -> &'static PathBuf {
 /// This is where installed extensions are stored on a remote.
 pub fn remote_extensions_dir() -> &'static PathBuf {
     static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    EXTENSIONS_DIR.get_or_init(|| environment_root().join("remote_extensions"))
+    // ENV-AGNOSTIC; see `extensions_dir()` for rationale.
+    EXTENSIONS_DIR.get_or_init(|| data_dir().join("remote_extensions"))
 }
 
 /// Returns the path to the extensions directory.
@@ -461,7 +438,7 @@ pub fn embeddings_dir() -> &'static PathBuf {
 /// This is where language servers are downloaded to for languages built-in to Zed.
 pub fn languages_dir() -> &'static PathBuf {
     static LANGUAGES_DIR: OnceLock<PathBuf> = OnceLock::new();
-    LANGUAGES_DIR.get_or_init(|| environment_root().join("languages"))
+    LANGUAGES_DIR.get_or_init(|| data_dir().join("languages"))
 }
 
 /// Returns the path to the debug adapters directory
@@ -469,7 +446,7 @@ pub fn languages_dir() -> &'static PathBuf {
 /// This is where debug adapters are downloaded to for DAPs that are built-in to Zed.
 pub fn debug_adapters_dir() -> &'static PathBuf {
     static DEBUG_ADAPTERS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    DEBUG_ADAPTERS_DIR.get_or_init(|| environment_root().join("debug_adapters"))
+    DEBUG_ADAPTERS_DIR.get_or_init(|| data_dir().join("debug_adapters"))
 }
 
 /// Returns the path to the external agents directory
@@ -477,31 +454,31 @@ pub fn debug_adapters_dir() -> &'static PathBuf {
 /// This is where agent servers are downloaded to
 pub fn external_agents_dir() -> &'static PathBuf {
     static EXTERNAL_AGENTS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    EXTERNAL_AGENTS_DIR.get_or_init(|| environment_root().join("external_agents"))
+    EXTERNAL_AGENTS_DIR.get_or_init(|| data_dir().join("external_agents"))
 }
 
 /// Returns the path to the Copilot directory.
 pub fn copilot_dir() -> &'static PathBuf {
     static COPILOT_DIR: OnceLock<PathBuf> = OnceLock::new();
-    COPILOT_DIR.get_or_init(|| environment_root().join("copilot"))
+    COPILOT_DIR.get_or_init(|| data_dir().join("copilot"))
 }
 
 /// Returns the path to the default Prettier directory.
 pub fn default_prettier_dir() -> &'static PathBuf {
     static DEFAULT_PRETTIER_DIR: OnceLock<PathBuf> = OnceLock::new();
-    DEFAULT_PRETTIER_DIR.get_or_init(|| environment_root().join("prettier"))
+    DEFAULT_PRETTIER_DIR.get_or_init(|| data_dir().join("prettier"))
 }
 
 /// Returns the path to the remote server binaries directory.
 pub fn remote_servers_dir() -> &'static PathBuf {
     static REMOTE_SERVERS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    REMOTE_SERVERS_DIR.get_or_init(|| environment_root().join("remote_servers"))
+    REMOTE_SERVERS_DIR.get_or_init(|| data_dir().join("remote_servers"))
 }
 
 /// Returns the path to the directory where the devcontainer CLI is installed.
 pub fn devcontainer_dir() -> &'static PathBuf {
     static DEVCONTAINER_DIR: OnceLock<PathBuf> = OnceLock::new();
-    DEVCONTAINER_DIR.get_or_init(|| environment_root().join("devcontainer"))
+    DEVCONTAINER_DIR.get_or_init(|| data_dir().join("devcontainer"))
 }
 
 /// Returns the relative path to a `.zed` folder within a project.

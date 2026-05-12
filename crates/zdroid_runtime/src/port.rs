@@ -105,34 +105,34 @@ pub trait RuntimeProvider: Send + Sync {
         true
     }
 
-    /// Host-side path where this adapter's env-aware Zed state lives:
-    /// LSP installs, extensions, debug adapters, Copilot binary,
-    /// Prettier, etc. Anything Zed downloads/builds at runtime that
-    /// then gets *executed* in the spawn-target's environment.
+    /// Host-side path that becomes Zed's entire data root when this
+    /// adapter is active. The Zdroid Android port calls
+    /// `paths::set_custom_data_dir(provider.environment_root())` at
+    /// boot; every `paths::*` accessor (config, db, logs, languages,
+    /// extensions, themes, …) then derives from here.
+    ///
+    /// In other words: switching the active adapter is a full Zed
+    /// workspace switch. Settings, keymap, themes, sqlite database,
+    /// extension installs, LSP downloads, project history — all of it
+    /// is per-adapter. Nothing leaks across. This avoids the cognitive
+    /// mess of "X lives shared, Y lives per-env"; the answer is always
+    /// "whatever the active adapter says".
     ///
     /// Two invariants the returned path MUST satisfy:
     ///
-    ///   1. **Reachable from the Zed app process.** Zed itself writes
-    ///      and reads here directly (`fs::write`, `npm install`'s
-    ///      output, etc.), so it has to be a normal host filesystem
-    ///      path.
+    ///   1. **Reachable from the Zed app process.** Zed reads/writes
+    ///      its entire state under this path (config, db, logs, …) so
+    ///      it has to be a normal host filesystem path.
     ///
     ///   2. **Reachable from anything `spawn()` lands.** A chrooted
     ///      `node` exec'd by [`Self::spawn`] must be able to `require`
     ///      files under this dir. For the chroot adapter that means
     ///      the path lives inside the bind-mount source so the same
-    ///      bytes are visible at a different absolute path inside the
-    ///      chroot; for bootstrap, the chroot dimension doesn't apply
-    ///      so any path under `$PREFIX` works.
-    ///
-    /// Env-agnostic Zed state (settings, keymap, themes, sqlite db,
-    /// snippets, prompts) is NOT under here — that lives at
-    /// `data_dir()` and stays put across adapter switches. Only the
-    /// 9 env-aware paths in `crates/paths/src/paths.rs` derive from
-    /// this root: `languages_dir`, `extensions_dir`,
-    /// `debug_adapters_dir`, `copilot_dir`, `default_prettier_dir`,
-    /// `remote_servers_dir`, `devcontainer_dir`,
-    /// `external_agents_dir`, `remote_extensions_dir`.
+    ///      bytes are visible at a (different) absolute path inside
+    ///      the chroot; the adapter's argv translation rewrites host
+    ///      paths to chroot-target paths before forwarding to the
+    ///      daemon. For bootstrap there's no namespace crossing so
+    ///      any path under `$PREFIX` works.
     ///
     /// Adapter switching is a workspace switch: each adapter's
     /// `environment_root` is a separate physical location, populated

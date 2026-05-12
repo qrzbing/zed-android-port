@@ -391,31 +391,42 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // config_dir was initialized". Guard with a static flag.
     static PATHS_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = PATHS_INITIALIZED.get_or_init(|| {
-        paths::set_custom_data_dir(&data_path.to_string_lossy());
-
-        // Override the env-aware path root so the active runtime adapter
-        // (chroot / bootstrap / external Termux) owns its own LSP /
-        // extension / debug-adapter tree. Without this, every adapter
-        // would share `$DATA/languages/` etc. and Zed would try to read
-        // a host-installed LSP from inside the chroot via a host path
-        // that doesn't exist there (`MODULE_NOT_FOUND`). When no adapter
-        // is configured (first launch, picker hasn't been opened), we
-        // skip the override and let env-aware paths fall back to
-        // `data_dir()` — preserves historical behavior.
-        if let Some(provider) = build_active_provider(data_path) {
+        // Each runtime adapter (chroot / bootstrap / external Termux)
+        // gets a FULLY ISOLATED Zed install: its own config, keymap,
+        // themes, sqlite db, language servers, extensions, history,
+        // logs — everything. Switching adapters via the runtime picker
+        // is a workspace switch the way booting from a different SSD
+        // is a workspace switch: nothing bleeds across.
+        //
+        // We do this by setting `paths::set_custom_data_dir` to the
+        // active adapter's `environment_root` instead of the generic
+        // app data dir. Every `paths::*` function — `config_dir`,
+        // `database_dir`, `logs_dir`, `languages_dir`,
+        // `extensions_dir`, the lot — derives from this single root.
+        // Zed never has to know about adapters.
+        //
+        // First launch (no runtime.toml yet) falls back to the plain
+        // app data dir so the runtime picker UI itself can render and
+        // the user can pick an adapter. After they pick + reboot, this
+        // branch goes through `build_active_provider` and lands them
+        // in the per-adapter root.
+        let root = if let Some(provider) = build_active_provider(data_path) {
             let env_root = provider.environment_root();
             log::info!(
-                "zed_android: environment_root for {:?} -> {}",
+                "zed_android: data_dir for {:?} adapter -> {}",
                 provider.id(),
-                env_root.display()
+                env_root.display(),
             );
-            paths::set_environment_root(env_root);
+            env_root.to_string_lossy().into_owned()
         } else {
             log::info!(
-                "zed_android: no runtime.toml or unresolved adapter; \
-                 env-aware paths fall back to data_dir"
+                "zed_android: no runtime.toml; using bare app data_dir {} \
+                 (the runtime picker will set up per-adapter roots after first selection)",
+                data_path.display(),
             );
-        }
+            data_path.to_string_lossy().into_owned()
+        };
+        paths::set_custom_data_dir(&root);
     });
     info!("zed_android: paths data_dir set");
 

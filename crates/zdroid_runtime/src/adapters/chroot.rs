@@ -516,23 +516,29 @@ impl RuntimeProvider for ChrootAdapter {
     }
 
     fn environment_root(&self) -> std::path::PathBuf {
-        // Host-side path. Lives inside the bind-mount source so the same
-        // bytes are reachable from inside the chroot at
-        // <home_bind>/.zed-env/chroot (e.g. `/zed/.zed-env/chroot`).
+        // Host-side path that becomes Zed's ENTIRE data root when this
+        // adapter is active (config, db, logs, extensions, languages,
+        // themes — everything). Two requirements:
         //
-        // Why a per-adapter subdir under `.zed-env/` rather than just
-        // dropping LSPs into $HOME directly: the user's home dir is theirs,
-        // not Zdroid's. Polluting it with `languages/`, `extensions/`,
-        // `debug_adapters/` etc. tree-roots would be hostile. The
-        // `.zed-env/<adapter>/` prefix scopes everything Zdroid manages
-        // and namespaces it per adapter so bootstrap-installed LSPs and
-        // chroot-installed LSPs never collide on the same path.
+        //   1. Must live inside the bind-mount source so the same bytes
+        //      are reachable inside the chroot. The daemon binds
+        //      `/data/data/com.zdroid/files/home` onto `/zed`, so a
+        //      file at `<this>/extensions/foo` on host is visible at
+        //      `/zed/.zed-env/chroot/extensions/foo` inside the chroot.
+        //      The adapter's argv-translation rewrites host paths in
+        //      spawn arguments to their chroot-target equivalents so
+        //      LSPs and other tools resolve cleanly.
         //
-        // Hardcoded to `/data/data/com.zdroid/files/home` rather than read
-        // from ChrootConfig because the bind-mount source is itself
-        // hardcoded in zd-spawnd.c. The two MUST agree — if you change
-        // one, change both. Future: thread through config so both ends
-        // can be configured by the user.
+        //   2. Must be a per-adapter subdir, not just `$HOME` itself.
+        //      The user's home dir is theirs, not Zdroid's; we
+        //      shouldn't drop `languages/`, `extensions/`, `db/` etc.
+        //      tree-roots at the top level of their home.
+        //
+        // Hardcoded to `/data/data/com.zdroid/files/home` rather than
+        // reading ChrootConfig.home_bind because the bind-mount source
+        // is itself hardcoded in zd-spawnd.c. The two MUST agree — if
+        // you change one, change both. Future: thread through config
+        // so both ends can be configured by the user.
         std::path::PathBuf::from(
             "/data/data/com.zdroid/files/home/.zed-env/chroot",
         )

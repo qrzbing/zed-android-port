@@ -260,12 +260,17 @@ impl RuntimeProvider for BootstrapAdapter {
     }
 
     fn environment_root(&self) -> std::path::PathBuf {
-        // Bootstrap has no namespace crossing: Zed app and the spawned
-        // children share the same filesystem view, so any path under
-        // $PREFIX works. `.zed-env/` keeps Zdroid-managed state out of
-        // the user's package tree (`bin/`, `lib/`, etc.) so accidentally
-        // running `apt clean` or `pkg install` doesn't collide with our
-        // installed LSPs.
-        self.config.prefix.join(".zed-env")
+        // Bootstrap mode's Zed root is the app data dir Zed already
+        // uses — `<app>/files/`. `config.prefix` is `<app>/files/usr/`
+        // (the Termux-flavored prefix), so `.parent()` walks up to
+        // `<app>/files/`. That keeps existing bootstrap users' state
+        // (settings, db, themes, installed extensions, LSP downloads)
+        // exactly where they were before per-adapter isolation, so
+        // upgrading the APK doesn't orphan their workspace.
+        self.config
+            .prefix
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.config.prefix.clone())
     }
 }
