@@ -391,12 +391,54 @@ impl WorktreeStore {
         cx: &App,
     ) -> Option<(Entity<Worktree>, Arc<RelPath>)> {
         let abs_path = SanitizedPath::new(abs_path.as_ref());
+
+        // File-identity-aware lookup. The input path and the worktree's
+        // stored `abs_path` may name the same on-disk inode via DIFFERENT
+        // byte sequences. Common cases:
+        //
+        //   - Android's `/data/user/0/<pkg>` and `/data/data/<pkg>` are
+        //     two independent mount-bind entries onto the same inode.
+        //     Neither is a symlink at the syscall level (`readlink`
+        //     returns the path unchanged), so `fs::canonicalize` is a
+        //     no-op. But `stat` returns the same `(dev, ino)` for both.
+        //   - macOS firmlinks (`/var` ↔ `/private/var`, `/tmp` ↔
+        //     `/private/tmp`) — kernel-managed equivalence with no
+        //     symlink visibility.
+        //   - User-created symlinks (`~/projects/foo -> /elsewhere/foo`)
+        //     where canonicalize WOULD work, but inode comparison also
+        //     covers them.
+        //
+        // First try the literal string `strip_prefix` (fast path; one
+        // memcmp, no syscalls). On miss, fall back to inode-walk: stat
+        // the worktree root once for its `(dev, ino)`, walk the input
+        // path's ancestors upward statting each, return the suffix when
+        // an ancestor's `(dev, ino)` matches. O(depth) syscalls per
+        // worktree on miss, zero on hit.
         for tree in self.worktrees() {
             let path_style = tree.read(cx).path_style();
+            let tree_abs = tree.read(cx).abs_path();
             if let Some(relative_path) =
-                path_style.strip_prefix(abs_path.as_ref(), tree.read(cx).abs_path().as_ref())
+                path_style.strip_prefix(abs_path.as_ref(), tree_abs.as_ref())
             {
                 return Some((tree.clone(), relative_path.into_arc()));
+            }
+            if let Some(suffix) = util::path_equivalence::strip_prefix_by_identity(
+                abs_path.as_ref(),
+                tree_abs.as_ref(),
+            ) {
+                let rel = if suffix.is_empty() {
+                    RelPath::empty().into_arc()
+                } else {
+                    let mut rel = std::path::PathBuf::new();
+                    for component in &suffix {
+                        rel.push(component);
+                    }
+                    match RelPath::new(rel.as_path(), path_style) {
+                        Ok(cow) => cow.into_arc(),
+                        Err(_) => continue,
+                    }
+                };
+                return Some((tree.clone(), rel));
             }
         }
         None
@@ -1396,3 +1438,4 @@ impl WorktreeHandle {
         }
     }
 }
+

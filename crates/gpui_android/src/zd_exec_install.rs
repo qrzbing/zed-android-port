@@ -128,6 +128,24 @@ pub fn ensure_runtime_symlinks(prefix: &Path, binaries: &[String]) -> Result<()>
         .with_context(|| format!("create_dir_all {}", runtime_dir.display()))?;
     let target = Path::new("../bin/zd-exec");
 
+    // Always include `zd-exec` itself in the symlink set so kernel PATH
+    // lookup of the bare name `zd-exec` resolves to this dir first.
+    // The env-root bridge in `util::command::Command::new` invokes
+    // `Command::new("zd-exec").arg(<abs_path>)` for absolute paths
+    // under env_root; without this symlink that lookup would either
+    // miss entirely or fall through to a wrong binary on PATH.
+    //
+    // `zd-exec` doesn't live inside any adapter's rootfs (it's our
+    // own binary at `$PREFIX/bin/zd-exec`), so adapter `list_binaries`
+    // never returns it. We inject it here so the invariant lives next
+    // to the symlink-creation logic instead of being duplicated by
+    // every caller.
+    let mut binaries: Vec<String> = binaries.to_vec();
+    if !binaries.iter().any(|n| n == "zd-exec") {
+        binaries.push("zd-exec".to_string());
+    }
+    let binaries = &binaries;
+
     let wanted: std::collections::HashSet<&str> =
         binaries.iter().map(String::as_str).collect();
 

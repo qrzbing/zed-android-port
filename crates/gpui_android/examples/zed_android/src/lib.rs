@@ -465,6 +465,17 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 provider.id(),
                 env_root.display(),
             );
+            // Register the env_root with util::command so absolute-path
+            // spawns under it get rewritten to route through `zd-exec`.
+            // Without this, Zed exec's binaries that live inside the
+            // adapter's filesystem (e.g. extension-shipped glibc proxies
+            // like `java-lsp-proxy`) directly on bionic and fails with
+            // ENOENT — the binary's PT_INTERP doesn't exist on host.
+            // See `util::command::env_root_program_path` for the full
+            // rationale; tl;dr the bridge is what makes "the env is
+            // truly isolated" actually true for absolute-path spawns,
+            // not just PATH-resolved ones.
+            util::command::register_environment_root(env_root.clone());
             env_root.to_string_lossy().into_owned()
         } else {
             log::info!(

@@ -64,7 +64,7 @@ mod android_impl {
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::net::UnixStream;
     use std::path::Path;
 
@@ -86,48 +86,59 @@ mod android_impl {
         config: &ChrootConfig,
         req: &SpawnRequest,
     ) -> Result<()> {
-        // Translate cwd from host space to chroot space. The editor
-        // reports cwd in the Android sandbox (/data/data/com.zdroid/
-        // files/...), but inside the chroot that path doesn't exist.
-        // home_bind is where Zdroid's home lands; map it. Done before
-        // sanitize_env so we can also export it as $INIT_PWD, which
-        // NetHunter's /etc/profile.d/init-pwd.sh hooks to cd into.
-        let cwd_translated = translate_cwd_for_chroot(config, req.cwd.as_deref());
-
-        // Sanitize env at the chroot boundary. Zed runs with Android-
-        // sandbox-specific env (PATH=$PREFIX/zd-runtime:..., HOME=
-        // /data/data/..., TERMUX__*, PREFIX, etc.) — none of those
-        // paths exist inside the chroot, so passing them through means
-        // PATH lookup for `bash` finds nothing, the child silently
-        // exec-fails with 127, and the user sees a dead PTY.
+        // Symmetric bind (zd-spawnd v1.1.6+): host's
+        // `/data/data/com.zdroid/files` is bound onto the same path
+        // inside the chroot, and `/data/user/0/com.zdroid ->
+        // /data/data/com.zdroid` is a symlink in the rootfs. Any
+        // host path Zed produces resolves to the same inode whether
+        // the resolver runs on bionic or inside the chroot. No
+        // path translation needed for cwd, argv, or env values.
         //
-        // Replace with a chroot-native baseline: standard kali PATH,
-        // HOME pointing at the bind-mounted home, common display vars
-        // preserved from the caller.
-        let env = sanitize_env_for_chroot(config, &req.env, cwd_translated.as_deref());
+        // Sanitize env at the boundary anyway: Zed's process env
+        // carries bootstrap-flavored bytes (`PREFIX`, `TERMUX__*`,
+        // `PATH=…/usr/zd-runtime:…`) that aren't paths-that-don't-
+        // exist anymore (they DO exist under the symmetric bind), but
+        // they're still wrong-for-this-context — the chrooted child
+        // wants kali's `PATH=/usr/bin:/usr/sbin:...`, not Zdroid's
+        // bootstrap PATH. sanitize_env_for_chroot strips the
+        // bootstrap-shaped env and substitutes chroot-native defaults
+        // + INIT_PWD for the NetHunter profile.d hook.
+        let env = sanitize_env_for_chroot(config, &req.env, req.cwd.as_deref());
 
-        // Translate the program name AND every argv entry. Zed launches
-        // LSPs / DAPs / formatters with absolute paths under env-aware
-        // dirs (languages_dir, extensions_dir, …) which live under the
-        // bind-mount source; without translation those bytes name a
-        // path that doesn't exist inside the chroot, and the chrooted
-        // child fails with `MODULE_NOT_FOUND` / ENOENT. Programs are
-        // commonly short names like `node` that don't match any
-        // APP_HOMES prefix and pass through unchanged; the helper is
-        // a no-op in that case.
-        let program_translated = {
-            let prog_os = OsString::from(&req.program);
-            let translated = translate_arg_for_chroot(config, &prog_os);
-            translated.into_string().unwrap_or(req.program.clone())
-        };
+        // zd-runtime paths are the ONE translation that survives the
+        // v1.1.6 symmetric bind. zd-runtime/<name> symlinks at
+        // `$PREFIX/usr/zd-runtime/` point at host's `../bin/zd-exec`
+        // — a bionic-linked binary. The bind mount makes the SYMLINK
+        // resolvable inside the chroot, but the dynamic loader the
+        // symlink target needs (`/system/bin/linker64`) doesn't
+        // exist inside the kali rootfs (kali has glibc's
+        // `/lib/ld-linux-aarch64.so.1`). So executing the resolved
+        // path inside the chroot fails with ENOENT from the loader
+        // even though every byte of the path is valid.
+        //
+        // Fix: strip the zd-runtime prefix to the bare program name
+        // so the chroot's own PATH lookup resolves `<name>` against
+        // its native `/usr/bin/<name>`. The host-bridge concept stops
+        // at the chroot boundary; inside, it's just `java` not
+        // `…/usr/zd-runtime/java`.
+        let program_translated = strip_zd_runtime(&req.program);
         let args_translated: Vec<OsString> = req
             .args
             .iter()
-            .map(|a| translate_arg_for_chroot(config, a))
+            .map(|a| {
+                let s = a.to_string_lossy();
+                let stripped = strip_zd_runtime(&s);
+                if stripped == s {
+                    a.clone()
+                } else {
+                    OsString::from(stripped)
+                }
+            })
             .collect();
 
         let prog_bytes = program_translated.as_bytes();
-        let cwd_bytes: Vec<u8> = cwd_translated
+        let cwd_bytes: Vec<u8> = req
+            .cwd
             .as_deref()
             .map(|p| p.as_os_str().as_bytes().to_vec())
             .unwrap_or_default();
@@ -282,91 +293,46 @@ mod android_impl {
         env
     }
 
-    /// Host-side path prefixes that map onto `config.home_bind` inside
-    /// the chroot. Listed longest-first so multi-segment matches win
-    /// (e.g. `/data/data/com.zdroid/files/home/foo` matches the
-    /// `…/files/home` entry, not the shorter `…/files`).
-    ///
-    /// Both `/data/data/<pkg>` and `/data/user/0/<pkg>` are listed
-    /// because Android exposes the same inode at both paths (the
-    /// kernel resolves the symlink on its own, but our byte-level
-    /// string compare doesn't).
-    const APP_HOMES: &[&str] = &[
-        "/data/data/com.zdroid/files/home",
-        "/data/user/0/com.zdroid/files/home",
-        "/data/data/com.zdroid/files",
-        "/data/user/0/com.zdroid/files",
+    // Path-translation helpers (translate_arg_for_chroot,
+    // translate_cwd_for_chroot, APP_HOMES) were deleted in zd-spawnd
+    // v1.1.6. The symmetric bind-mount (host's `/data/data/com.zdroid/
+    // files` onto the same path inside the chroot, plus the
+    // `/data/user/0/com.zdroid -> /data/data/com.zdroid` alias
+    // symlink in the rootfs) makes host paths resolve identically
+    // inside the chroot, so no translation is needed for that class.
+    //
+    // ONE translation survives: zd-runtime paths. zd-runtime/<name>
+    // symlinks at `$PREFIX/usr/zd-runtime/` point at host's bionic
+    // `../bin/zd-exec` binary. The bind mount makes the symlink
+    // resolvable inside the chroot, but the loader the binary needs
+    // (`/system/bin/linker64`) doesn't exist inside the kali rootfs
+    // — kali has glibc's `/lib/ld-linux-aarch64.so.1`. So executing
+    // the path inside the chroot fails with ENOENT from the loader.
+    // We strip zd-runtime paths to bare program names so the chroot's
+    // own PATH lookup resolves them against `/usr/bin/<name>`.
+
+    /// Host-side zd-runtime prefixes that need stripping at the chroot
+    /// boundary. Listed in both `/data/data/<pkg>` and `/data/user/0/<pkg>`
+    /// forms because either can appear in resolver output.
+    const ZD_RUNTIME_DIRS: &[&str] = &[
+        "/data/data/com.zdroid/files/usr/zd-runtime/",
+        "/data/user/0/com.zdroid/files/usr/zd-runtime/",
     ];
 
-    /// Translate a host-space cwd to chroot-space. The chroot's
-    /// `home_bind` directory bind-mounts the editor's home, so any path
-    /// rooted in the host's app sandbox lands at `home_bind/<rel>`
-    /// inside the chroot. Other paths fall back to home_bind so the
-    /// shell starts somewhere sensible (vs `/` which is bare).
-    pub(super) fn translate_cwd_for_chroot(
-        config: &ChrootConfig,
-        host_cwd: Option<&Path>,
-    ) -> Option<std::path::PathBuf> {
-        let host_cwd = host_cwd?;
-
-        for prefix in APP_HOMES {
-            if let Ok(rel) = host_cwd.strip_prefix(prefix) {
-                let mut translated = config.home_bind.clone();
-                if !rel.as_os_str().is_empty() {
-                    translated.push(rel);
+    /// If `s` is a zd-runtime path (starts with one of [`ZD_RUNTIME_DIRS`]
+    /// and contains no `/` after the prefix), return the bare program
+    /// name. Otherwise return `s` unchanged. See module-level comment
+    /// above for why this rewrite is necessary even after the symmetric
+    /// bind mount.
+    pub(super) fn strip_zd_runtime(s: &str) -> String {
+        for prefix in ZD_RUNTIME_DIRS {
+            if let Some(rest) = s.strip_prefix(prefix) {
+                if !rest.contains('/') {
+                    return rest.to_string();
                 }
-                return Some(translated);
             }
         }
-
-        // No match — likely a path the user opened outside the home.
-        // Fall back to home_bind so the shell starts somewhere readable.
-        Some(config.home_bind.clone())
-    }
-
-    /// Rewrite a single argv/env byte string so any host-side absolute
-    /// path that starts at one of [`APP_HOMES`] gets the prefix
-    /// replaced with `config.home_bind`. Used to translate paths Zed
-    /// embeds in its spawn arguments (e.g. `node /data/data/com.zdroid/
-    /// files/home/.zed-env/chroot/languages/<lsp>/.../cli.js`) so the
-    /// same bytes name a valid path inside the chroot.
-    ///
-    /// Conservative on purpose:
-    ///
-    ///   - Only matches when the bytes START with a prefix (so
-    ///     positional path args translate; mid-string occurrences in
-    ///     log messages / labels / glob patterns are left alone).
-    ///   - Returns the input unchanged when no prefix matches. Common
-    ///     for short args like `--verbose` or env-var-like tokens.
-    ///   - Operates on raw bytes via OsStr/OsString to preserve any
-    ///     non-UTF-8 path components (Android paths are usually UTF-8
-    ///     but we don't assume).
-    pub(super) fn translate_arg_for_chroot(
-        config: &ChrootConfig,
-        arg: &OsString,
-    ) -> OsString {
-        let bytes = arg.as_bytes();
-        for prefix in APP_HOMES {
-            let prefix_bytes = prefix.as_bytes();
-            // Must match at start AND the next byte (if any) must be
-            // a path separator OR end-of-string. Otherwise `/data/data/
-            // com.zdroid/files/home2` would incorrectly match the
-            // `…/files/home` prefix.
-            if bytes.len() >= prefix_bytes.len()
-                && &bytes[..prefix_bytes.len()] == prefix_bytes
-                && bytes
-                    .get(prefix_bytes.len())
-                    .map_or(true, |b| *b == b'/')
-            {
-                let target = config.home_bind.as_os_str().as_bytes();
-                let suffix = &bytes[prefix_bytes.len()..];
-                let mut out = Vec::with_capacity(target.len() + suffix.len());
-                out.extend_from_slice(target);
-                out.extend_from_slice(suffix);
-                return OsString::from_vec(out);
-            }
-        }
-        arg.clone()
+        s.to_string()
     }
 
     /// Read the daemon's `response_spawned` (4 × u32). Returns the
@@ -534,11 +500,13 @@ impl RuntimeProvider for ChrootAdapter {
         //      shouldn't drop `languages/`, `extensions/`, `db/` etc.
         //      tree-roots at the top level of their home.
         //
-        // Hardcoded to `/data/data/com.zdroid/files/home` rather than
-        // reading ChrootConfig.home_bind because the bind-mount source
-        // is itself hardcoded in zd-spawnd.c. The two MUST agree — if
-        // you change one, change both. Future: thread through config
-        // so both ends can be configured by the user.
+        // Hardcoded to `/data/data/com.zdroid/files/home/.zed-env/
+        // chroot`. Lives under `/data/data/com.zdroid/files`, which
+        // zd-spawnd v1.1.6+ symmetrically bind-mounts onto the same
+        // path inside the chroot — so this exact byte string resolves
+        // to the same inode whether the resolver runs on host bionic
+        // or inside the chroot. No translation. Future: thread the
+        // path through config so the user can pick a non-default root.
         std::path::PathBuf::from(
             "/data/data/com.zdroid/files/home/.zed-env/chroot",
         )
