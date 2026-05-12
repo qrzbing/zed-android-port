@@ -348,6 +348,22 @@ fn android_main(app: AndroidApp) {
         );
     }
 
+    // Install zd-exec into $PREFIX/bin/ from the APK-bundled asset.
+    // Idempotent (skipped when on-disk byte length matches the
+    // asset's), so it runs every boot but is essentially free past
+    // the first launch. Without this, fresh installs land with no
+    // zd-exec and `terminal.shell` (which we set to
+    // `$PREFIX/bin/zd-exec` for chroot mode) fails with ENOENT.
+    let prefix = data_path.join("usr");
+    if let Err(err) =
+        gpui_android::zd_exec_install::ensure_installed(&app, &prefix)
+    {
+        log::warn!(
+            "zed_android: zd-exec install failed: {err:#}; \
+             chroot adapter's integrated terminal will fail to spawn"
+        );
+    }
+
     // Wire askpass to the standalone helper now that
     // apply_runtime_patches has placed it at $PREFIX/bin/zed-askpass-helper.
     // Must happen BEFORE any AskPassSession is created (Open Remote,

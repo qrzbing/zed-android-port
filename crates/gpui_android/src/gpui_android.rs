@@ -14,6 +14,7 @@ mod saf;
 pub mod storage;
 pub mod termux_bootstrap;
 mod window;
+pub mod zd_exec_install;
 
 pub use platform::AndroidPlatform;
 

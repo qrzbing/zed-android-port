@@ -15,5 +15,9 @@ android/app/signing.properties
 # build script and must match `BOOTSTRAP_VERSION` in
 # `crates/gpui_android/src/termux_bootstrap.rs`.
 android/app/src/main/assets/bootstrap-aarch64.zip
+# zd-exec is built by the `buildZdExec` Gradle task on each APK build
+# (cargo-ndk → target/aarch64-linux-android/release/zd-exec → here).
+# Binary build artifact; not committed.
+android/app/src/main/assets/zd-exec
 *.iml
 .DS_Store

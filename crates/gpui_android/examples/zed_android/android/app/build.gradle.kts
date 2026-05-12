@@ -71,6 +71,85 @@ tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn("downloadBootstrap")
 }
 
+// zd-exec bundling.
+//
+// `zd-exec` is the Rust spawn wrapper (in crates/zdroid_runtime/src/
+// bin/zd-exec.rs) the editor invokes as `terminal.shell` for chroot
+// mode, and as the symlink target for `$PREFIX/zd-runtime/<name>`
+// in chroot+other modes. It MUST be in the APK so fresh installs
+// have it. Without bundling, end users hit
+// `failed to spawn $PREFIX/bin/zd-exec — no such file or directory`
+// the first time they open the integrated terminal in chroot mode.
+//
+// Build flow:
+//   1. `buildZdExec` runs `cargo ndk … build --release -p
+//      zdroid_runtime --bin zd-exec` from the workspace root, with
+//      $ANDROID_NDK_HOME pointed at the same NDK the lib build uses.
+//   2. The resulting ELF at
+//      `target/aarch64-linux-android/release/zd-exec` is copied to
+//      `app/src/main/assets/zd-exec`.
+//   3. `preBuild` depends on it, so gradle picks the asset up during
+//      `mergeAssets` before APK packaging.
+//
+// Rust-side counterpart: `gpui_android::zd_exec_install::ensure_installed`
+// reads this asset at boot and extracts to `$PREFIX/bin/zd-exec` with
+// 0755 perms when missing or out of date.
+val workspaceRoot = file("../../../../../..").canonicalFile
+val zdExecBin = file("${workspaceRoot}/target/aarch64-linux-android/release/zd-exec")
+val zdExecAsset = file("src/main/assets/zd-exec")
+val zdExecSrc = fileTree("${workspaceRoot}/crates/zdroid_runtime/src") {
+    include("**/*.rs")
+}
+
+tasks.register<Exec>("buildZdExec") {
+    description = "Build zd-exec via cargo-ndk and stage into assets/."
+    group = "build setup"
+
+    workingDir(workspaceRoot)
+    commandLine(
+        "cargo",
+        "ndk",
+        "-t",
+        "arm64-v8a",
+        "-P",
+        "26",
+        "build",
+        "--release",
+        "-p",
+        "zdroid_runtime",
+        "--bin",
+        "zd-exec",
+    )
+
+    // Honor whatever the developer's `cargo ndk` lib build uses.
+    // ANDROID_NDK_HOME has to be the same NDK or the prebuilts mismatch.
+    providers.environmentVariable("ANDROID_NDK_HOME").orNull?.let { ndk ->
+        environment("ANDROID_NDK_HOME", ndk)
+    }
+
+    inputs.files(zdExecSrc)
+    inputs.file("${workspaceRoot}/crates/zdroid_runtime/Cargo.toml")
+    outputs.file(zdExecBin)
+}
+
+tasks.register<Copy>("stageZdExecAsset") {
+    description = "Copy the freshly-built zd-exec into assets/ for APK packaging."
+    group = "build setup"
+
+    dependsOn("buildZdExec")
+    from(zdExecBin)
+    into(zdExecAsset.parentFile)
+    rename { zdExecAsset.name }
+    // Don't bother re-running on every gradle invocation when the
+    // source binary hasn't changed.
+    inputs.file(zdExecBin)
+    outputs.file(zdExecAsset)
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn("stageZdExecAsset")
+}
+
 android {
     namespace = "com.zdroid"
     compileSdk = 35
