@@ -337,13 +337,6 @@ pub fn debug_scenarios_file() -> &'static PathBuf {
 /// This is where installed extensions are stored.
 pub fn extensions_dir() -> &'static PathBuf {
     static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    // ENV-AGNOSTIC. Extensions hold themes, grammars, icon themes,
-    // language config, and WASM modules that run inside Zed's
-    // wasmtime — never spawned into the runtime adapter's environment.
-    // The LSP binaries an extension references get downloaded
-    // separately to `languages_dir()` which IS env-aware. Sharing
-    // extensions across adapters means a theme installed in
-    // bootstrap mode is visible in chroot mode and vice versa.
     EXTENSIONS_DIR.get_or_init(|| data_dir().join("extensions"))
 }
 
@@ -352,7 +345,6 @@ pub fn extensions_dir() -> &'static PathBuf {
 /// This is where installed extensions are stored on a remote.
 pub fn remote_extensions_dir() -> &'static PathBuf {
     static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    // ENV-AGNOSTIC; see `extensions_dir()` for rationale.
     EXTENSIONS_DIR.get_or_init(|| data_dir().join("remote_extensions"))
 }
 
