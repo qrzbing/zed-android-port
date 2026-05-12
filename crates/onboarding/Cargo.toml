@@ -42,5 +42,12 @@ workspace.workspace = true
 zed_actions.workspace = true
 zlog.workspace = true
 
+# Android-only: lets the basics_page render the Zdroid runtime adapter
+# picker inline (as a section alongside Theme / Base Keymap) instead of
+# requiring an out-of-band modal. zdroid_runtime gives us RuntimeId +
+# RuntimeFile for reading/writing the active-adapter selection.
+[target.'cfg(target_os = "android")'.dependencies]
+zdroid_runtime = { path = "../zdroid_runtime" }
+
 [dev-dependencies]
 db = {workspace = true, features = ["test-support"]}

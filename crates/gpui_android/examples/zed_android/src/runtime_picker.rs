@@ -52,7 +52,16 @@ actions!(
 
 /// Register the action + workspace hook. Called from `lib.rs::android_main`
 /// during workspace init. Once registered, command-palette → "zdroid:
-/// pick runtime" toggles the modal.
+/// pick runtime" toggles the modal, and the Settings page's
+/// "Android Runtime" entry can dispatch the same action.
+///
+/// First-run discoverability is handled by the inline runtime-picker
+/// section rendered in the onboarding `basics_page` (see
+/// `crates/onboarding/src/basics_page.rs::render_android_runtime_section`).
+/// Auto-popping the modal over the onboarding screen is bad UX — the
+/// user came to the onboarding page expecting an inline form, not a
+/// blocking overlay. The inline section lets them pick in-place
+/// alongside Theme / Base Keymap.
 pub fn register(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {

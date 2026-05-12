@@ -1491,9 +1491,46 @@ impl SettingsWindow {
         let search_bar = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text("Search settings…", window, cx);
+            log::info!(
+                "settings_ui::search_bar: editor created (entity_id={:?}, focus_handle={:?})",
+                cx.entity_id(),
+                editor.focus_handle(cx).clone()
+            );
             editor
         });
-        cx.subscribe(&search_bar, |this, _, event: &EditorEvent, cx| {
+        cx.subscribe(&search_bar, |this, search_bar, event: &EditorEvent, cx| {
+            // Bisect-the-input-pipeline probe (settings search isn't reacting
+            // to typing on Android). Logs every event the search bar emits,
+            // not just `Edited` — distinguishes "events arrive, just not
+            // Edited" (e.g. focus came but typing didn't register) from
+            // "no events at all" (focus/IME never landed here).
+            let kind = match event {
+                EditorEvent::Edited { .. } => "Edited",
+                EditorEvent::BufferEdited => "BufferEdited",
+                EditorEvent::SelectionsChanged { .. } => "SelectionsChanged",
+                EditorEvent::Focused => "Focused",
+                EditorEvent::Blurred => "Blurred",
+                EditorEvent::InputHandled { text, .. } => {
+                    log::info!(
+                        "settings_ui::search_bar: InputHandled text={:?}",
+                        text
+                    );
+                    "InputHandled"
+                }
+                EditorEvent::InputIgnored { text } => {
+                    log::info!(
+                        "settings_ui::search_bar: InputIgnored text={:?}",
+                        text
+                    );
+                    "InputIgnored"
+                }
+                _ => "<other>",
+            };
+            log::info!(
+                "settings_ui::search_bar: event {} (text_len={})",
+                kind,
+                search_bar.read(cx).text(cx).len()
+            );
             let EditorEvent::Edited { transaction_id: _ } = event else {
                 return;
             };
@@ -1502,6 +1539,10 @@ impl SettingsWindow {
                 this.opening_link = false;
                 return;
             }
+            log::info!(
+                "settings_ui::search_bar: dispatching update_matches (query={:?})",
+                search_bar.read(cx).text(cx)
+            );
             this.update_matches(cx);
         })
         .detach();
@@ -2575,8 +2616,17 @@ impl SettingsWindow {
     //     }
     // }
 
-    fn render_search(&self, _window: &mut Window, cx: &mut App) -> Div {
+    fn render_search(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Tap-to-focus the search Editor. Desktop relies on the
+        // `FocusSearch` keybinding (cmd-F / ctrl-F) to focus the bar,
+        // but mobile/touch platforms (Android) have no keyboard
+        // shortcut, and the Editor's outer wrapper doesn't auto-focus
+        // on its own bounds being clicked. Without this, tapping the
+        // search bar on Android does nothing: focus never lands on the
+        // editor, the soft keyboard never opens, no input events fire.
+        let search_focus = self.search_bar.focus_handle(cx);
         h_flex()
+            .id("settings-search-bar")
             .py_1()
             .px_1p5()
             .mb_3()
@@ -2585,6 +2635,9 @@ impl SettingsWindow {
             .bg(cx.theme().colors().editor_background)
             .border_1()
             .border_color(cx.theme().colors().border)
+            .on_click(move |_, window, cx| {
+                search_focus.focus(window, cx);
+            })
             .child(Icon::new(IconName::MagnifyingGlass).color(Color::Muted))
             .child(self.search_bar.clone())
     }

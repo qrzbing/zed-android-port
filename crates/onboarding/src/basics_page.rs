@@ -706,7 +706,18 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .id("basics-page")
         .gap_6()
         .child(render_theme_section(&mut tab_index, cx))
-        .child(render_base_keymap_section(&mut tab_index, cx))
+        .child(render_base_keymap_section(&mut tab_index, cx));
+
+    // Android-specific: inline runtime-adapter picker. Lives in the
+    // basics page (alongside Theme and Base Keymap) instead of as a
+    // modal-on-top so the user sees their adapter choice as part of
+    // the initial setup form, not as a blocking overlay. Without an
+    // adapter selected, no spawn pipeline works (LSPs, terminal,
+    // tooling), so this is functionally required.
+    #[cfg(target_os = "android")]
+    let page = page.child(render_android_runtime_section(&mut tab_index, cx));
+
+    let page = page
         .child(render_ai_section(user_store, cx))
         .child(render_import_settings_section(&mut tab_index, cx))
         .child(render_vim_mode_switch(&mut tab_index, cx))
@@ -723,4 +734,73 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .child(render_telemetry_section(&mut tab_index, cx));
 
     page
+}
+
+#[cfg(target_os = "android")]
+fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl IntoElement {
+    use zdroid_runtime::{RuntimeId, config::RuntimeFile};
+
+    /// Where `zd-exec` reads the active adapter from. Lives under
+    /// `$PREFIX/etc/` so bootstrap re-extraction doesn't clobber it
+    /// (extraction touches `bin/` `lib/` etc., not `etc/`).
+    const RUNTIME_TOML_PATH: &str =
+        "/data/data/com.zdroid/files/usr/etc/zd-runtime.toml";
+
+    let current = RuntimeFile::load(std::path::Path::new(RUNTIME_TOML_PATH))
+        .ok()
+        .flatten()
+        .map(|f| f.runtime.kind);
+
+    let selected_index = match current {
+        Some(RuntimeId::Chroot) => Some(0),
+        Some(RuntimeId::Bootstrap) => Some(1),
+        Some(RuntimeId::ExternalTermux) => Some(2),
+        None => None,
+    };
+
+    return v_flex()
+        .gap_2()
+        .child(Label::new("Android Runtime"))
+        .child(
+            ToggleButtonGroup::single_row(
+                "android_runtime_selection",
+                [
+                    ToggleButtonWithIcon::new("Kali chroot", IconName::Terminal, |_, _, _| {
+                        write_runtime(RuntimeId::Chroot);
+                    }),
+                    ToggleButtonWithIcon::new("Bootstrap", IconName::Box, |_, _, _| {
+                        write_runtime(RuntimeId::Bootstrap);
+                    }),
+                    ToggleButtonWithIcon::new("Termux app", IconName::Server, |_, _, _| {
+                        write_runtime(RuntimeId::ExternalTermux);
+                    }),
+                ],
+            )
+            .when_some(selected_index, |this, idx| this.selected_index(idx))
+            .full_width()
+            .tab_index(tab_index)
+            .size(ui::ToggleButtonGroupSize::Medium)
+            .style(ui::ToggleButtonGroupStyle::Outlined),
+        );
+
+    fn write_runtime(id: RuntimeId) {
+        let path = std::path::PathBuf::from(RUNTIME_TOML_PATH);
+        let file = RuntimeFile::with_defaults(id);
+        match file.save(&path) {
+            Ok(()) => {
+                zlog::info!(
+                    "onboarding::android_runtime: selected {:?} -> wrote {}; restart Zdroid to apply",
+                    id,
+                    path.display()
+                );
+            }
+            Err(err) => {
+                zlog::error!(
+                    "onboarding::android_runtime: failed to write {}: {:#}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
 }
