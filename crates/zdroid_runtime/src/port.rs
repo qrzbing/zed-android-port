@@ -104,4 +104,38 @@ pub trait RuntimeProvider: Send + Sync {
     fn requires_restart_on_switch(&self) -> bool {
         true
     }
+
+    /// Host-side path where this adapter's env-aware Zed state lives:
+    /// LSP installs, extensions, debug adapters, Copilot binary,
+    /// Prettier, etc. Anything Zed downloads/builds at runtime that
+    /// then gets *executed* in the spawn-target's environment.
+    ///
+    /// Two invariants the returned path MUST satisfy:
+    ///
+    ///   1. **Reachable from the Zed app process.** Zed itself writes
+    ///      and reads here directly (`fs::write`, `npm install`'s
+    ///      output, etc.), so it has to be a normal host filesystem
+    ///      path.
+    ///
+    ///   2. **Reachable from anything `spawn()` lands.** A chrooted
+    ///      `node` exec'd by [`Self::spawn`] must be able to `require`
+    ///      files under this dir. For the chroot adapter that means
+    ///      the path lives inside the bind-mount source so the same
+    ///      bytes are visible at a different absolute path inside the
+    ///      chroot; for bootstrap, the chroot dimension doesn't apply
+    ///      so any path under `$PREFIX` works.
+    ///
+    /// Env-agnostic Zed state (settings, keymap, themes, sqlite db,
+    /// snippets, prompts) is NOT under here — that lives at
+    /// `data_dir()` and stays put across adapter switches. Only the
+    /// 9 env-aware paths in `crates/paths/src/paths.rs` derive from
+    /// this root: `languages_dir`, `extensions_dir`,
+    /// `debug_adapters_dir`, `copilot_dir`, `default_prettier_dir`,
+    /// `remote_servers_dir`, `devcontainer_dir`,
+    /// `external_agents_dir`, `remote_extensions_dir`.
+    ///
+    /// Adapter switching is a workspace switch: each adapter's
+    /// `environment_root` is a separate physical location, populated
+    /// independently. Files installed in one never leak into another.
+    fn environment_root(&self) -> PathBuf;
 }

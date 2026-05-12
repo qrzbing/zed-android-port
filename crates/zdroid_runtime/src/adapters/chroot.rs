@@ -64,7 +64,7 @@ mod android_impl {
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
 
@@ -106,13 +106,33 @@ mod android_impl {
         // preserved from the caller.
         let env = sanitize_env_for_chroot(config, &req.env, cwd_translated.as_deref());
 
-        let prog_bytes = req.program.as_bytes();
+        // Translate the program name AND every argv entry. Zed launches
+        // LSPs / DAPs / formatters with absolute paths under env-aware
+        // dirs (languages_dir, extensions_dir, …) which live under the
+        // bind-mount source; without translation those bytes name a
+        // path that doesn't exist inside the chroot, and the chrooted
+        // child fails with `MODULE_NOT_FOUND` / ENOENT. Programs are
+        // commonly short names like `node` that don't match any
+        // APP_HOMES prefix and pass through unchanged; the helper is
+        // a no-op in that case.
+        let program_translated = {
+            let prog_os = OsString::from(&req.program);
+            let translated = translate_arg_for_chroot(config, &prog_os);
+            translated.into_string().unwrap_or(req.program.clone())
+        };
+        let args_translated: Vec<OsString> = req
+            .args
+            .iter()
+            .map(|a| translate_arg_for_chroot(config, a))
+            .collect();
+
+        let prog_bytes = program_translated.as_bytes();
         let cwd_bytes: Vec<u8> = cwd_translated
             .as_deref()
             .map(|p| p.as_os_str().as_bytes().to_vec())
             .unwrap_or_default();
 
-        let argc = req.args.len() as u32;
+        let argc = args_translated.len() as u32;
         let envc = env.len() as u32;
         let flags = if req.interactive { FLAG_INTERACTIVE } else { 0 };
 
@@ -134,8 +154,8 @@ mod android_impl {
         conn.write_all(prog_bytes)?;
         conn.write_all(&cwd_bytes)?;
 
-        // argv: each entry length-prefixed.
-        for arg in &req.args {
+        // argv: each entry length-prefixed. Translated above.
+        for arg in &args_translated {
             let bytes = arg.as_bytes();
             conn.write_all(&(bytes.len() as u32).to_le_bytes())?;
             conn.write_all(bytes)?;
@@ -262,6 +282,22 @@ mod android_impl {
         env
     }
 
+    /// Host-side path prefixes that map onto `config.home_bind` inside
+    /// the chroot. Listed longest-first so multi-segment matches win
+    /// (e.g. `/data/data/com.zdroid/files/home/foo` matches the
+    /// `…/files/home` entry, not the shorter `…/files`).
+    ///
+    /// Both `/data/data/<pkg>` and `/data/user/0/<pkg>` are listed
+    /// because Android exposes the same inode at both paths (the
+    /// kernel resolves the symlink on its own, but our byte-level
+    /// string compare doesn't).
+    const APP_HOMES: &[&str] = &[
+        "/data/data/com.zdroid/files/home",
+        "/data/user/0/com.zdroid/files/home",
+        "/data/data/com.zdroid/files",
+        "/data/user/0/com.zdroid/files",
+    ];
+
     /// Translate a host-space cwd to chroot-space. The chroot's
     /// `home_bind` directory bind-mounts the editor's home, so any path
     /// rooted in the host's app sandbox lands at `home_bind/<rel>`
@@ -272,16 +308,6 @@ mod android_impl {
         host_cwd: Option<&Path>,
     ) -> Option<std::path::PathBuf> {
         let host_cwd = host_cwd?;
-
-        // Common Android sandbox prefixes the editor's PWD might use.
-        // Both forms point at the same dir; the kernel resolves the
-        // symlink for us, but our string compare needs both branches.
-        const APP_HOMES: &[&str] = &[
-            "/data/data/com.zdroid/files/home",
-            "/data/user/0/com.zdroid/files/home",
-            "/data/data/com.zdroid/files",
-            "/data/user/0/com.zdroid/files",
-        ];
 
         for prefix in APP_HOMES {
             if let Ok(rel) = host_cwd.strip_prefix(prefix) {
@@ -296,6 +322,51 @@ mod android_impl {
         // No match — likely a path the user opened outside the home.
         // Fall back to home_bind so the shell starts somewhere readable.
         Some(config.home_bind.clone())
+    }
+
+    /// Rewrite a single argv/env byte string so any host-side absolute
+    /// path that starts at one of [`APP_HOMES`] gets the prefix
+    /// replaced with `config.home_bind`. Used to translate paths Zed
+    /// embeds in its spawn arguments (e.g. `node /data/data/com.zdroid/
+    /// files/home/.zed-env/chroot/languages/<lsp>/.../cli.js`) so the
+    /// same bytes name a valid path inside the chroot.
+    ///
+    /// Conservative on purpose:
+    ///
+    ///   - Only matches when the bytes START with a prefix (so
+    ///     positional path args translate; mid-string occurrences in
+    ///     log messages / labels / glob patterns are left alone).
+    ///   - Returns the input unchanged when no prefix matches. Common
+    ///     for short args like `--verbose` or env-var-like tokens.
+    ///   - Operates on raw bytes via OsStr/OsString to preserve any
+    ///     non-UTF-8 path components (Android paths are usually UTF-8
+    ///     but we don't assume).
+    pub(super) fn translate_arg_for_chroot(
+        config: &ChrootConfig,
+        arg: &OsString,
+    ) -> OsString {
+        let bytes = arg.as_bytes();
+        for prefix in APP_HOMES {
+            let prefix_bytes = prefix.as_bytes();
+            // Must match at start AND the next byte (if any) must be
+            // a path separator OR end-of-string. Otherwise `/data/data/
+            // com.zdroid/files/home2` would incorrectly match the
+            // `…/files/home` prefix.
+            if bytes.len() >= prefix_bytes.len()
+                && &bytes[..prefix_bytes.len()] == prefix_bytes
+                && bytes
+                    .get(prefix_bytes.len())
+                    .map_or(true, |b| *b == b'/')
+            {
+                let target = config.home_bind.as_os_str().as_bytes();
+                let suffix = &bytes[prefix_bytes.len()..];
+                let mut out = Vec::with_capacity(target.len() + suffix.len());
+                out.extend_from_slice(target);
+                out.extend_from_slice(suffix);
+                return OsString::from_vec(out);
+            }
+        }
+        arg.clone()
     }
 
     /// Read the daemon's `response_spawned` (4 × u32). Returns the
@@ -442,5 +513,28 @@ impl RuntimeProvider for ChrootAdapter {
     #[cfg(not(target_os = "android"))]
     fn spawn(&self, _req: SpawnRequest) -> anyhow::Result<Box<dyn SpawnHandle>> {
         anyhow::bail!("ChrootAdapter::spawn is android-only")
+    }
+
+    fn environment_root(&self) -> std::path::PathBuf {
+        // Host-side path. Lives inside the bind-mount source so the same
+        // bytes are reachable from inside the chroot at
+        // <home_bind>/.zed-env/chroot (e.g. `/zed/.zed-env/chroot`).
+        //
+        // Why a per-adapter subdir under `.zed-env/` rather than just
+        // dropping LSPs into $HOME directly: the user's home dir is theirs,
+        // not Zdroid's. Polluting it with `languages/`, `extensions/`,
+        // `debug_adapters/` etc. tree-roots would be hostile. The
+        // `.zed-env/<adapter>/` prefix scopes everything Zdroid manages
+        // and namespaces it per adapter so bootstrap-installed LSPs and
+        // chroot-installed LSPs never collide on the same path.
+        //
+        // Hardcoded to `/data/data/com.zdroid/files/home` rather than read
+        // from ChrootConfig because the bind-mount source is itself
+        // hardcoded in zd-spawnd.c. The two MUST agree — if you change
+        // one, change both. Future: thread through config so both ends
+        // can be configured by the user.
+        std::path::PathBuf::from(
+            "/data/data/com.zdroid/files/home/.zed-env/chroot",
+        )
     }
 }

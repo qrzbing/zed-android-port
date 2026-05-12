@@ -116,4 +116,14 @@ impl RuntimeProvider for ExternalTermuxAdapter {
             "ExternalTermuxAdapter::spawn pending: Intent IPC bridge + Termux-side stdio helper not yet implemented"
         )
     }
+
+    fn environment_root(&self) -> std::path::PathBuf {
+        // Termux's `$PREFIX/.zed-env/`. Zdroid (com.zdroid, separate uid)
+        // can't write here directly — Termux's data dir is private to
+        // com.termux. The eventual JNI Intent bridge will route filesystem
+        // ops here through Termux's RUN_COMMAND service. Returning the
+        // path now so the seam is in place; actual writes will fail
+        // until the bridge lands.
+        self.config.prefix.join(".zed-env")
+    }
 }

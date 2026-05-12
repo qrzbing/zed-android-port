@@ -258,4 +258,14 @@ impl RuntimeProvider for BootstrapAdapter {
     fn spawn(&self, _req: SpawnRequest) -> anyhow::Result<Box<dyn SpawnHandle>> {
         anyhow::bail!("BootstrapAdapter::spawn is android-only")
     }
+
+    fn environment_root(&self) -> std::path::PathBuf {
+        // Bootstrap has no namespace crossing: Zed app and the spawned
+        // children share the same filesystem view, so any path under
+        // $PREFIX works. `.zed-env/` keeps Zdroid-managed state out of
+        // the user's package tree (`bin/`, `lib/`, etc.) so accidentally
+        // running `apt clean` or `pkg install` doesn't collide with our
+        // installed LSPs.
+        self.config.prefix.join(".zed-env")
+    }
 }

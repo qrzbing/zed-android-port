@@ -31,10 +31,29 @@ use workspace::{
     open_new,
 };
 use reqwest_client::ReqwestClient;
-use zdroid_runtime::{RuntimeId, config::RuntimeFile};
+use zdroid_runtime::{
+    RuntimeId, RuntimeProvider,
+    adapters,
+    config::RuntimeFile,
+};
 
 fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowOptions {
     gpui::WindowOptions::default()
+}
+
+/// Build the active adapter from `runtime.toml`, returning the boxed
+/// provider so callers can ask for its `environment_root()` and
+/// adapter-derived metadata. Returns None when no toml exists or the
+/// adapter construction fails (defaults are filled in by the picker
+/// the first time the user opens it).
+fn build_active_provider(
+    data_path: &std::path::Path,
+) -> Option<Box<dyn RuntimeProvider>> {
+    let file = RuntimeFile::load(&data_path.join("usr/etc/zd-runtime.toml"))
+        .ok()
+        .flatten()?;
+    let resolved = file.resolve().ok()?;
+    adapters::for_config(&resolved).ok()
 }
 
 /// Read the active runtime adapter from `runtime.toml`. Both
@@ -373,6 +392,30 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     static PATHS_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = PATHS_INITIALIZED.get_or_init(|| {
         paths::set_custom_data_dir(&data_path.to_string_lossy());
+
+        // Override the env-aware path root so the active runtime adapter
+        // (chroot / bootstrap / external Termux) owns its own LSP /
+        // extension / debug-adapter tree. Without this, every adapter
+        // would share `$DATA/languages/` etc. and Zed would try to read
+        // a host-installed LSP from inside the chroot via a host path
+        // that doesn't exist there (`MODULE_NOT_FOUND`). When no adapter
+        // is configured (first launch, picker hasn't been opened), we
+        // skip the override and let env-aware paths fall back to
+        // `data_dir()` — preserves historical behavior.
+        if let Some(provider) = build_active_provider(data_path) {
+            let env_root = provider.environment_root();
+            log::info!(
+                "zed_android: environment_root for {:?} -> {}",
+                provider.id(),
+                env_root.display()
+            );
+            paths::set_environment_root(env_root);
+        } else {
+            log::info!(
+                "zed_android: no runtime.toml or unresolved adapter; \
+                 env-aware paths fall back to data_dir"
+            );
+        }
     });
     info!("zed_android: paths data_dir set");
 
