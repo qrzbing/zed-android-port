@@ -442,17 +442,14 @@ fn render_card(
                     )
                 }),
         )
-        .child(if is_current {
-            // The header already shows an "Active" Chip; the right-
-            // hand control on the active card is just decorative
-            // confirmation. Use a plain Chip so it sits in the design
-            // language without trying to look clickable. Same Zed
-            // primitive as the header badge — visually consistent.
-            Chip::new("Selected")
-                .icon(IconName::Check)
-                .label_color(Color::Accent)
-                .into_any_element()
-        } else if id == RuntimeId::Chroot
+        // Cascade priority: install actions WIN over the "Selected"
+        // decorative chip, even when the unhealthy adapter is the
+        // user's current runtime.toml selection. If Bootstrap is
+        // selected but its $PREFIX is empty (Phase 6 fresh-install
+        // state), the user needs the Install button — showing a
+        // "Selected" chip there would leave them stuck without a way
+        // to trigger the download.
+        .child(if id == RuntimeId::Chroot
             && !matches!(entry.health, HealthStatus::Healthy)
         {
             // Chroot adapter requires the zdroid-spawnd Magisk module
@@ -491,6 +488,14 @@ fn render_card(
                     }))
                     .into_any_element()
             }
+        } else if is_current {
+            // Healthy AND the active selection — decorative confirm.
+            // The header already shows an "Active" Chip; this right-
+            // hand Chip is design-language parity.
+            Chip::new("Selected")
+                .icon(IconName::Check)
+                .label_color(Color::Accent)
+                .into_any_element()
         } else {
             Button::new(("select", idx), "Select")
                 .on_click(cx.listener(move |this, _, window, cx| {

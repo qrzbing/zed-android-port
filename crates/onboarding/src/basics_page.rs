@@ -736,13 +736,18 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
     page
 }
 
-/// Minimal inline picker for the onboarding form. Same field-level UX
-/// as Theme / Base Keymap: a ToggleButtonGroup the user clicks once to
-/// pick. Writes `runtime.toml` directly. The richer detailed view —
-/// health badges, install hints, "Get module" links — lives in the
-/// `RuntimePicker` window reached from Settings → Android Runtime,
-/// for the case where the user needs to set up an adapter that isn't
-/// installed yet.
+/// Hand off the Android runtime setup to the rich picker window
+/// instead of trying to render install / progress UX inline in the
+/// onboarding form. The toggle-button version we used before could
+/// only write `runtime.toml`; it had no way to surface adapter
+/// health, kick off the 240 MB bootstrap download, or show progress.
+/// The picker window already does all three — Phase 6c wired its
+/// Install button + live ProgressSink labels — so the onboarding
+/// surface is just a single button that opens it.
+///
+/// Displays the currently active selection (or "Not configured yet"
+/// on first launch) as context so the user knows what they're
+/// stepping into.
 #[cfg(target_os = "android")]
 fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl IntoElement {
     use zdroid_runtime::{RuntimeId, config::RuntimeFile};
@@ -755,56 +760,41 @@ fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl 
         .flatten()
         .map(|f| f.runtime.kind);
 
-    let selected_index = match current {
-        Some(RuntimeId::Chroot) => Some(0),
-        Some(RuntimeId::Bootstrap) => Some(1),
-        Some(RuntimeId::ExternalTermux) => Some(2),
-        None => None,
+    let current_label: SharedString = match current {
+        Some(RuntimeId::Chroot) => "Current: Kali chroot".into(),
+        Some(RuntimeId::Bootstrap) => "Current: Bootstrap".into(),
+        Some(RuntimeId::ExternalTermux) => "Current: External Termux".into(),
+        None => "Not configured yet".into(),
     };
 
-    return v_flex()
+    v_flex()
         .gap_2()
         .child(Label::new("Android Runtime"))
         .child(
-            ToggleButtonGroup::single_row(
-                "android_runtime_selection",
-                [
-                    ToggleButtonWithIcon::new("Kali chroot", IconName::Terminal, |_, _, _| {
-                        write_runtime(RuntimeId::Chroot);
-                    }),
-                    ToggleButtonWithIcon::new("Bootstrap", IconName::Box, |_, _, _| {
-                        write_runtime(RuntimeId::Bootstrap);
-                    }),
-                    ToggleButtonWithIcon::new("Termux app", IconName::Server, |_, _, _| {
-                        write_runtime(RuntimeId::ExternalTermux);
-                    }),
-                ],
-            )
-            .when_some(selected_index, |this, idx| this.selected_index(idx))
-            .full_width()
-            .tab_index(tab_index)
-            .size(ui::ToggleButtonGroupSize::Medium)
-            .style(ui::ToggleButtonGroupStyle::Outlined),
-        );
-
-    fn write_runtime(id: RuntimeId) {
-        let path = std::path::PathBuf::from(RUNTIME_TOML_PATH);
-        let file = RuntimeFile::with_defaults(id);
-        match file.save(&path) {
-            Ok(()) => {
-                zlog::info!(
-                    "onboarding::android_runtime: selected {:?} -> wrote {}; restart Zdroid to apply",
-                    id,
-                    path.display()
-                );
-            }
-            Err(err) => {
-                zlog::error!(
-                    "onboarding::android_runtime: failed to write {}: {:#}",
-                    path.display(),
-                    err
-                );
-            }
-        }
-    }
+            Label::new(current_label)
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+        )
+        .child(
+            Button::new("configure-android-runtime", "Configure runtime")
+                .style(ButtonStyle::OutlinedGhost)
+                .size(ButtonSize::Medium)
+                .label_size(LabelSize::Small)
+                .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::Small))
+                .tab_index({
+                    *tab_index += 1;
+                    *tab_index - 1
+                })
+                .on_click(|_, window, cx| {
+                    match cx.build_action("zdroid_runtime::PickRuntime", None) {
+                        Ok(action) => window.dispatch_action(action, cx),
+                        Err(err) => {
+                            zlog::warn!(
+                                "onboarding::android_runtime: \
+                                 zdroid_runtime::PickRuntime not registered: {err}"
+                            );
+                        }
+                    }
+                }),
+        )
 }
