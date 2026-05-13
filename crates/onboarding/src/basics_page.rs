@@ -745,36 +745,17 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
 /// Install button + live ProgressSink labels — so the onboarding
 /// surface is just a single button that opens it.
 ///
-/// Displays the currently active selection (or "Not configured yet"
-/// on first launch) as context so the user knows what they're
-/// stepping into.
+/// No "current selection" label here: the onboarding entity has no
+/// observer wired to runtime.toml, so a snapshot read at render time
+/// would go stale the moment the user picks something in the picker
+/// (separate window, doesn't notify back). Match the Settings UX —
+/// button-only — and let the picker be the single surface of truth
+/// for what's currently active.
 #[cfg(target_os = "android")]
 fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl IntoElement {
-    use zdroid_runtime::{RuntimeId, config::RuntimeFile};
-
-    const RUNTIME_TOML_PATH: &str =
-        "/data/data/com.zdroid/files/usr/etc/zd-runtime.toml";
-
-    let current = RuntimeFile::load(std::path::Path::new(RUNTIME_TOML_PATH))
-        .ok()
-        .flatten()
-        .map(|f| f.runtime.kind);
-
-    let current_label: SharedString = match current {
-        Some(RuntimeId::Chroot) => "Current: Kali chroot".into(),
-        Some(RuntimeId::Bootstrap) => "Current: Bootstrap".into(),
-        Some(RuntimeId::ExternalTermux) => "Current: External Termux".into(),
-        None => "Not configured yet".into(),
-    };
-
     v_flex()
         .gap_2()
         .child(Label::new("Android Runtime"))
-        .child(
-            Label::new(current_label)
-                .size(LabelSize::Small)
-                .color(Color::Muted),
-        )
         .child(
             Button::new("configure-android-runtime", "Configure runtime")
                 .style(ButtonStyle::OutlinedGhost)
