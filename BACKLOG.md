@@ -2,6 +2,14 @@
 
 Non-blocking UX / feature gaps to revisit after the current refactor lands. Tasks in the live task list are atomic and time-bound; this file is for "noted but not yet scoped" concerns.
 
+## Reported via the @-mention bug-can't-be-filed loop (2026-05-13)
+
+External user tried to file these and was blocked by upstream Zed's `blank_issues_enabled: false` + Discord-redirect contact_links (fixed in `244f29a455`). Logging here so they don't get lost while the user re-files via the new templates.
+
+- **Mouse scroll direction reversed**: Samsung One UI + Bluetooth mouse. Scroll works correctly everywhere else on the device but is inverted in Zdroid. Likely a sign flip in `gpui_android`'s `MotionEvent` → scroll-delta translation. Check the wheel-axis path specifically (touch-pad two-finger scroll may differ); One UI may report `AXIS_VSCROLL` with a sign that mainline Zed doesn't compensate for.
+- **Vim mode broken**: cannot type, vim commands don't work, enter / backspace behave as if vim mode were disabled. Probably an action-dispatch / focus-route problem on the Android `KeyEvent` → gpui action path. Settings-searchbar input is also broken (next bullet) — likely the same root cause: input not reaching the focused editor when the editor crate's vim-mode plugin owns the keymap.
+- **Settings searchbar typing broken**: cannot type into the searchbar in the Settings window. Likely shares root cause with the vim-mode bullet above — input events not reaching the right entity in non-MainActivity windows, OR the search-input element not claiming focus correctly post-Android-IME hookup.
+
 ## Runtime picker: adapter install-state UX (deferred)
 
 The onboarding runtime-picker section (and the Settings page entry) currently presents all three adapters — Kali chroot, Bootstrap, External Termux — as selectable equals. On a fresh install the user almost certainly has NONE of them installed:
