@@ -27,8 +27,8 @@ use platform_title_bar::PlatformTitleBar;
 use release_channel::ReleaseChannel;
 use theme::ActiveTheme;
 use ui::{
-    Button, Chip, Clickable, Color, FluentBuilder, Headline, HeadlineSize, Icon, IconName,
-    IconSize, Label, LabelCommon, LabelSize, ParentElement, Styled, h_flex, v_flex,
+    Button, Chip, Clickable, Color, Disableable, FluentBuilder, Headline, HeadlineSize, Icon,
+    IconName, IconSize, Label, LabelCommon, LabelSize, ParentElement, Styled, h_flex, v_flex,
 };
 use util::ResultExt as _;
 use workspace::{Workspace, client_side_decorations};
@@ -37,7 +37,27 @@ use zdroid_runtime::{
     adapters,
     adapters::chroot::SPAWND_RELEASE_URL,
     config::{BootstrapConfig, ChrootConfig, ExternalTermuxConfig, RuntimeFile},
+    health::ProgressSink,
 };
+
+/// Bridges the sync `ProgressSink` trait (called from the background
+/// install thread) into an async channel the foreground UI poller
+/// reads. `step` and `warn` are forwarded as status strings;
+/// `progress` is dropped because the install path's milestones are
+/// already coarse enough to render as labels.
+struct ChannelProgressSink {
+    tx: futures::channel::mpsc::UnboundedSender<String>,
+}
+
+impl ProgressSink for ChannelProgressSink {
+    fn step(&mut self, label: &str) {
+        let _ = self.tx.unbounded_send(label.to_string());
+    }
+    fn progress(&mut self, _done: u64, _total: u64) {}
+    fn warn(&mut self, message: &str) {
+        let _ = self.tx.unbounded_send(format!("warning: {message}"));
+    }
+}
 
 /// Where Zdroid stores the active-adapter selection. Lives inside
 /// `$PREFIX/etc/` so the bootstrap-extraction step doesn't clobber it
@@ -156,6 +176,12 @@ pub struct RuntimePicker {
     /// "Current" badge in the UI; `Select` is a no-op if the user
     /// picks the same one.
     current: Option<RuntimeId>,
+    /// Live status string while a bootstrap install is running.
+    /// `None` when no install is in flight. The background task
+    /// pushes updates via a channel; the foreground poller writes
+    /// them here + calls `cx.notify()` so the install button's
+    /// label re-renders without the user having to interact.
+    install_status: Option<String>,
 }
 
 impl RuntimePicker {
@@ -170,7 +196,64 @@ impl RuntimePicker {
             focus_handle: cx.focus_handle(),
             entries: build_entries(),
             current: detect_current(),
+            install_status: None,
         }
+    }
+
+    /// Trigger an async bootstrap install. Drops the user into a
+    /// "downloading + extracting" state on the Bootstrap card while
+    /// the background task pulls the latest release zip from GitHub
+    /// and extracts to `$PREFIX`. Refreshes adapter health on
+    /// completion so the card flips from NotInstalled → Healthy
+    /// without the user having to re-open the picker.
+    fn install_bootstrap(&mut self, cx: &mut Context<Self>) {
+        if self.install_status.is_some() {
+            return; // already in progress
+        }
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<String>();
+        self.install_status = Some("Starting install".into());
+        cx.notify();
+
+        // Background: run the actual install. Blocks on ureq +
+        // zip extract. ProgressSink pushes status strings into the
+        // channel; the foreground poller below picks them up.
+        cx.background_executor()
+            .spawn(async move {
+                let config = default_bootstrap_config();
+                let adapter = match adapters::bootstrap::BootstrapAdapter::new(config) {
+                    Ok(a) => a,
+                    Err(err) => {
+                        let _ = tx.unbounded_send(format!("Failed: {err:#}"));
+                        return;
+                    }
+                };
+                let mut sink = ChannelProgressSink { tx: tx.clone() };
+                if let Err(err) = adapter.install(&mut sink) {
+                    let _ = tx.unbounded_send(format!("Install failed: {err:#}"));
+                }
+                // tx + sink drop here → channel closes → foreground exits.
+            })
+            .detach();
+
+        // Foreground poll: drain the channel, write each message into
+        // self.install_status + cx.notify so the card label updates.
+        // When the channel closes (background task done), refresh the
+        // adapter entries and clear the in-progress state.
+        cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            while let Some(msg) = rx.next().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.install_status = Some(msg);
+                    cx.notify();
+                });
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.install_status = None;
+                this.entries = build_entries();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn select(&mut self, id: RuntimeId, _window: &mut Window, cx: &mut Context<Self>) {
@@ -223,7 +306,9 @@ impl Render for RuntimePicker {
             .entries
             .iter()
             .enumerate()
-            .map(|(idx, entry)| render_card(idx, entry, self.current, cx))
+            .map(|(idx, entry)| {
+                render_card(idx, entry, self.current, self.install_status.as_deref(), cx)
+            })
             .collect();
 
         let content = v_flex()
@@ -266,6 +351,7 @@ fn render_card(
     idx: usize,
     entry: &AdapterEntry,
     current: Option<RuntimeId>,
+    install_status: Option<&str>,
     cx: &mut Context<RuntimePicker>,
 ) -> AnyElement {
     let theme_colors = cx.theme().colors();
@@ -383,6 +469,28 @@ fn render_card(
                     cx.open_url(SPAWND_RELEASE_URL);
                 }))
                 .into_any_element()
+        } else if id == RuntimeId::Bootstrap
+            && matches!(entry.health, HealthStatus::NotInstalled { .. })
+        {
+            // Bootstrap adapter has its 240 MB userland in a separate
+            // GitHub repo (`<release_repo>`); Phase 6 of the Termux-
+            // divestment refactor stopped bundling it in the APK and
+            // moved download to `BootstrapAdapter::install`. Tap
+            // "Install" to kick off the async download + extract; the
+            // button label switches to the live `install_status` for
+            // the duration. After completion the card flips to
+            // Healthy → normal Select.
+            if let Some(status) = install_status {
+                Button::new(("installing", idx), status.to_string())
+                    .disabled(true)
+                    .into_any_element()
+            } else {
+                Button::new(("install", idx), "Install")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.install_bootstrap(cx);
+                    }))
+                    .into_any_element()
+            }
         } else {
             Button::new(("select", idx), "Select")
                 .on_click(cx.listener(move |this, _, window, cx| {
