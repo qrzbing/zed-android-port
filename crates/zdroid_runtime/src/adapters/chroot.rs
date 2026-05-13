@@ -25,7 +25,7 @@ use crate::port::{RuntimeProvider, SpawnHandle, SpawnRequest};
 /// (`updateJson` in `module.prop`) handles in-place upgrades after
 /// first install.
 pub const SPAWND_RELEASE_URL: &str =
-    "https://github.com/Dylanmurzello/zed-android-port/releases/latest";
+    "https://github.com/Dylanmurzello/zdroid-spawnd/releases/latest";
 
 /// Wire-protocol magic; matches `MAGIC` in `zd-spawnd.c`. ASCII "ZDSP"
 /// little-endian.
