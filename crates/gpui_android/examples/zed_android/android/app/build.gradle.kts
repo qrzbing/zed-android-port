@@ -150,6 +150,72 @@ tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn("stageZdExecAsset")
 }
 
+// zed-askpass-helper bundling.
+//
+// `zed-askpass-helper` is the SSH_ASKPASS relay binary that ssh
+// (running inside the Kali chroot) exec's to prompt the user for a
+// password via Zed's in-process modal. The helper MUST be statically
+// linked: ssh inside the chroot can't resolve bionic's dynamic linker
+// (`/system/bin/linker64` lives outside the chroot fs), so a
+// dynamically-linked build fails exec with the shell's misleading
+// "not found".
+//
+// The helper crate at `examples/zed_android/askpass-helper/` is its
+// own workspace and ships a `.cargo/config.toml` setting
+// `target-feature=+crt-static` for `aarch64-linux-android`. By running
+// `cargo ndk` with `workingDir` set to that crate's directory, gradle
+// guarantees the static-link config is in scope for every APK build
+// — no chance of a contributor accidentally shipping a dynamic
+// binary by building from the wrong cwd or hand-editing the asset.
+val askpassHelperDir = file("${workspaceRoot}/crates/gpui_android/examples/zed_android/askpass-helper")
+val askpassHelperBin = file("${askpassHelperDir}/target/aarch64-linux-android/release/zed-askpass-helper")
+val askpassHelperAsset = file("src/main/assets/zed-askpass-helper")
+val askpassHelperSrc = fileTree("${askpassHelperDir}/src") {
+    include("**/*.rs")
+}
+
+tasks.register<Exec>("buildAskpassHelper") {
+    description = "Build zed-askpass-helper (static aarch64) via cargo-ndk and stage into assets/."
+    group = "build setup"
+
+    workingDir(askpassHelperDir)
+    commandLine(
+        "cargo",
+        "ndk",
+        "-t",
+        "arm64-v8a",
+        "-P",
+        "26",
+        "build",
+        "--release",
+    )
+
+    providers.environmentVariable("ANDROID_NDK_HOME").orNull?.let { ndk ->
+        environment("ANDROID_NDK_HOME", ndk)
+    }
+
+    inputs.files(askpassHelperSrc)
+    inputs.file("${askpassHelperDir}/Cargo.toml")
+    inputs.file("${askpassHelperDir}/.cargo/config.toml")
+    outputs.file(askpassHelperBin)
+}
+
+tasks.register<Copy>("stageAskpassHelperAsset") {
+    description = "Copy the freshly-built zed-askpass-helper into assets/ for APK packaging."
+    group = "build setup"
+
+    dependsOn("buildAskpassHelper")
+    from(askpassHelperBin)
+    into(askpassHelperAsset.parentFile)
+    rename { askpassHelperAsset.name }
+    inputs.file(askpassHelperBin)
+    outputs.file(askpassHelperAsset)
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn("stageAskpassHelperAsset")
+}
+
 android {
     namespace = "com.zdroid"
     compileSdk = 35
