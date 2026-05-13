@@ -136,12 +136,25 @@ pub fn extract_if_needed(android_app: &AndroidApp, data_path: &Path) -> Result<(
         );
     }
 
-    // Open the asset *first*: if the bootstrap isn't bundled (pre-L2a) we
-    // bail out without creating a `usr-staging` directory, so a fresh data
-    // dir doesn't get a phantom empty folder that confuses anyone listing
-    // $ROOTFS later.
+    // Phase 6 of the Termux-divestment refactor moved bootstrap
+    // distribution off the APK. The asset is no longer bundled; the
+    // active runtime adapter (`BootstrapAdapter::install`, see
+    // `crates/zdroid_runtime/src/adapters/bootstrap_install.rs`) is
+    // now responsible for downloading from `<release_repo>`'s GitHub
+    // release. This function stays as a legacy path for builds that
+    // still ship the asset (pre-6b dev branches) and is a quiet no-op
+    // when the asset is missing — Phase 8 sweeps it.
     log::info!("termux_bootstrap: opening {ASSET_NAME} from APK assets");
-    let bytes = read_bootstrap_asset(android_app)?;
+    let bytes = match try_read_bootstrap_asset(android_app) {
+        Some(bytes) => bytes,
+        None => {
+            log::info!(
+                "termux_bootstrap: {ASSET_NAME} not bundled in APK; \
+                 leaving install to BootstrapAdapter (Phase 6+)"
+            );
+            return Ok(());
+        }
+    };
     log::info!("termux_bootstrap: read {} bytes from asset, parsing zip", bytes.len());
 
     if staging.exists() {
@@ -202,15 +215,16 @@ pub fn extract_if_needed(android_app: &AndroidApp, data_path: &Path) -> Result<(
     Ok(())
 }
 
-fn read_bootstrap_asset(android_app: &AndroidApp) -> Result<Vec<u8>> {
+/// Read the bundled bootstrap asset if it's still in the APK
+/// (pre-Phase-6 builds). Returns `None` when the asset is missing —
+/// callers treat that as "BootstrapAdapter::install handles it now".
+fn try_read_bootstrap_asset(android_app: &AndroidApp) -> Option<Vec<u8>> {
     let asset_manager = android_app.asset_manager();
-    let asset_name = CString::new(ASSET_NAME)?;
-    let mut asset = asset_manager
-        .open(&asset_name)
-        .ok_or_else(|| anyhow!("bootstrap asset {ASSET_NAME} not present in APK"))?;
+    let asset_name = CString::new(ASSET_NAME).ok()?;
+    let mut asset = asset_manager.open(&asset_name)?;
     let mut buf = Vec::with_capacity(asset.length());
-    asset.read_to_end(&mut buf)?;
-    Ok(buf)
+    asset.read_to_end(&mut buf).ok()?;
+    Some(buf)
 }
 
 fn extract_entries<R: Read + std::io::Seek>(
