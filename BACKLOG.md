@@ -6,9 +6,9 @@ Non-blocking UX / feature gaps to revisit after the current refactor lands. Task
 
 External user tried to file these and was blocked by upstream Zed's `blank_issues_enabled: false` + Discord-redirect contact_links (fixed in `244f29a455`). Logging here so they don't get lost while the user re-files via the new templates.
 
-- **Mouse scroll direction reversed**: Samsung One UI + Bluetooth mouse. Scroll works correctly everywhere else on the device but is inverted in Zdroid. Likely a sign flip in `gpui_android`'s `MotionEvent` → scroll-delta translation. Check the wheel-axis path specifically (touch-pad two-finger scroll may differ); One UI may report `AXIS_VSCROLL` with a sign that mainline Zed doesn't compensate for.
-- **Vim mode broken**: cannot type, vim commands don't work, enter / backspace behave as if vim mode were disabled. Probably an action-dispatch / focus-route problem on the Android `KeyEvent` → gpui action path. Settings-searchbar input is also broken (next bullet) — likely the same root cause: input not reaching the focused editor when the editor crate's vim-mode plugin owns the keymap.
-- **Settings searchbar typing broken**: cannot type into the searchbar in the Settings window. Likely shares root cause with the vim-mode bullet above — input events not reaching the right entity in non-MainActivity windows, OR the search-input element not claiming focus correctly post-Android-IME hookup.
+- **Mouse scroll direction reversed**: Samsung One UI + Bluetooth mouse. Scroll works correctly everywhere else on the device but is inverted in Zdroid. Likely a sign flip in `gpui_android`'s `MotionEvent` → scroll-delta translation. Check the wheel-axis path specifically (touch-pad two-finger scroll may differ); One UI may report `AXIS_VSCROLL` with a sign that mainline Zed doesn't compensate for. **Still open.**
+- ~~**Vim mode broken**~~ — **fixed in 29b29ddd63** (key events now route from `ExtraWindowActivity` to gpui via `nativeOnExtraKeyEvent` JNI bridge; the root cause was that any extra window's `dispatchKeyEvent` was never forwarded so `PlatformInput::KeyDown` never fired). Vim and any other editor in a non-Main window now accepts typing.
+- ~~**Settings searchbar typing broken**~~ — **fixed in 29b29ddd63** (same key-routing fix, plus a tap-to-focus wrapper on the search bar with `stop_propagation` so taps don't bubble to `SettingsWindow`'s focus tracker which was immediately blurring the bar).
 
 ## Runtime picker: adapter install-state UX (deferred)
 
