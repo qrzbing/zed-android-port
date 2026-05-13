@@ -2636,7 +2636,16 @@ impl SettingsWindow {
             .border_1()
             .border_color(cx.theme().colors().border)
             .on_click(move |_, window, cx| {
+                // Stop the click from bubbling up to the SettingsWindow
+                // root. That root has `track_focus(&self.focus_handle)`,
+                // so a click that reaches it resets window focus to the
+                // SettingsWindow's own focus_handle — immediately
+                // blurring whatever we just focused here. Observed
+                // symptom on Android: search bar emitted `Blurred`
+                // without ever emitting `Focused`. With propagation
+                // stopped, the focus we set stays put.
                 search_focus.focus(window, cx);
+                cx.stop_propagation();
             })
             .child(Icon::new(IconName::MagnifyingGlass).color(Color::Muted))
             .child(self.search_bar.clone())

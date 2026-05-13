@@ -517,6 +517,52 @@ pub(crate) fn translate_extra_motion_event(
     out
 }
 
+/// Same shape as [`translate_key_event`] but takes raw Android KeyEvent
+/// fields instead of an `android_activity::KeyEvent` object. Used by the
+/// ExtraWindowActivity JNI bridge (`multi_window::nativeOnExtraKeyEvent`)
+/// which sees `MotionEvent`/`KeyEvent` via Java reflection — those Java
+/// objects can't be reconstructed into `android_activity::KeyEvent` on
+/// the Rust side, so we accept the primitive fields and rebuild the
+/// translation pipeline on top of them.
+///
+/// `action`: `KeyEvent.ACTION_DOWN` (0) or `ACTION_UP` (1).
+/// `keycode_raw`: Android `KeyEvent.getKeyCode()` (AKEYCODE_*).
+/// `meta_state_raw`: Android `KeyEvent.getMetaState()` (META_* bitfield).
+/// `repeat_count`: `KeyEvent.getRepeatCount()` for auto-repeat detection.
+pub(crate) fn translate_extra_key_event(
+    action: i32,
+    keycode_raw: u32,
+    meta_state_raw: u32,
+    repeat_count: i32,
+) -> Option<PlatformInput> {
+    let meta = MetaState(meta_state_raw);
+    let keycode = Keycode::from(keycode_raw);
+    let modifiers = modifiers_from_meta(meta);
+
+    if is_modifier_key(keycode) {
+        return Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+            modifiers,
+            capslock: capslock_from_meta(meta),
+        }));
+    }
+
+    let keystroke = build_keystroke(keycode, modifiers);
+
+    // Android KeyEvent.ACTION_DOWN = 0, ACTION_UP = 1, ACTION_MULTIPLE = 2.
+    // We follow the same translation policy as `translate_key_event`: only
+    // Down/Up produce inputs; Multiple is reserved for synthesized soft-
+    // keyboard char sequences we don't currently support.
+    match action {
+        0 => Some(PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: repeat_count > 0,
+            prefer_character_input: false,
+        })),
+        1 => Some(PlatformInput::KeyUp(KeyUpEvent { keystroke })),
+        _ => None,
+    }
+}
+
 fn modifiers_from_meta(meta: MetaState) -> Modifiers {
     Modifiers {
         shift: meta.shift_on(),

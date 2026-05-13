@@ -74,4 +74,23 @@ object NativeBridge {
         ys: FloatArray,
         pointerIds: IntArray,
     )
+
+    /// Hardware key event forwarder. Called from `ExtraWindowActivity.
+    /// dispatchKeyEvent` so editor focus inside an extra window (Settings,
+    /// command palette in a detached window, etc.) actually receives
+    /// keystrokes. Without this, the gpui-side `set_input_handler` is
+    /// registered but no `PlatformInput::KeyDown` ever fires — the editor
+    /// has focus but typing is a no-op.
+    ///
+    /// `action`: `KeyEvent.ACTION_DOWN` / `ACTION_UP`.
+    /// `keyCode`: AKEYCODE_*.
+    /// `metaState`: META_* bitfield (shift/ctrl/alt/meta/caps lock state).
+    /// `repeatCount`: 0 for the initial press, >0 for auto-repeat.
+    external fun nativeOnExtraKeyEvent(
+        windowId: Long,
+        action: Int,
+        keyCode: Int,
+        metaState: Int,
+        repeatCount: Int,
+    )
 }

@@ -88,6 +88,19 @@ pub(crate) enum ExtraWindowEvent {
         hscroll: f32,
         positions: Vec<(f32, f32, i32)>,
     },
+    /// Hardware key event on the extra window. Raw fields from the Java
+    /// `KeyEvent`; same off-thread translation policy as `Motion`. Without
+    /// this routing the Editor in any extra window (Settings is the
+    /// canonical case) never receives keystrokes — `set_input_handler`
+    /// runs on focus, but no `PlatformInput::KeyDown` is ever fed in, so
+    /// the search bar and any other Editor look frozen.
+    Key {
+        window_id: u64,
+        action: i32,
+        keycode: u32,
+        meta_state: u32,
+        repeat_count: i32,
+    },
 }
 
 /// Senders for the first `surfaceCreated` of each extra window. The receiver
@@ -692,6 +705,37 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraTouchEvent<'loc
         vscroll,
         hscroll,
         positions,
+    });
+}
+
+/// JNI entry for `ExtraWindowActivity.dispatchKeyEvent`. Forwards the raw
+/// Java `KeyEvent` fields onto the event channel so the platform's
+/// `drain_extra_window_events` loop can route them to the right gpui
+/// window on the game thread. Returns nothing — the Kotlin caller
+/// always consumes the event regardless of whether the gpui side
+/// produced a `PlatformInput` (we don't want Android's fallback IME
+/// path stealing keystrokes from an editor that thinks it has focus).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraKeyEvent<'local>(
+    _env: jni::JNIEnv<'local>,
+    _bridge: JObject<'local>,
+    window_id: i64,
+    action: i32,
+    keycode: i32,
+    meta_state: i32,
+    repeat_count: i32,
+) {
+    let window_id = window_id as u64;
+    log::debug!(
+        "multi_window: nativeOnExtraKeyEvent windowId={window_id} action={action} \
+         keycode={keycode} meta_state={meta_state:#x}"
+    );
+    dispatch_event(ExtraWindowEvent::Key {
+        window_id,
+        action,
+        keycode: keycode as u32,
+        meta_state: meta_state as u32,
+        repeat_count,
     });
 }
 

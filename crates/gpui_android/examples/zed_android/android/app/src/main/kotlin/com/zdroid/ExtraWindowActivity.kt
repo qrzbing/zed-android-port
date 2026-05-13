@@ -3,6 +3,7 @@ package com.zdroid
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -133,6 +134,36 @@ class ExtraWindowActivity : AppCompatActivity() {
             NativeBridge.nativeOnExtraActivityDestroyed(extraWindowId)
         }
         super.onDestroy()
+    }
+
+    /// Forward hardware key events to the gpui-side window. AppCompatActivity
+    /// doesn't have GameActivity's native input queue, so without this
+    /// override the OS routes KeyEvents to the focused View's default
+    /// handler (which is a no-op for our SurfaceView) and gpui's
+    /// `PlatformInput::KeyDown` never fires for editors in extra windows.
+    /// Observed regression: Settings search bar focus worked (Editor's
+    /// `Focused` event fired, `set_input_handler` registered), but typing
+    /// did nothing because no KeyDown ever arrived.
+    ///
+    /// We forward every event up-front, then return `true` to claim it so
+    /// Android's fallback IME routing doesn't try to steal keystrokes
+    /// from an editor that thinks it has focus. ACTION_MULTIPLE events
+    /// (synthesized soft-keyboard character sequences) are forwarded
+    /// too; the Rust side drops them since gpui has no PlatformInput
+    /// mapping for that action, which is the same policy as the primary
+    /// window's translate_key_event uses.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (extraWindowId >= 0L) {
+            NativeBridge.nativeOnExtraKeyEvent(
+                extraWindowId,
+                event.action,
+                event.keyCode,
+                event.metaState,
+                event.repeatCount,
+            )
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private inner class SurfaceCallback(private val id: Long) : SurfaceHolder.Callback {

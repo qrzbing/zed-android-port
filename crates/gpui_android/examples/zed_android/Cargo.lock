@@ -12916,6 +12916,7 @@ dependencies = [
  "ui",
  "util",
  "workspace",
+ "zdroid_runtime",
  "zed_actions",
  "zed_credentials_provider",
 ]

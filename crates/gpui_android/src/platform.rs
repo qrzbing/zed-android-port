@@ -414,6 +414,29 @@ impl AndroidPlatform {
                         state.handle_input(input);
                     }
                 }
+                ExtraWindowEvent::Key {
+                    window_id,
+                    action,
+                    keycode,
+                    meta_state,
+                    repeat_count,
+                } => {
+                    let entry = self.common.borrow().extra_windows.get(&window_id).cloned();
+                    let Some(state) = entry else {
+                        log::warn!(
+                            "drain_extra_window_events: Key for unknown windowId={window_id}"
+                        );
+                        continue;
+                    };
+                    if let Some(input) = crate::events::translate_extra_key_event(
+                        action,
+                        keycode,
+                        meta_state,
+                        repeat_count,
+                    ) {
+                        state.handle_input(input);
+                    }
+                }
             }
         }
 

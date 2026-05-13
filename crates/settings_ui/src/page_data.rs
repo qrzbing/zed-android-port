@@ -96,21 +96,26 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
 /// without command-palette knowledge — chroot mode is functionally
 /// required for LSPs, terminal, and tooling, so this can't be buried.
 ///
-/// The page is a single ActionLink that dispatches the existing
-/// `zdroid_runtime::PickRuntime` modal (defined in the gpui_android
-/// example crate). settings_ui doesn't import the gpui_android example
-/// directly — that'd be a circular-ish dep on an example crate — so we
-/// resolve the action by name through `cx.build_action`. The action is
-/// registered at workspace init time by `runtime_picker::register`, so
-/// it's always built by the time the user navigates here.
+/// Renders the picker INLINE inside the settings window as a SubPageLink,
+/// not as a workspace-window modal. Reason: settings UI runs as its own
+/// Android window on top of the workspace. A modal dispatched at the
+/// workspace level pops UNDERNEATH the settings window — invisible to
+/// the user, looks like a no-op. SubPageLink draws the picker as part
+/// of the settings UI itself (same render surface as Feature Flags,
+/// Tool Permissions, etc.), no window-context mismatch.
+///
+/// The render function lives in `pages/android_runtime.rs` and writes
+/// `runtime.toml` directly via `RuntimeFile::save`, identical wiring
+/// to the matching onboarding section so the two surfaces stay in sync.
 #[cfg(target_os = "android")]
 fn android_runtime_page() -> SettingsPage {
     SettingsPage {
         title: "Android Runtime",
         items: Box::new([
             SettingsPageItem::SectionHeader("Runtime adapter"),
-            SettingsPageItem::ActionLink(ActionLink {
+            SettingsPageItem::SubPageLink(SubPageLink {
                 title: "Pick runtime adapter".into(),
+                r#type: Default::default(),
                 description: Some(
                     "Select which userland Zdroid routes commands into: kali chroot \
                      (full Linux via zd-spawnd), bundled bootstrap (Termux-flavored \
@@ -118,36 +123,10 @@ fn android_runtime_page() -> SettingsPage {
                      terminal, LSPs, formatters, and any spawned tool to work."
                         .into(),
                 ),
-                button_text: "Open picker".into(),
-                on_click: Arc::new(|_settings_window, _window, cx| {
-                    // Dispatch the action from the WORKSPACE window's context,
-                    // not the settings window's. The runtime picker's action
-                    // handler is registered on Workspace (via
-                    // `runtime_picker::register`), and `window.dispatch_action`
-                    // only traverses the dispatch tree of the window it's
-                    // called against. Calling dispatch_action on the settings
-                    // window propagates inside that window's element tree, no
-                    // workspace-registered handler ever sees it. Routing
-                    // through `with_active_or_new_workspace` enters the
-                    // workspace's window context, so the dispatch lands on
-                    // the workspace-level action handler that owns the modal.
-                    workspace::with_active_or_new_workspace(
-                        cx,
-                        |_workspace, window, cx| {
-                            match cx.build_action(
-                                "zdroid_runtime::PickRuntime",
-                                None,
-                            ) {
-                                Ok(action) => window.dispatch_action(action, cx),
-                                Err(err) => log::warn!(
-                                    "settings_ui::android_runtime_page: \
-                                     zdroid_runtime::PickRuntime action not registered: {err}"
-                                ),
-                            }
-                        },
-                    );
-                }),
+                json_path: None,
+                in_json: false,
                 files: USER,
+                render: crate::pages::render_android_runtime_page,
             }),
         ]),
     }
