@@ -245,6 +245,20 @@ mod android_impl {
         // Display / locale vars worth carrying across the boundary so
         // the inner shell renders correctly. Add to this list cautiously
         // — anything path-shaped is an exec-failure waiting to happen.
+        //
+        // SSH_ASKPASS + SSH_ASKPASS_REQUIRE: when Zed's "Open Remote"
+        // spawns ssh, it sets these so ssh delegates password prompts
+        // to our Unix-socket relay binary instead of opening /dev/tty
+        // (which doesn't exist for the subprocess). The script path
+        // SSH_ASKPASS points at is in app-private storage that the
+        // symmetric bind-mount makes visible inside the chroot at the
+        // same absolute path. Stripping these here was the root cause
+        // of `Permission denied / Too many authentication failures`
+        // when sshd offered password auth and ssh fell back to a
+        // non-existent /dev/tty.
+        //
+        // SSH_AUTH_SOCK: same reason — if the caller set up an agent
+        // socket, the chroot-side ssh needs to find it.
         const PASSTHROUGH: &[&str] = &[
             "TERM",
             "COLORTERM",
@@ -253,6 +267,9 @@ mod android_impl {
             "LC_CTYPE",
             "TZ",
             "DISPLAY",
+            "SSH_ASKPASS",
+            "SSH_ASKPASS_REQUIRE",
+            "SSH_AUTH_SOCK",
         ];
 
         let mut env: Vec<(String, OsString)> = Vec::new();

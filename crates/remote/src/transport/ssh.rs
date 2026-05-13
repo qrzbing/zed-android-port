@@ -200,7 +200,18 @@ impl MasterProcess {
         #[cfg(target_os = "android")]
         master_process
             .arg("-o")
-            .arg("StrictHostKeyChecking=accept-new");
+            .arg("StrictHostKeyChecking=accept-new")
+            // -f: fork into background AFTER auth completes. Without
+            // it, `ssh -N -o ControlMaster=yes` stays foreground with
+            // stdout still attached, so Zed's `wait_connected` (=
+            // read_to_end on stdout) blocks forever even though the
+            // master socket is up and ready. Desktop Zed gets away
+            // without this because the inherited stdio differs; on
+            // Android we route through zd-exec which keeps the pipe
+            // alive. -f forces the parent to exit, EOF propagates,
+            // wait_connected resolves, Zed proceeds to platform
+            // detection.
+            .arg("-f");
 
         let process = master_process.arg(&destination).spawn()?;
 
@@ -681,16 +692,24 @@ impl SshRemoteConnection {
                 return Err(e.context("Failed to connect to host"));
             }
 
-            if master_process.as_mut().try_status()?.is_some() {
-                let mut output = Vec::new();
-                let mut stderr = master_process.as_mut().stderr.take().unwrap();
-                stderr.read_to_end(&mut output).await?;
-
-                let error_message = format!(
-                    "failed to connect: {}",
-                    String::from_utf8_lossy(&output).trim()
-                );
-                anyhow::bail!(error_message);
+            if let Some(status) = master_process.as_mut().try_status()? {
+                // With -f on Android (and any caller that forks the
+                // master into background after auth), the parent ssh
+                // exits with success once the daemonized child has the
+                // master socket up. That's the happy path, not a
+                // failure — fall through to SshSocket::new. Only bail
+                // on non-zero exit.
+                if !status.success() {
+                    let mut output = Vec::new();
+                    if let Some(mut stderr) = master_process.as_mut().stderr.take() {
+                        stderr.read_to_end(&mut output).await?;
+                    }
+                    let error_message = format!(
+                        "failed to connect: {}",
+                        String::from_utf8_lossy(&output).trim()
+                    );
+                    anyhow::bail!(error_message);
+                }
             }
 
             let socket = SshSocket::new(connection_options, socket_path).await?;
@@ -738,16 +757,24 @@ impl SshRemoteConnection {
                 return Err(e.context("Failed to connect to host"));
             }
 
-            if master_process.as_mut().try_status()?.is_some() {
-                let mut output = Vec::new();
-                let mut stderr = master_process.as_mut().stderr.take().unwrap();
-                stderr.read_to_end(&mut output).await?;
-
-                let error_message = format!(
-                    "failed to connect: {}",
-                    String::from_utf8_lossy(&output).trim()
-                );
-                anyhow::bail!(error_message);
+            if let Some(status) = master_process.as_mut().try_status()? {
+                // With -f on Android (and any caller that forks the
+                // master into background after auth), the parent ssh
+                // exits with success once the daemonized child has the
+                // master socket up. That's the happy path, not a
+                // failure — fall through to SshSocket::new. Only bail
+                // on non-zero exit.
+                if !status.success() {
+                    let mut output = Vec::new();
+                    if let Some(mut stderr) = master_process.as_mut().stderr.take() {
+                        stderr.read_to_end(&mut output).await?;
+                    }
+                    let error_message = format!(
+                        "failed to connect: {}",
+                        String::from_utf8_lossy(&output).trim()
+                    );
+                    anyhow::bail!(error_message);
+                }
             }
 
             let socket = SshSocket::new(
