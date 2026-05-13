@@ -1,13 +1,15 @@
-Self-Review Checklist:
+## Summary
 
-- [ ] I've reviewed my own diff for quality, security, and reliability
-- [ ] Unsafe blocks (if any) have justifying comments
-- [ ] The content is consistent with the [UI/UX checklist](https://github.com/zed-industries/zed/blob/main/CONTRIBUTING.md#uiux-checklist)
-- [ ] Tests cover the new/changed behavior
-- [ ] Performance impact has been considered and is acceptable
+<!-- One or two sentences: what changes, and why this approach. -->
 
-Closes #ISSUE
+## Scope check
 
-Release Notes:
+- [ ] This change is Android-specific (would NOT reproduce on desktop Zed). If it would also affect desktop, file upstream at https://github.com/zed-industries/zed/pulls instead.
+- [ ] If this touches an upstream Zed file (one of the ~54 we patch in place), I added or updated a writeup under `crates/gpui_android/docs/workarounds/` explaining what constraint forces the patch.
 
-- N/A or Added/Fixed/Improved ...
+## Test plan
+
+<!-- Bulleted checklist of what you ran to validate. For UI changes: which device, which Android version, what specifically you verified. -->
+
+- [ ]
+- [ ]

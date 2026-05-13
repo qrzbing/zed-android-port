@@ -1,45 +1,63 @@
-name: Report a crash
-description: Zed is crashing or freezing or hanging.
-type: Crash
-labels: "state:needs triage"
+name: Report a crash (Zdroid)
+description: Report a hard crash, ANR, or boot failure of Zdroid.
+type: Bug
+labels: ["state:needs triage", "crash"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Crash reports help most when they include a tombstone or logcat snippet around the FATAL line. If the app never launched, that's still useful. The system server logs an `am_crash` event with a stack trace.
+
+  - type: input
+    attributes:
+      label: Zdroid APK version
+      placeholder: "v0.X.Y-zdroid (or commit short-sha)"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: When does it crash?
+      options:
+        - On app launch (never reaches the editor)
+        - When opening a project / file
+        - In the integrated terminal
+        - When switching runtime adapters
+        - During a specific editor action (LSP, search, etc.)
+        - Random / no consistent trigger
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Device + Android version
+      placeholder: "Samsung Tab S9 Ultra, Android 14, One UI 6.1"
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Crash signature
+      description: |
+        Run `adb logcat --pid=$(adb shell pidof com.zdroid)` (or `adb logcat -b crash`) right after the crash. Paste the FATAL block, the Rust panic message, or the SIGSEGV tombstone. 30-50 lines around the failure is the right size.
+      render: text
+    validations:
+      required: true
+
   - type: textarea
     attributes:
       label: Reproduction steps
-      description: A step-by-step description of how to reproduce the crash from a **clean Zed install**. The more context you provide, the easier it is to find and fix the problem fast.
+      description: Step-by-step from a clean install to the crash.
       placeholder: |
-        1. Start Zed
-        2. Perform an action
-        3. Zed crashes
+        1. adb install -r app-release.apk
+        2. adb shell am start -n com.zdroid/.MainActivity
+        3. Wait ~3 seconds, process dies
     validations:
       required: true
+
   - type: textarea
     attributes:
-      label: Zed version and system specs
-      description: |
-        Open the command palette in Zed, then type “zed: copy system specs into clipboard”.
-      placeholder: |
-        Zed: v0.215.0 (Zed Nightly bfe141ea79aa4984028934067ba75c48d99136ae)
-        OS: macOS 15.1
-        Memory: 36 GiB
-        Architecture: aarch64
-    validations:
-      required: true
-  - type: textarea
-    attributes:
-      label: Attach Zed log file
-      description: |
-        Open the command palette in Zed, then type `zed: open log` to see the last 1000 lines. Or type `zed: reveal log in file manager` in the command palette to reveal the log file itself.
-
-        ⚠️ **Please review your log file for secrets (API keys, tokens, etc.) and partially or fully redact them before posting.**
-      value: |
-        <details><summary>Zed.log</summary>
-
-        <!-- Paste your log inside the code block. -->
-        ```log
-
-        ```
-
-        </details>
+      label: Additional context
+      description: Magisk module version (if chroot), bootstrap version (if bootstrap), free disk space on `/data`, anything else relevant.
     validations:
       required: false

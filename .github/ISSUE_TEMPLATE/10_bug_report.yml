@@ -1,119 +1,79 @@
-name: Report a bug
-description: Report a problem with Zed.
+name: Report a bug (Zdroid)
+description: Report a problem with Zdroid (Android port of Zed).
 type: Bug
-labels: "state:needs triage"
+labels: ["state:needs triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Is this bug already reported? Upvote to get it noticed faster. [Here’s the search](https://github.com/zed-industries/zed/issues). Upvote means giving it a :+1: reaction.
+        Thanks for reporting. A few quick notes before you file:
 
-        Feature request? Please open in [discussions](https://github.com/zed-industries/zed/discussions/new/choose) instead.
+        - **Bugs that also reproduce on desktop Zed** belong [upstream](https://github.com/zed-industries/zed/issues), not here. This repo is the Android port only.
+        - Crash dumps go in the **Crash report** template instead of this one.
+        - Search existing issues first; if your bug already exists, upvote with a 👍 reaction so it gets triaged faster.
 
-        Just have a question or need support? Welcome to [Discord Support Forums](https://discord.com/invite/zedindustries).
+  - type: input
+    attributes:
+      label: Zdroid APK version
+      description: From `Zdroid → Settings → About`, or the GitHub release tag of the APK you installed.
+      placeholder: "v0.X.Y-zdroid (or commit short-sha)"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Runtime adapter
+      description: Which adapter is selected in the runtime picker (or `~/etc/zd-runtime.toml`)?
+      options:
+        - Bootstrap (in-app Termux userland)
+        - Kali chroot (zd-spawnd + Magisk module)
+        - External Termux app
+        - Not configured yet
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Device + Android version
+      description: Manufacturer + model + Android version + skin (One UI / HyperOS / stock / etc.).
+      placeholder: "Samsung Tab S9 Ultra, Android 14, One UI 6.1"
+    validations:
+      required: true
+
   - type: textarea
     attributes:
       label: Reproduction steps
-      description: A step-by-step description of how to reproduce the bug from a **clean Zed install**. The more context you provide, the easier it is to find and fix the problem fast.
+      description: Step-by-step from a clean install or a fresh app launch. The more concrete, the faster this gets fixed.
       placeholder: |
-        1. Start Zed
-        2. Click X
+        1. Open Zdroid
+        2. Connect a Bluetooth mouse
+        3. Open a long file
+        4. Two-finger scroll on the trackpad / scroll wheel on the mouse
     validations:
       required: true
+
   - type: textarea
     attributes:
-      label: Current vs. Expected behavior
-      description: |
-        Current behavior (screenshots, videos, etc. are appreciated), vs. what you expected the behavior to be.
-
+      label: Current vs. expected behavior
+      description: What happens vs. what you expected. Screenshots or short screen recordings really help.
       placeholder: |
-        Current behavior: <screenshot with an arrow> The icon is blue. Expected behavior: The icon should be red because this is what the setting is documented to do.
+        Current: scroll wheel scrolls the file UP when I push the wheel forward.
+        Expected: scroll wheel scrolls the file DOWN when I push the wheel forward (matches every other app on the device).
     validations:
       required: true
-  - type: textarea
-    id: environment
-    attributes:
-      label: Zed version and system specs
-      description: |
-        Open the command palette in Zed, then type “zed: copy system specs into clipboard”.
-      placeholder: |
-        Zed: v0.215.0 (Zed Nightly bfe141ea79aa4984028934067ba75c48d99136ae)
-        OS: macOS 15.1
-        Memory: 36 GiB
-        Architecture: aarch64
-    validations:
-      required: true
+
   - type: textarea
     attributes:
-      label: Attach Zed log file
+      label: Logcat (if app crashed or misbehaved silently)
       description: |
-        Open the command palette in Zed, then type `zed: open log` to see the last 1000 lines. Or type `zed: reveal log in file manager` in the command palette to reveal the log file itself.
-
-        ⚠️ **Please review your log file for secrets (API keys, tokens, etc.) and partially or fully redact them before posting.**
-      value: |
-        <details><summary>Zed.log</summary>
-
-        <!-- Paste your log inside the code block. -->
-        ```log
-
-        ```
-
-        </details>
+        Easiest path: enable USB debugging, `adb logcat --pid=$(adb shell pidof com.zdroid)` while reproducing. Paste the relevant 30-50 lines. Filter for `zed_android`, `gpui_android`, `zdroid_runtime`, or `FATAL EXCEPTION` if it's verbose.
+      render: text
     validations:
       required: false
+
   - type: textarea
     attributes:
-      label: Relevant Zed settings
-      description: |
-        Open the command palette in Zed, then type “zed: open settings file” and copy/paste any relevant (e.g., LSP-specific) settings.
-
-        ⚠️ **Please review your settings file for secrets (API keys, tokens, etc.) and partially or fully redact them before posting.**
-      value: |
-        <details><summary>settings.json</summary>
-
-        <!-- Paste your settings inside the code block. -->
-        ```json
-
-        ```
-
-        </details>
+      label: Additional context
+      description: Anything else useful. Magisk module version (if chroot), `pkg list-installed` snippet (if bootstrap), root status, ROM build number.
     validations:
       required: false
-  - type: textarea
-    attributes:
-      label: Relevant Keymap
-      description: |
-        Open the command palette in Zed, then type “zed: open keymap file” and copy/paste the file’s contents.
-      value: |
-        <details><summary>keymap.json</summary>
-
-        <!-- Paste your keymap file inside the code block. -->
-        ```json
-
-        ```
-
-        </details>
-    validations:
-      required: false
-  - type: textarea
-    attributes:
-      label: (for AI issues) Model provider details
-      placeholder: |
-        - Provider: (Anthropic via ZedPro, Anthropic via API key, Copilot Chat, Mistral, OpenAI, etc.)
-        - Model Name: (Claude Sonnet 4.5, Gemini 3.1 Pro, GPT-5)
-        - Mode: (Agent Panel, Inline Assistant, or Terminal Assistant)
-        - Other details (ACPs, MCPs, other settings, etc.):
-    validations:
-      required: false
-  - type: dropdown
-    attributes:
-      label: If you are using WSL on Windows, what flavor of Linux are you using?
-      multiple: false
-      options:
-        - Arch Linux
-        - Ubuntu
-        - Fedora
-        - Mint
-        - Pop!_OS
-        - NixOS
-        - Other

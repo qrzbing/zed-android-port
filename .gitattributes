@@ -3,3 +3,33 @@
 
 # Ensure the WSL script always has LF line endings, even on Windows
 crates/zed/resources/windows/zed.sh text eol=lf
+
+# Files where conflicts during an upstream Zed merge should auto-resolve to
+# OURS. See UPSTREAM_MERGE.md.
+#
+# Requires per-clone setup (run once after cloning):
+#   git config merge.ours.driver true
+#
+# Without that, `merge=ours` is silently ignored.
+
+# Identity / docs
+README.md               merge=ours
+AGENTS.md               merge=ours
+GEMINI.md               merge=ours
+CLAUDE.md               merge=ours
+CONTRIBUTING.md         merge=ours
+CODE_OF_CONDUCT.md      merge=ours
+BACKLOG.md              merge=ours
+RELEASING.md            merge=ours
+UPSTREAM_MERGE.md       merge=ours
+.gitattributes          merge=ours
+
+# .github surface (issue templates, PR template, funding)
+.github/ISSUE_TEMPLATE/**            merge=ours
+.github/pull_request_template.md     merge=ours
+.github/FUNDING.yml                  merge=ours
+
+# Whole crates we own
+crates/gpui_android/**         merge=ours
+crates/zdroid_runtime/**       merge=ours
+crates/gpui_platform/**        merge=ours
