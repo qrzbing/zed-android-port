@@ -6,7 +6,7 @@
 
 ## Problem
 
-The hex-patch flow (see [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md))
+The hex-patch flow (see [hex-patch-resolv-conf.md](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md))
 rewrites Bun-compiled CLIs' `/etc/resolv.conf` literal to
 `/sdcard/.zed/r`. That file has to **exist**, with real
 `nameserver <IP>` lines, for c-ares to find anything. Without it, queries
@@ -82,5 +82,5 @@ no per-tool wrapper, no syscall ptrace.
 
 ## See also
 
-- [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md)
+- [hex-patch-resolv-conf.md](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md)
 - [sdcard-dot-zed-namespace.md](sdcard-dot-zed-namespace.md)

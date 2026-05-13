@@ -1,6 +1,6 @@
 # LD_PRELOAD libzed-compat.so path-redirect shim (dropped)
 
-**Status:** Dropped — superseded by [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md)
+**Status:** Dropped — superseded by [hex-patch-resolv-conf.md](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md)
 
 Originally proposed as the proot-replacement: a small
 `libzed-compat.so` we'd compile via NDK clang at cargo build time,
@@ -47,7 +47,7 @@ call site.
 
 ## See also
 
-- [hex-patch-resolv-conf.md](hex-patch-resolv-conf.md) — the
+- [hex-patch-resolv-conf.md](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md) — the
   replacement
 - [jni-dns-bridge.md](jni-dns-bridge.md) — Android-side DNS source
 - [sdcard-dot-zed-namespace.md](sdcard-dot-zed-namespace.md) — where

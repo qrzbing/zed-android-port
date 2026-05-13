@@ -75,7 +75,7 @@ The musl wrapper would then carry the original LD_PRELOAD value in `ZED_LD_PRELO
 exec env -u LD_PRELOAD "ZED_LD_PRELOAD=$LD_PRELOAD" "$bin" "$@"
 ```
 
-Children that go through our wrapped shells re-discover LD_PRELOAD; direct execves of non-shell binaries don't. Costs: extra fork/exec per shell invocation, several small wrapper scripts, and the wrappers need to coexist with apt-installed `pkg install bash` which would clobber them (handle via dpkg path-exclude similar to `protect-baseline-libs.md`).
+Children that go through our wrapped shells re-discover LD_PRELOAD; direct execves of non-shell binaries don't. Costs: extra fork/exec per shell invocation, several small wrapper scripts, and the wrappers need to coexist with apt-installed `pkg install bash` which would clobber them (handle via dpkg path-exclude similar to [protect-baseline-libs](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/protect-baseline-libs.md) in zdroid-bootstrap).
 
 ### B. Compile a musl-flavored libtermux-exec
 

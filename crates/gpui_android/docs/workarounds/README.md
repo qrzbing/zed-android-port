@@ -33,29 +33,23 @@ replacement.
 | [Tier 2 root storage (bind-mount /mnt/pass_through)](deferred-tier2-root-storage.md) | Deferred | Wait for in-app settings UI |
 | [`CARGO_TARGET_DIR` stopgap](reverted-cargo-target-dir.md) | Reverted | Per-tool env redirect didn't generalize |
 
-## Termux integration
+## Bootstrap / Termux userland
+
+The bootstrap-flavored workarounds (dpkg path-rewrite, apt Post-Invoke hooks,
+apt dpkg pin, musl loader bundle, node `NODE_PLATFORM` patch, npm intercept
+stack, resolv.conf hex-patch in the musl loader, patchelf + bun-binary
+classification, bootstrap-rebuild pipeline, Termux env propagation into bash)
+moved to **[`Dylanmurzello/zdroid-bootstrap/docs/`](https://github.com/Dylanmurzello/zdroid-bootstrap/tree/main/docs)**
+as part of the Termux-divestment Phase 8b refactor. They describe patches
+baked into the bootstrap zip, not editor code, so the writeups live with the
+patches.
 
 | Workaround | Status | Why it exists |
 |---|---|---|
-| [Termux bootstrap rebuilt with our package name](termux-bootstrap-rebuild.md) | Active | Upstream bootstrap hardcodes `/data/data/com.termux/...` in RUNPATH + shebangs |
-| [dpkg path-rewrite patches](dpkg-path-rewrite-patches.md) | Active | `apt install` of upstream `.deb` files extracts paths under com.termux |
-| [Apt Post-Invoke + Pre-Install hooks](apt-hooks.md) | Active | Layer maintainer-script rewrites + ELF RPATH fix on every dpkg op |
-| [Apt dpkg pin](apt-dpkg-pin.md) | Active | Stop upstream apt from clobbering our patched dpkg |
-| [Musl-aarch64 linker bundled in APK](musl-linker-bundle.md) | Active | Bun-compiled binaries reference `/lib/ld-musl-aarch64.so.1`; Android has no /lib |
 | [Storage permission JNI shim](storage-permission-jni.md) | Active | `READ/WRITE_EXTERNAL_STORAGE` are runtime-prompted at targetSdk≤28 |
-| [Termux env propagation into bash](termux-env-propagation-to-bash.md) | Active | alacritty's pty replaces inherited env; we copy TERMUX_*/PREFIX/PATH/LD_PRELOAD over explicitly |
-
-## Node / npm / CLI tools
-
-| Workaround | Status | Why it exists |
-|---|---|---|
-| [Node binary `NODE_PLATFORM` patch](node-platform-patch.md) | Active | Termux Node is built `--dest-os=android`; npm picks wrong optional deps |
-| [npm intercept stack (wrapper + launcher generator)](npm-intercept.md) | Active | Generic per-binary classification kills `zed-setup-X` per-tool sprawl |
-| [Hex-patch `/etc/resolv.conf` → `/sdcard/.zed/r`](hex-patch-resolv-conf.md) | Active | Bun-compiled CLIs' static-musl c-ares can't be LD_PRELOAD'd; rewrite the rodata literal so it opens our writable file instead |
-| [JNI DNS bridge → `/sdcard/.zed/r`](jni-dns-bridge.md) | Active | Populates the file the hex-patch points at, sourced from Android's actual ConnectivityManager DNS |
+| [JNI DNS bridge → `/sdcard/.zed/r`](jni-dns-bridge.md) | Active | Populates the file the bootstrap's hex-patched musl loader opens, sourced from Android's actual ConnectivityManager DNS |
 | [`/sdcard/.zed/` namespace](sdcard-dot-zed-namespace.md) | Active | Why `/sdcard` (byte-width constraint) and why `.zed/` (hidden, namespaced) for the patched paths |
-| [Claude Bun-binary patchelf + proot wrapper](claude-bun-binary-patchelf.md) | Superseded | Original claude-specific zed-setup-claude path. Replaced by hex-patch above. Kept for archaeology. |
-| [LD_PRELOAD `libzed-compat.so` path-redirect shim](deferred-ld-preload-shim.md) | Dropped | Doesn't apply to static-musl (no PLT/GOT); replaced by hex-patch |
+| [LD_PRELOAD `libzed-compat.so` path-redirect shim](deferred-ld-preload-shim.md) | Dropped | Doesn't apply to static-musl (no PLT/GOT); replaced by hex-patch in the bootstrap musl loader |
 
 ## Runtime env
 

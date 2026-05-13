@@ -216,5 +216,5 @@ line (filter regressed) or from the remote's own bash startup
 - [phase-l10-remote-development-scope.md](../phase-l10-remote-development-scope.md)
   — original scope doc; L10a (bootstrap rebuild for openssh) is the
   permanent fix for symptom (E)
-- [termux-bootstrap-rebuild.md](termux-bootstrap-rebuild.md) — the
+- [termux-bootstrap-rebuild.md](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/termux-bootstrap-rebuild.md) — the
   bootstrap-rebuild process L10a feeds into
