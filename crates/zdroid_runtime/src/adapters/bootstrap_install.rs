@@ -21,10 +21,24 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::health::ProgressSink;
 
-/// Asset name inside the GitHub release. The bootstrap-build pipeline
-/// names every release's archive identically; the version is encoded
-/// in the release TAG, not the asset filename.
+/// Preferred asset name inside the GitHub release. The
+/// bootstrap-build pipeline names every release's archive identically;
+/// the version is encoded in the release TAG, not the asset filename.
+///
+/// On 404 we fall back to enumerating the release's assets via the
+/// GitHub API and picking the first whose name matches
+/// `ASSET_NAME_REGEX_PATTERN` (eg. `bootstrap-aarch64-r4.zip`). The
+/// fallback path is robust to typos at upload time; the canonical
+/// name keeps the steady-state path off `api.github.com`.
 const RELEASE_ASSET_NAME: &str = "bootstrap-aarch64.zip";
+
+/// Prefix + extension that any acceptable bootstrap asset must match.
+/// The fallback asset-enumeration path picks the first asset whose
+/// name starts with this prefix and ends with `.zip`. Covers
+/// `bootstrap-aarch64.zip`, `bootstrap-aarch64-zdroid.zip`,
+/// `bootstrap-aarch64-r4.zip`, etc.
+const ASSET_NAME_PREFIX: &str = "bootstrap-aarch64";
+const ASSET_NAME_SUFFIX: &str = ".zip";
 
 /// Manifest entry inside the bootstrap zip carrying symlink targets
 /// the zip format itself can't represent on extraction (Android's
@@ -38,34 +52,19 @@ const SYMLINKS_DELIM: &str = "←";
 /// the latest release tag at download time.
 const VERSION_FILE: &str = ".bootstrap-version";
 
-/// Static download URL for the latest release. GitHub 302-redirects
-/// this to `/releases/download/<tag>/<filename>` which then 302s to
-/// the asset blob on S3. Bypasses `api.github.com` entirely, so the
-/// 60-req/hour unauthenticated rate limit doesn't apply.
-fn release_download_url(release_repo: &str) -> String {
-    format!(
-        "https://github.com/{release_repo}/releases/latest/download/{RELEASE_ASSET_NAME}"
-    )
-}
-
 /// Download the latest release zip + extract into `<prefix>` atomically.
 /// Idempotent against `<prefix>/.bootstrap-version` — if the on-disk
 /// sentinel matches the latest tag, the function returns Ok without
-/// touching the network or filesystem.
+/// touching the network or filesystem beyond a tag resolve.
 pub fn install_latest(
     prefix: &Path,
     release_repo: &str,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
-    progress.step("Downloading latest bootstrap");
-    let url = release_download_url(release_repo);
-    let (zip_bytes, tag_name) =
-        download_latest_release(&url).with_context(|| format!("download from {url}"))?;
-    log::info!(
-        "bootstrap_install: downloaded {} bytes, resolved tag {}",
-        zip_bytes.len(),
-        tag_name,
-    );
+    progress.step("Resolving latest bootstrap release");
+    let tag_name = resolve_latest_tag(release_repo)
+        .with_context(|| format!("resolve latest release tag for {release_repo}"))?;
+    log::info!("bootstrap_install: latest release tag = {tag_name}");
 
     let version_file = prefix.join(VERSION_FILE);
     if let Ok(existing) = fs::read_to_string(&version_file)
@@ -77,6 +76,16 @@ pub fn install_latest(
         progress.step(&format!("Bootstrap {tag_name} already installed"));
         return Ok(());
     }
+
+    progress.step(&format!("Downloading bootstrap {tag_name}"));
+    let zip_bytes = download_bootstrap_asset(release_repo, &tag_name).with_context(|| {
+        format!("download bootstrap asset for {release_repo} tag {tag_name}")
+    })?;
+    log::info!(
+        "bootstrap_install: downloaded {} bytes for tag {}",
+        zip_bytes.len(),
+        tag_name,
+    );
 
     progress.step("Extracting bootstrap");
     let staging = prefix.with_extension("staging");
@@ -102,76 +111,158 @@ pub fn install_latest(
     Ok(())
 }
 
-/// Resolve the latest-release tag + download the asset.
+/// Resolve the latest-release tag without naming any asset.
 ///
-/// Two requests, neither against `api.github.com`:
-///   1. `GET /<repo>/releases/latest/download/<file>` with redirects
-///      disabled. GitHub returns a 302 whose `Location` is
-///      `/<repo>/releases/download/<tag>/<file>` — parse the tag out.
-///   2. `GET` the Location URL, following redirects this time, to
-///      land on the S3 blob and stream the zip bytes back.
-fn download_latest_release(latest_url: &str) -> Result<(Vec<u8>, String)> {
+/// Hits `https://github.com/<repo>/releases/latest` with redirects
+/// disabled. GitHub returns a 302 whose `Location` is
+/// `https://github.com/<repo>/releases/tag/<tag>`. Parse the tag out.
+/// One HTTP request, no `api.github.com`, no asset name dependency —
+/// works even when the release has zero assets uploaded.
+fn resolve_latest_tag(release_repo: &str) -> Result<String> {
+    let url = format!("https://github.com/{release_repo}/releases/latest");
     let agent_no_redirect = ureq::builder().redirects(0).build();
     let head = agent_no_redirect
-        .get(latest_url)
+        .get(&url)
         .set("User-Agent", "zdroid-bootstrap-installer")
         .call();
-    // ureq returns Err(Status(302, _)) here because we asked it not to
-    // follow. Pull the Response out of either arm: the Location header
-    // is what we need, status doesn't matter.
-    let head_resp = match head {
+    let resp = match head {
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
-        Err(e) => return Err(anyhow!("HTTP GET {latest_url}: {e}")),
+        Err(e) => return Err(anyhow!("HTTP GET {url}: {e}")),
     };
-    let tag_url = head_resp
-        .header("Location")
-        .ok_or_else(|| {
-            anyhow!(
-                "no Location header on {latest_url}; got status {}",
-                head_resp.status()
-            )
-        })?
-        .to_owned();
-    let tag = parse_tag_from_download_url(&tag_url).with_context(|| {
-        format!(
-            "extract release tag from {tag_url}; expected \
-             `/releases/download/<tag>/{RELEASE_ASSET_NAME}` segment"
+    let location = resp.header("Location").ok_or_else(|| {
+        anyhow!(
+            "no Location header on {url}; got status {}",
+            resp.status()
         )
     })?;
+    let marker = "/releases/tag/";
+    let after = location.find(marker).map(|i| &location[i + marker.len()..]);
+    let tag = after
+        .and_then(|s| s.split('/').next().filter(|t| !t.is_empty()))
+        .ok_or_else(|| {
+            anyhow!("expected `/releases/tag/<tag>` in Location {location}")
+        })?;
+    Ok(tag.to_owned())
+}
 
-    // Step 2: download the actual asset. ureq follows redirects by
-    // default, so this lands on the S3 blob.
-    let resp = ureq::get(&tag_url)
+/// Download the bootstrap zip for the given tag.
+///
+/// Fast path: try the canonical `RELEASE_ASSET_NAME` under
+/// `/<repo>/releases/download/<tag>/<file>`. 200 means we're done,
+/// neither request touched `api.github.com`.
+///
+/// Slow path (on 404): enumerate the release's assets via
+/// `api.github.com/repos/<repo>/releases/tags/<tag>` and pick the
+/// first asset whose name matches `<ASSET_NAME_PREFIX>*<ASSET_NAME_SUFFIX>`.
+/// One API request, eats one quota slot from the 60-req/hour limit,
+/// but kicks in only when uploads landed under a non-canonical name.
+fn download_bootstrap_asset(release_repo: &str, tag: &str) -> Result<Vec<u8>> {
+    let canonical_url = format!(
+        "https://github.com/{release_repo}/releases/download/{tag}/{RELEASE_ASSET_NAME}"
+    );
+    match fetch_asset_bytes(&canonical_url) {
+        Ok(bytes) => {
+            log::info!(
+                "bootstrap_install: fetched canonical asset {RELEASE_ASSET_NAME}"
+            );
+            Ok(bytes)
+        }
+        Err(FetchError::NotFound) => {
+            log::info!(
+                "bootstrap_install: canonical {RELEASE_ASSET_NAME} 404'd on tag {tag}; \
+                 falling back to API asset enumeration"
+            );
+            let alt_name = find_alt_asset_name(release_repo, tag)?;
+            let alt_url = format!(
+                "https://github.com/{release_repo}/releases/download/{tag}/{alt_name}"
+            );
+            log::info!("bootstrap_install: fetching alt asset {alt_name}");
+            match fetch_asset_bytes(&alt_url) {
+                Ok(bytes) => Ok(bytes),
+                Err(FetchError::NotFound) => Err(anyhow!(
+                    "asset {alt_name} present in API listing but returned 404 on download"
+                )),
+                Err(FetchError::Other(e)) => Err(e),
+            }
+        }
+        Err(FetchError::Other(e)) => Err(e),
+    }
+}
+
+enum FetchError {
+    NotFound,
+    Other(anyhow::Error),
+}
+
+fn fetch_asset_bytes(url: &str) -> std::result::Result<Vec<u8>, FetchError> {
+    let resp = ureq::get(url)
         .set("User-Agent", "zdroid-bootstrap-installer")
-        .call()
-        .map_err(|e| anyhow!("HTTP GET {tag_url}: {e}"))?;
+        .call();
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(404, _)) => return Err(FetchError::NotFound),
+        Err(e) => return Err(FetchError::Other(anyhow!("HTTP GET {url}: {e}"))),
+    };
     let cap = resp
         .header("Content-Length")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let mut buf = Vec::with_capacity(cap);
-    resp.into_reader().read_to_end(&mut buf)?;
-    Ok((buf, tag))
+    resp.into_reader()
+        .read_to_end(&mut buf)
+        .map_err(|e| FetchError::Other(anyhow!("read body from {url}: {e}")))?;
+    Ok(buf)
 }
 
-/// Pull the release tag out of a per-tag download URL like
-/// `https://.../releases/download/<tag>/<filename>`. The tag segment
-/// sits between literal `/releases/download/` and `/<filename>`.
-fn parse_tag_from_download_url(url: &str) -> Result<String> {
-    let marker = "/releases/download/";
-    let after = url
-        .find(marker)
-        .map(|i| &url[i + marker.len()..])
-        .ok_or_else(|| anyhow!("missing /releases/download/ in {url}"))?;
-    let tag = after
-        .split('/')
-        .next()
-        .ok_or_else(|| anyhow!("empty tag segment in {url}"))?;
-    if tag.is_empty() {
-        return Err(anyhow!("empty tag segment in {url}"));
+/// Enumerate the release's assets via the GitHub API and return the
+/// first asset name matching `<ASSET_NAME_PREFIX>*<ASSET_NAME_SUFFIX>`.
+/// Used as a fallback when the canonical asset name 404s on download.
+fn find_alt_asset_name(release_repo: &str, tag: &str) -> Result<String> {
+    let url = format!("https://api.github.com/repos/{release_repo}/releases/tags/{tag}");
+    let body = ureq::get(&url)
+        .set("User-Agent", "zdroid-bootstrap-installer")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| anyhow!("HTTP GET {url}: {e}"))?
+        .into_string()
+        .map_err(|e| anyhow!("read body from {url}: {e}"))?;
+    let candidates = parse_asset_names(&body);
+    candidates
+        .into_iter()
+        .find(|name| {
+            name.starts_with(ASSET_NAME_PREFIX) && name.ends_with(ASSET_NAME_SUFFIX)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "release {tag} has no asset matching {ASSET_NAME_PREFIX}*{ASSET_NAME_SUFFIX}"
+            )
+        })
+}
+
+/// Walk the API JSON for `"name": "..."` strings under the `assets`
+/// array. Lightweight scrape: avoids pulling serde_json back as a
+/// dep for one fallback path that only fires on misnamed uploads.
+fn parse_asset_names(body: &str) -> Vec<String> {
+    let Some(assets_start) = body.find("\"assets\"") else {
+        return Vec::new();
+    };
+    let tail = &body[assets_start..];
+    let mut names = Vec::new();
+    let needle = "\"name\":";
+    let mut search = tail;
+    while let Some(idx) = search.find(needle) {
+        search = &search[idx + needle.len()..];
+        if let Some(quote_start) = search.find('"') {
+            let after_quote = &search[quote_start + 1..];
+            if let Some(quote_end) = after_quote.find('"') {
+                let name = &after_quote[..quote_end];
+                names.push(name.to_owned());
+                search = &after_quote[quote_end + 1..];
+            }
+        }
     }
-    Ok(tag.to_owned())
+    names
 }
 
 fn extract_into_staging(zip_bytes: &[u8], staging: &Path) -> Result<()> {
