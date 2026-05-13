@@ -1,15 +1,22 @@
-//! Install / refresh the `zd-exec` binary from APK assets to
-//! `$PREFIX/bin/zd-exec`.
+//! Install / refresh the `zd-exec` binary + `zd-runtime/` symlink
+//! farm into app-private locations decoupled from the Termux-flavored
+//! `$PREFIX`.
 //!
 //! `zd-exec` is the Rust spawn wrapper that routes every PATH-resolved
 //! invocation (bash, git, rust-analyzer, …) through the active
 //! `RuntimeProvider` (chroot / bootstrap / external Termux). The APK
 //! ships it as an asset (`android/app/src/main/assets/zd-exec`) and
-//! we extract it to `$PREFIX/bin/zd-exec` at boot. The Gradle
+//! we extract it to `<data>/files/bin/zd-exec` at boot. The Gradle
 //! `buildZdExec` task in `app/build.gradle.kts` produces the asset by
 //! running `cargo ndk … build --release -p zdroid_runtime --bin
 //! zd-exec` before each APK build, so the binary stays in lockstep
 //! with the Rust libs inside the APK.
+//!
+//! Pre-Phase-4 these lived under `$PREFIX/bin/zd-exec` and
+//! `$PREFIX/zd-runtime/`. Phase 4 of the Termux-divestment refactor
+//! relocated them off `$PREFIX` so chroot mode doesn't depend on the
+//! bootstrap-flavored layout. Existing installs get the orphans swept
+//! on next boot; new installs land at the new paths directly.
 //!
 //! Why APK-bundled instead of part of the bootstrap zip: zd-exec is
 //! tied to the editor's Rust code (RuntimeProvider trait, wire
@@ -36,15 +43,30 @@ use anyhow::{Context, Result, anyhow};
 /// `buildZdExec` Gradle task writes to in `assets/`.
 const ASSET_NAME: &str = "zd-exec";
 
-/// Ensure `<prefix>/bin/zd-exec` exists and matches the APK-bundled
+/// Ensure `<data_path>/bin/zd-exec` exists and matches the APK-bundled
 /// asset. Re-extracts if the file is missing or has a different byte
 /// length than the asset (catches both fresh-install and stale-binary
 /// cases). No-op when the on-disk file already matches.
 ///
-/// `prefix` is typically `<app data>/files/usr`, mirroring the
-/// Termux-flavored layout we extract into.
-pub fn ensure_installed(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
-    let target = prefix.join("bin").join(ASSET_NAME);
+/// Sweeps the pre-Phase-4 `<data_path>/usr/bin/zd-exec` orphan if
+/// present so existing installs upgrading through this change don't
+/// leave ~5 MB of dead bytes behind.
+pub fn ensure_installed(android_app: &AndroidApp, data_path: &Path) -> Result<()> {
+    let stale = data_path.join("usr/bin").join(ASSET_NAME);
+    if stale.exists() {
+        match fs::remove_file(&stale) {
+            Ok(()) => log::info!(
+                "zd_exec_install: swept pre-Phase-4 stale binary at {}",
+                stale.display()
+            ),
+            Err(err) => log::warn!(
+                "zd_exec_install: could not remove stale {}: {err}",
+                stale.display()
+            ),
+        }
+    }
+
+    let target = data_path.join("bin").join(ASSET_NAME);
 
     let asset_manager = android_app.asset_manager();
     let asset_name = CString::new(ASSET_NAME)?;
@@ -99,7 +121,7 @@ pub fn ensure_installed(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Populate `$PREFIX/zd-runtime/` with one symlink per name in
+/// Populate `<data_path>/zd-runtime/` with one symlink per name in
 /// `binaries`, each pointing at `../bin/zd-exec`. This is the
 /// virtual `/usr/bin` the Zed app process gets to see — kernel PATH
 /// lookup of e.g. `java` finds the symlink, exec's `zd-exec`, which
@@ -122,8 +144,26 @@ pub fn ensure_installed(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
 ///   - Non-symlink entries (file, dir) are left alone — we don't
 ///     touch what we didn't create.
 ///   - Names in `binaries` that don't yet exist are created.
-pub fn ensure_runtime_symlinks(prefix: &Path, binaries: &[String]) -> Result<()> {
-    let runtime_dir = prefix.join("zd-runtime");
+///
+/// Sweeps the pre-Phase-4 `<data_path>/usr/zd-runtime/` orphan dir
+/// before populating the new location so existing installs upgrading
+/// through this change shed the old symlink farm in one go.
+pub fn ensure_runtime_symlinks(data_path: &Path, binaries: &[String]) -> Result<()> {
+    let stale_dir = data_path.join("usr/zd-runtime");
+    if stale_dir.exists() {
+        match fs::remove_dir_all(&stale_dir) {
+            Ok(()) => log::info!(
+                "zd_exec_install: swept pre-Phase-4 stale dir at {}",
+                stale_dir.display()
+            ),
+            Err(err) => log::warn!(
+                "zd_exec_install: could not remove stale {}: {err}",
+                stale_dir.display()
+            ),
+        }
+    }
+
+    let runtime_dir = data_path.join("zd-runtime");
     fs::create_dir_all(&runtime_dir)
         .with_context(|| format!("create_dir_all {}", runtime_dir.display()))?;
     let target = Path::new("../bin/zd-exec");

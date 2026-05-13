@@ -255,15 +255,15 @@ fn android_main(app: AndroidApp) {
         );
     }
 
-    // Install zd-exec into $PREFIX/bin/ from the APK-bundled asset.
-    // Idempotent (skipped when on-disk byte length matches the
+    // Install zd-exec into <data>/files/bin/ from the APK-bundled
+    // asset. Idempotent (skipped when on-disk byte length matches the
     // asset's), so it runs every boot but is essentially free past
     // the first launch. Without this, fresh installs land with no
-    // zd-exec and `terminal.shell` (which we set to
-    // `$PREFIX/bin/zd-exec` for chroot mode) fails with ENOENT.
-    let prefix = data_path.join("usr");
+    // zd-exec and `terminal.shell` (which the chroot adapter sets to
+    // `<data>/files/bin/zd-exec`) fails with ENOENT. Phase 4 of the
+    // Termux-divestment refactor moved this off `$PREFIX/bin/`.
     if let Err(err) =
-        gpui_android::zd_exec_install::ensure_installed(&app, &prefix)
+        gpui_android::zd_exec_install::ensure_installed(&app, &data_path)
     {
         log::warn!(
             "zed_android: zd-exec install failed: {err:#}; \
@@ -271,8 +271,8 @@ fn android_main(app: AndroidApp) {
         );
     }
 
-    // Populate $PREFIX/zd-runtime/ with symlinks for every binary the
-    // active runtime adapter advertises. Each symlink points at
+    // Populate <data>/files/zd-runtime/ with symlinks for every binary
+    // the active runtime adapter advertises. Each symlink points at
     // zd-exec; kernel PATH lookup intercepts Zed's
     // `Command::new("java")` and routes through the bridge to wherever
     // the binary actually lives. The adapter inspects its OWN
@@ -280,7 +280,8 @@ fn android_main(app: AndroidApp) {
     // walks $PREFIX/bin) — no hardcoded list anywhere. apt-installing
     // a new tool inside the chroot makes it show up after the next
     // launch; switching adapters rewrites the set to match the new
-    // env (stale entries get swept).
+    // env (stale entries get swept). Pre-Phase-4 this lived at
+    // `$PREFIX/zd-runtime/`.
     if let Some(provider) = build_active_provider(&data_path) {
         let binaries = provider.list_binaries();
         log::info!(
@@ -289,7 +290,7 @@ fn android_main(app: AndroidApp) {
             provider.id(),
         );
         if let Err(err) =
-            gpui_android::zd_exec_install::ensure_runtime_symlinks(&prefix, &binaries)
+            gpui_android::zd_exec_install::ensure_runtime_symlinks(&data_path, &binaries)
         {
             log::warn!(
                 "zed_android: zd-runtime symlinks failed: {err:#}; \

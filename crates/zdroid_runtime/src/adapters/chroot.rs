@@ -94,20 +94,17 @@ mod android_impl {
         // the resolver runs on bionic or inside the chroot. No
         // path translation needed for cwd, argv, or env values.
         //
-        // Sanitize env at the boundary anyway: Zed's process env
-        // carries bootstrap-flavored bytes (`PREFIX`, `TERMUX__*`,
-        // `PATH=…/usr/zd-runtime:…`) that aren't paths-that-don't-
-        // exist anymore (they DO exist under the symmetric bind), but
-        // they're still wrong-for-this-context — the chrooted child
-        // wants kali's `PATH=/usr/bin:/usr/sbin:...`, not Zdroid's
-        // bootstrap PATH. sanitize_env_for_chroot strips the
-        // bootstrap-shaped env and substitutes chroot-native defaults
-        // + INIT_PWD for the NetHunter profile.d hook.
+        // Sanitize env at the boundary anyway: callers may carry a
+        // `PATH=…/zd-runtime:…` shaped for host bionic, but the
+        // chrooted child wants kali's `PATH=/usr/bin:/usr/sbin:...`.
+        // sanitize_env_for_chroot strips the host-shaped env and
+        // substitutes chroot-native defaults + INIT_PWD for the
+        // NetHunter profile.d hook.
         let env = sanitize_env_for_chroot(config, &req.env, req.cwd.as_deref());
 
         // zd-runtime paths are the ONE translation that survives the
         // v1.1.6 symmetric bind. zd-runtime/<name> symlinks at
-        // `$PREFIX/usr/zd-runtime/` point at host's `../bin/zd-exec`
+        // `<data>/files/zd-runtime/` point at host's `../bin/zd-exec`
         // — a bionic-linked binary. The bind mount makes the SYMLINK
         // resolvable inside the chroot, but the dynamic loader the
         // symlink target needs (`/system/bin/linker64`) doesn't
@@ -120,7 +117,7 @@ mod android_impl {
         // so the chroot's own PATH lookup resolves `<name>` against
         // its native `/usr/bin/<name>`. The host-bridge concept stops
         // at the chroot boundary; inside, it's just `java` not
-        // `…/usr/zd-runtime/java`.
+        // `…/zd-runtime/java`.
         let program_translated = strip_zd_runtime(&req.program);
         let args_translated: Vec<OsString> = req
             .args
@@ -319,21 +316,23 @@ mod android_impl {
     // inside the chroot, so no translation is needed for that class.
     //
     // ONE translation survives: zd-runtime paths. zd-runtime/<name>
-    // symlinks at `$PREFIX/usr/zd-runtime/` point at host's bionic
-    // `../bin/zd-exec` binary. The bind mount makes the symlink
-    // resolvable inside the chroot, but the loader the binary needs
-    // (`/system/bin/linker64`) doesn't exist inside the kali rootfs
-    // — kali has glibc's `/lib/ld-linux-aarch64.so.1`. So executing
-    // the path inside the chroot fails with ENOENT from the loader.
-    // We strip zd-runtime paths to bare program names so the chroot's
-    // own PATH lookup resolves them against `/usr/bin/<name>`.
+    // symlinks at `<data>/files/zd-runtime/` point at host's bionic
+    // `<data>/files/bin/zd-exec` binary. The bind mount makes the
+    // symlink resolvable inside the chroot, but the loader the binary
+    // needs (`/system/bin/linker64`) doesn't exist inside the kali
+    // rootfs — kali has glibc's `/lib/ld-linux-aarch64.so.1`. So
+    // executing the path inside the chroot fails with ENOENT from the
+    // loader. We strip zd-runtime paths to bare program names so the
+    // chroot's own PATH lookup resolves them against `/usr/bin/<name>`.
 
     /// Host-side zd-runtime prefixes that need stripping at the chroot
     /// boundary. Listed in both `/data/data/<pkg>` and `/data/user/0/<pkg>`
-    /// forms because either can appear in resolver output.
+    /// forms because either can appear in resolver output. Phase 4 of
+    /// the Termux-divestment refactor relocated this off `$PREFIX/usr/`
+    /// to the bare `<data>/files/zd-runtime/`.
     const ZD_RUNTIME_DIRS: &[&str] = &[
-        "/data/data/com.zdroid/files/usr/zd-runtime/",
-        "/data/user/0/com.zdroid/files/usr/zd-runtime/",
+        "/data/data/com.zdroid/files/zd-runtime/",
+        "/data/user/0/com.zdroid/files/zd-runtime/",
     ];
 
     /// If `s` is a zd-runtime path (starts with one of [`ZD_RUNTIME_DIRS`]
@@ -577,17 +576,17 @@ impl RuntimeProvider for ChrootAdapter {
         use std::ffi::OsString;
         use util::env::EnvOp;
 
-        let prefix = data_path.join("usr");
-        let zd_runtime = prefix.join("zd-runtime");
-        let zed_bin = prefix.join(".zed/bin");
-        let prefix_bin = prefix.join("bin");
+        // Phase 4: zd-exec + zd-runtime live at `<data>/files/bin/` and
+        // `<data>/files/zd-runtime/` respectively, not under the
+        // bootstrap-flavored `<data>/files/usr/`. Chroot mode has no
+        // dependency on the bootstrap layout anymore.
+        let zd_runtime = data_path.join("zd-runtime");
+        let bin = data_path.join("bin");
         let existing_path = std::env::var_os("PATH").unwrap_or_default();
         let mut new_path = OsString::new();
         new_path.push(&zd_runtime);
         new_path.push(":");
-        new_path.push(&zed_bin);
-        new_path.push(":");
-        new_path.push(&prefix_bin);
+        new_path.push(&bin);
         new_path.push(":");
         new_path.push(&existing_path);
 
@@ -620,7 +619,7 @@ impl RuntimeProvider for ChrootAdapter {
             ("PATH".into(), EnvOp::Set(new_path)),
             // SHELL points at zd-exec so the integrated terminal
             // lands inside the rootfs via the same wrapper.
-            ("SHELL".into(), EnvOp::Set(prefix.join("bin/zd-exec").into_os_string())),
+            ("SHELL".into(), EnvOp::Set(bin.join("zd-exec").into_os_string())),
         ]
     }
 
@@ -633,6 +632,6 @@ impl RuntimeProvider for ChrootAdapter {
     }
 
     fn terminal_shell(&self, data_path: &std::path::Path) -> Option<std::path::PathBuf> {
-        Some(data_path.join("usr/bin/zd-exec"))
+        Some(data_path.join("bin/zd-exec"))
     }
 }
