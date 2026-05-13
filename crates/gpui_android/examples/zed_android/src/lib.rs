@@ -240,18 +240,6 @@ fn android_main(app: AndroidApp) {
     // DNS if ConnectivityManager gives nothing (no active network yet).
     gpui_android::dns_bridge::populate_resolv_conf(&app);
 
-    // Best-effort first-launch extraction of the bundled Termux bootstrap.
-    // Non-fatal: if the asset isn't bundled yet (pre-L2a/L2b) the extractor
-    // logs and returns Err; the editor still boots without a runtime, the
-    // integrated terminal and pkg-installed LSPs just stay unavailable.
-    if let Err(err) =
-        gpui_android::termux_bootstrap::extract_if_needed(&app, &data_path)
-    {
-        log::warn!(
-            "zed_android: termux bootstrap extract failed: {err:#}; \
-             continuing without integrated runtime"
-        );
-    }
     // Idempotent runtime fixes — rewrite com.termux strings inside
     // maintainer-script bodies, install the apt Post-Invoke hook so
     // future `pkg install` triggers the same rewrite. Runs on every

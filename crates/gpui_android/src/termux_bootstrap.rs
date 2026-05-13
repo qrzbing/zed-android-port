@@ -1,329 +1,30 @@
-//! First-launch extractor for the bundled Termux bootstrap.
+//! Runtime patches that turn a freshly-extracted Termux bootstrap into a
+//! Zdroid-flavored one.
 //!
-//! 1:1 port of Termux's `TermuxInstaller.java`. The bundled bootstrap zip
-//! lives in `assets/bootstrap-aarch64.zip`, manually SCP'd from the Vultr
-//! build host after each rebuild — there is no Gradle download task yet.
-//! Every binary inside the bootstrap has
-//! `/data/data/com.zdroid/files/usr/...` baked into its
-//! `DT_RUNPATH` and shebangs (the `build-bootstraps.sh:246` sed pass
-//! rewrites the upstream `com.termux` strings before zipping).
+//! Phase 6 of the Termux-divestment refactor moved zip extraction out of
+//! this module — `BootstrapAdapter::install` (in `zdroid_runtime`) now
+//! pulls the bootstrap from a GitHub release and extracts it to `$PREFIX`.
+//! This module is the SECOND step: rewrite com.termux references in
+//! maintainer scripts, install apt Post-Invoke hooks for future `pkg
+//! install` runs, drop the musl loader, etc.
 //!
-//! ## Where this writes
+//! Phase 8a deleted the legacy APK-asset extraction path (~250 LOC
+//! gone: extract_if_needed, extract_entries, try_read_bootstrap_asset,
+//! replay_symlinks, BOOTSTRAP_VERSION sentinel, OnceLock). Phase 8b will
+//! move every `install_*_hook` below into the bootstrap-build pipeline
+//! in `Dylanmurzello/zdroid-bootstrap` so the downloaded zip ships
+//! pre-patched and this whole module disappears.
 //!
-//! `$PREFIX = <data_path>/usr` is the *only* directory this module ever
-//! mutates. `$HOME = <data_path>/home` is never touched here — that lets us
-//! re-extract on version mismatch without nuking the user's git repos,
-//! shell history, or dotfiles. (User-installed `pkg install ...` packages
-//! under `$PREFIX/...` *will* be wiped on re-extract, matching upstream
-//! Termux behaviour. The contract is "$PREFIX is owned by the bootstrap;
-//! $HOME is owned by the user".)
-//!
-//! ## Atomicity
-//!
-//! Sequence is **not** atomic: `wipe(staging) → extract → wipe(prefix) →
-//! rename(staging, prefix) → write sentinel`. There is a window after the
-//! prefix wipe where `$PREFIX` is gone. A power loss / SIGKILL inside that
-//! window leaves a half-installed runtime, but the version sentinel is
-//! written *last*, so the next boot's `read(version_file)` fails and we
-//! re-extract from scratch. Recoverable, not atomic. Comments don't
-//! oversell.
+//! `$PREFIX = <data_path>/usr` is the *only* directory this module
+//! mutates. `$HOME = <data_path>/home` is never touched here.
 
 use std::ffi::CString;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
 
 use android_activity::AndroidApp;
 use anyhow::{Context, Result, anyhow};
-
-const ASSET_NAME: &str = "bootstrap-aarch64.zip";
-const SYMLINKS_ENTRY: &str = "SYMLINKS.txt";
-
-// SYMLINKS.txt delimiter is U+2190 LEFTWARDS ARROW (UTF-8: 0xE2 0x86 0x90).
-// Verified against `bootstrap-2026.04.26-r1+apt.android-7/SYMLINKS.txt` —
-// `xxd` shows `e2 86 90` between the absolute-target and relative-link
-// halves of every line. The delimiter is *not* a tab and not a NUL.
-const SYMLINKS_DELIM: char = '\u{2190}';
-
-const VERSION_FILE: &str = "etc/termux-zed-bootstrap.version";
-
-// Bumped whenever we reroll the rebuilt bootstrap. On mismatch the
-// extractor wipes $PREFIX and re-runs. This is the source of truth for
-// what we expect; the actual zip at
-// `app/src/main/assets/bootstrap-aarch64.zip` is whatever was last SCP'd
-// from Vultr — Rust ↔ asset skew is possible if the SCP is skipped.
-//
-// r5 (2026-05-03): r4 + `grep -lI` flag in build-bootstraps.sh path-fixup
-// so sed skips ELF binaries. r4's path-fixup corrupted proot's ELF
-// section table by replacing `com.termux` strings inside its data
-// section (9-byte length delta shifted offsets). r5 keeps shell
-// scripts/configs path-corrected while leaving binaries untouched.
-// r6 (2026-05-03): drops proot entirely. dpkg patched at
-// `lib/dpkg/tarfn.c` to rewrite `data/data/com.termux/...` paths to our
-// app's data dir at extract time, reading `TERMUX_APP__PACKAGE_NAME`
-// from env. Upstream Termux .debs (`pkg install rust-analyzer` etc.)
-// install natively without ptrace overhead. See
-// `crates/gpui_android/termux-patches/dpkg/lib-dpkg-tarfn.c.patch`.
-// r7 (2026-05-03): same bootstrap zip as r6 (no Vultr rebuild). Bump
-// triggered by an apt-install-dpkg disaster: empirical user session
-// proved that `apt install dpkg` (or apt --fix-broken install when
-// dpkg is in the dependency closure) replaces our patched dpkg with
-// upstream's, which has com.termux baked into RUNPATH/sysconfdir/...
-// and immediately bricks. Recovery is re-extract. r7 forces it once;
-// `apply_runtime_patches` now also writes
-// `etc/apt/preferences.d/zed-pin-dpkg` to prevent re-clobbering.
-// r8 (2026-05-03): fresh bootstrap built on Vultr with `--add patchelf`
-// so we have the binary needed for the layer-3 fix. `apply_runtime_
-// patches` now installs `etc/apt/zed-patchelf-hook.sh` plus an
-// `etc/apt/apt.conf.d/98-zed-patchelf` DPkg::Post-Invoke hook that
-// rewrites DT_RUNPATH on every freshly-installed upstream binary so
-// `pkg install nodejs` etc. produce binaries that can actually run.
-// r9 (2026-05-03): same bootstrap as r8 (no rebuild). Bumps version to
-// force re-extract because r8's patchelf hook briefly wrote
-// /data/user/0/<pkg>/files/usr/lib into bootstrap libs' RPATH (the
-// Android-resolved form), creating a dynamic-linker namespace
-// mismatch with bash's /data/data/<pkg>/... RUNPATH that bricked
-// bash startup. Helper script now canonicalizes to /data/data form.
-// r10 (2026-05-03): r9's helper still corrupted libandroid-support.so:
-// patchelf --force-rpath truncated the file from 66KB to 21KB during
-// the first apt --fix-broken install (file got caught by -mmin -10
-// because bootstrap was extracted ~5 min earlier). Three fixes:
-// (a) drop --force-rpath, (b) skip files whose RUNPATH already matches
-// our prefix (so bootstrap libs are never touched), (c) tighten
-// -mmin -10 → -mmin -1 (only catch dpkg's just-extracted files).
-// r11 (2026-05-03): r10 + the layer-4/5 systematization. The bootstrap
-// now ships `ld-musl-aarch64.so.1` extracted from Alpine's musl APK
-// (~700KB) so musl-linked upstream binaries (claude-code, alpine-built
-// Rust/Bun tools) run natively after patchelf. apply_runtime_patches
-// also writes `$PREFIX/bin/zed-setup-claude` — a one-shot helper that
-// turns `npm install -g @anthropic-ai/claude-code` into a runnable
-// `claude` command (musl variant, install.cjs map, patchelf, wrapper).
-const BOOTSTRAP_VERSION: &str = "2026.05.06-r2+apt.android-7-zed-r14+com.zdroid+ssh-node-go-patchelf-ra-git+permfix+libcprotect-r2";
-
-static EXTRACTED: OnceLock<()> = OnceLock::new();
-
-/// Extract the bundled bootstrap zip into `$PREFIX = data_path/usr` if it
-/// isn't already at the bundled version. Idempotent across activity
-/// recreation: the OnceLock + on-disk version sentinel both short-circuit
-/// re-runs.
-///
-/// Failure surfaces via `Err` but the caller should treat it as
-/// non-fatal — the editor (L1) keeps working without a runtime; only the
-/// integrated terminal and `pkg install`-driven LSPs become unavailable.
-pub fn extract_if_needed(android_app: &AndroidApp, data_path: &Path) -> Result<()> {
-    if EXTRACTED.get().is_some() {
-        return Ok(());
-    }
-
-    let prefix = data_path.join("usr");
-    let staging = data_path.join("usr-staging");
-    let version_file = prefix.join(VERSION_FILE);
-
-    if let Ok(existing) = std::fs::read_to_string(&version_file) {
-        if existing.trim() == BOOTSTRAP_VERSION {
-            log::info!(
-                "termux_bootstrap: $PREFIX already at {BOOTSTRAP_VERSION}, skipping extract"
-            );
-            let _ = EXTRACTED.set(());
-            return Ok(());
-        }
-        log::warn!(
-            "termux_bootstrap: version mismatch (have {:?}, want {:?}); re-extracting. \
-             User-installed packages under $PREFIX will be wiped; $HOME is preserved.",
-            existing.trim(),
-            BOOTSTRAP_VERSION,
-        );
-    }
-
-    // Phase 6 of the Termux-divestment refactor moved bootstrap
-    // distribution off the APK. The asset is no longer bundled; the
-    // active runtime adapter (`BootstrapAdapter::install`, see
-    // `crates/zdroid_runtime/src/adapters/bootstrap_install.rs`) is
-    // now responsible for downloading from `<release_repo>`'s GitHub
-    // release. This function stays as a legacy path for builds that
-    // still ship the asset (pre-6b dev branches) and is a quiet no-op
-    // when the asset is missing — Phase 8 sweeps it.
-    log::info!("termux_bootstrap: opening {ASSET_NAME} from APK assets");
-    let bytes = match try_read_bootstrap_asset(android_app) {
-        Some(bytes) => bytes,
-        None => {
-            log::info!(
-                "termux_bootstrap: {ASSET_NAME} not bundled in APK; \
-                 leaving install to BootstrapAdapter (Phase 6+)"
-            );
-            return Ok(());
-        }
-    };
-    log::info!("termux_bootstrap: read {} bytes from asset, parsing zip", bytes.len());
-
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)
-            .with_context(|| format!("wipe leftover staging at {}", staging.display()))?;
-    }
-    std::fs::create_dir_all(&staging)
-        .with_context(|| format!("create staging dir {}", staging.display()))?;
-
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .context("ZipArchive::new on bootstrap asset")?;
-
-    let symlinks = extract_entries(&mut archive, &staging)?;
-    log::info!(
-        "termux_bootstrap: extracted {} entries, {} symlinks queued",
-        archive.len(),
-        symlinks.len(),
-    );
-
-    replay_symlinks(&staging, &symlinks)?;
-
-    if prefix.exists() {
-        std::fs::remove_dir_all(&prefix)
-            .with_context(|| format!("wipe old prefix at {}", prefix.display()))?;
-    }
-    std::fs::rename(&staging, &prefix).with_context(|| {
-        format!(
-            "rename {} -> {}",
-            staging.display(),
-            prefix.display()
-        )
-    })?;
-
-    // Drop the musl dynamic linker into our prefix. Termux's bionic libc
-    // and glibc are ABI-incompatible, but musl is small and self-
-    // contained (linker IS libc — one file does both jobs). Shipping
-    // ld-musl-aarch64.so.1 lets `pkg install`-installed musl binaries
-    // (e.g. claude-code-linux-arm64-musl) run natively after the
-    // patchelf hook rewrites their `--set-interpreter` to this path.
-    // Asset-copy helpers (musl linker, askpass helper) live in
-    // `apply_runtime_patches` so they run on EVERY boot — the bootstrap
-    // re-extract above is gated by version-match, but the asset copies
-    // are cheap and need to land regardless of whether the heavy zip
-    // extract ran.
-
-    if let Some(parent) = version_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::File::create(&version_file)
-        .with_context(|| format!("create version sentinel at {}", version_file.display()))?
-        .write_all(BOOTSTRAP_VERSION.as_bytes())?;
-
-    log::info!(
-        "termux_bootstrap: bootstrap {BOOTSTRAP_VERSION} ready at {}",
-        prefix.display()
-    );
-    let _ = EXTRACTED.set(());
-    Ok(())
-}
-
-/// Read the bundled bootstrap asset if it's still in the APK
-/// (pre-Phase-6 builds). Returns `None` when the asset is missing —
-/// callers treat that as "BootstrapAdapter::install handles it now".
-fn try_read_bootstrap_asset(android_app: &AndroidApp) -> Option<Vec<u8>> {
-    let asset_manager = android_app.asset_manager();
-    let asset_name = CString::new(ASSET_NAME).ok()?;
-    let mut asset = asset_manager.open(&asset_name)?;
-    let mut buf = Vec::with_capacity(asset.length());
-    asset.read_to_end(&mut buf).ok()?;
-    Some(buf)
-}
-
-fn extract_entries<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    staging: &Path,
-) -> Result<Vec<(String, String)>> {
-    let mut symlinks = Vec::new();
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let raw_name = entry.name().to_owned();
-
-        if raw_name == SYMLINKS_ENTRY {
-            let mut text = String::new();
-            entry.read_to_string(&mut text)?;
-            for line in text.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                let Some((target, link_rel)) = line.split_once(SYMLINKS_DELIM) else {
-                    log::warn!("termux_bootstrap: malformed SYMLINKS.txt line: {line:?}");
-                    continue;
-                };
-                symlinks.push((target.to_owned(), link_rel.to_owned()));
-            }
-            continue;
-        }
-
-        // Defense-in-depth against zip-slip even though we're shipping our
-        // own bootstrap. `enclosed_name` strips `..` components.
-        let Some(safe) = entry.enclosed_name() else {
-            log::warn!("termux_bootstrap: skipping unsafe entry path {raw_name:?}");
-            continue;
-        };
-        let dest: PathBuf = staging.join(&safe);
-
-        if entry.is_dir() {
-            std::fs::create_dir_all(&dest)?;
-            continue;
-        }
-
-        if entry.is_symlink() {
-            // Bootstrap zips put symlinks in SYMLINKS.txt, not as zip
-            // entries. If we ever see one inline, log so we know our
-            // assumption broke.
-            log::warn!("termux_bootstrap: unexpected inline symlink entry {raw_name:?}; skipping");
-            continue;
-        }
-
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let entry_mode = entry.unix_mode();
-        let mut out = std::fs::File::create(&dest)
-            .with_context(|| format!("create {}", dest.display()))?;
-        std::io::copy(&mut entry, &mut out)?;
-
-        // Honor the zip-stored unix mode for every entry. Bootstrap zips
-        // built by termux-packages stamp realistic perms on each file
-        // (binaries 0755, libs 0644, helper scripts 0755, etc.) — copy
-        // those through verbatim, scoped to the owner so we stay inside
-        // the app sandbox.
-        //
-        // Earlier this only chmod'd `bin/*`, `libexec/*`, `lib/apt/
-        // methods/*`, and `lib/apt/apt-helper` to 0700 and let everything
-        // else inherit `std::fs::File::create`'s default. With our
-        // process umask, default ended up at 0600 — which broke any
-        // executable outside that whitelist (`lib/go/bin/go`,
-        // `lib/node_modules/.bin/*`, etc.) with `EACCES` at execve.
-        // Honoring zip mode handles all of those plus future packages
-        // we don't have to think about.
-        //
-        // Fallback when the zip entry has no Unix mode (older zip
-        // creators / MS-DOS attribute mode): keep the original
-        // whitelist behavior so bin/* still gets 0700.
-        if let Some(mode) = entry_mode {
-            // Mask to 0o700 ownership scope — the bootstrap's app-
-            // private dir is already isolated by uid + SELinux, so
-            // group/world bits are decorative. Read+exec where the
-            // file says executable; read where it says non-exec.
-            let owner_only = (mode & 0o700)
-                | if mode & 0o100 != 0 { 0o700 } else { 0o600 };
-            let mut perms = std::fs::metadata(&dest)?.permissions();
-            perms.set_mode(owner_only);
-            std::fs::set_permissions(&dest, perms)?;
-        } else if raw_name.starts_with("bin/")
-            || raw_name.starts_with("libexec/")
-            || raw_name.starts_with("lib/apt/methods/")
-            || raw_name == "lib/apt/apt-helper"
-        {
-            let mut perms = std::fs::metadata(&dest)?.permissions();
-            perms.set_mode(0o700);
-            std::fs::set_permissions(&dest, perms)?;
-        }
-    }
-
-    Ok(symlinks)
-}
 
 /// Closes the maintainer-script content gap left by our dpkg path-rewrite
 /// patches. Those patches handle file PATHS at extract time (so files land
@@ -1904,24 +1605,6 @@ fn patch_resolv_conf_in_bytes(bytes: &mut [u8]) -> usize {
         }
     }
     count
-}
-
-fn replay_symlinks(staging: &Path, symlinks: &[(String, String)]) -> Result<()> {
-    for (target, link_rel) in symlinks {
-        let link_rel = link_rel.trim_start_matches("./");
-        let link_abs = staging.join(link_rel);
-        if let Some(parent) = link_abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if link_abs.exists() || link_abs.symlink_metadata().is_ok() {
-            // Pre-existing entry from a previous staged run; replace.
-            let _ = std::fs::remove_file(&link_abs);
-        }
-        std::os::unix::fs::symlink(target, &link_abs).with_context(|| {
-            format!("symlink {} -> {}", link_abs.display(), target)
-        })?;
-    }
-    Ok(())
 }
 
 /// Logs the process's SELinux context. If `targetSdk >= 29` ever sneaks
