@@ -240,21 +240,6 @@ fn android_main(app: AndroidApp) {
     // DNS if ConnectivityManager gives nothing (no active network yet).
     gpui_android::dns_bridge::populate_resolv_conf(&app);
 
-    // Idempotent runtime fixes — rewrite com.termux strings inside
-    // maintainer-script bodies, install the apt Post-Invoke hook so
-    // future `pkg install` triggers the same rewrite. Runs on every
-    // boot regardless of whether extraction actually re-extracted; the
-    // sed is no-op on clean files and the apt config write is constant.
-    if let Err(err) =
-        gpui_android::termux_bootstrap::apply_runtime_patches(&app, &data_path)
-    {
-        log::warn!(
-            "zed_android: termux runtime patches failed: {err:#}; \
-             upstream `pkg install` of packages with hardcoded shebangs \
-             may need a manual sed + dpkg --configure -a"
-        );
-    }
-
     // Install zd-exec into <data>/files/bin/ from the APK-bundled
     // asset. Idempotent (skipped when on-disk byte length matches the
     // asset's), so it runs every boot but is essentially free past
