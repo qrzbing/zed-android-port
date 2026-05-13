@@ -12,30 +12,35 @@ git remote -v
 
 ## Files we own, always
 
-Identity + Zdroid-specific docs. Conflicts on these always resolve to OURS via `.gitattributes` (see below):
+Identity + Zdroid-specific docs that we have actually authored. Conflicts on these always resolve to OURS via `.gitattributes` (see below). Verified via `git diff --quiet $BASE origin/main -- <file>` (BASE = `git merge-base origin/main upstream/main`):
 
-- `README.md`
-- `AGENTS.md`, `GEMINI.md`, `CLAUDE.md`
-- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (`*.zed-upstream.md` siblings preserve the upstream copies for reference)
-- `BACKLOG.md`, `RELEASING.md`, `UPSTREAM_MERGE.md`
-- `.github/ISSUE_TEMPLATE/*`
-- `.github/pull_request_template.md`
-- `.github/FUNDING.yml`
-- `.gitattributes`
+- `README.md` (we rewrote upstream's)
+- `CONTRIBUTING.md` (we rewrote)
+- `BACKLOG.md`, `RELEASING.md`, `UPSTREAM_MERGE.md` (new files, ours)
+- `.github/ISSUE_TEMPLATE/*` (we rewrote upstream's)
+- `.github/pull_request_template.md` (we rewrote)
+- `.github/FUNDING.yml` (we repointed from zed-industries to Dylanmurzello)
+- `.gitattributes` (we extended)
 
-Plus all files under our owned crates:
+Plus the two crates that don't exist upstream (entirely ours):
 
 - `crates/gpui_android/**`
 - `crates/zdroid_runtime/**`
-- `crates/gpui_platform/**` (we added this for the multi-platform dispatch arm)
+
+**NOT in this list** (verified upstream-unchanged, so future upstream improvements should flow through):
+
+- `AGENTS.md`, `GEMINI.md`, `CLAUDE.md` (upstream Zed's agent-rule files)
+- `.git-blame-ignore-revs`, `.mailmap`, `.prettierrc`, `.rules`, `clippy.toml`, `rustfmt.toml`, `typos.toml` (upstream's style configs)
+- `LICENSE-AGPL`, `LICENSE-APACHE`, `LICENSE-GPL` (inherited licenses)
+- `crates/gpui_platform/`, `crates/onboarding/` (upstream crates we modified in-place; normal 3-way merge applies)
 
 ## Files we modify in-place
 
-The ~54 upstream Zed files where we add cfg-gates, env-aware paths, or other small patches. These use normal 3-way merge. Expect occasional conflicts when upstream refactors them; resolve case-by-case. The current set can be enumerated with:
+The ~54 upstream Zed files where we add cfg-gates, env-aware paths, or other small patches (including `crates/gpui_platform/` and `crates/onboarding/`). These use normal 3-way merge. Expect occasional conflicts when upstream refactors them; resolve case-by-case. The current set can be enumerated with:
 
 ```sh
 git diff --name-only $(git merge-base origin/main upstream/main)..origin/main \
-  | grep -vE "^(crates/gpui_android|crates/zdroid_runtime|crates/onboarding|crates/zed_android|crates/gpui_platform)/"
+  | grep -vE "^(crates/gpui_android|crates/zdroid_runtime|crates/zed_android)/"
 ```
 
 When you resolve a conflict in one of these, ALSO check if a workaround doc under `crates/gpui_android/docs/workarounds/` covers the affected file: the doc explains why the patch is there, which makes the resolution obvious.

@@ -12,13 +12,14 @@ crates/zed/resources/windows/zed.sh text eol=lf
 #
 # Without that, `merge=ours` is silently ignored.
 
-# Identity / docs
+# Identity / docs (ONLY files where we have actually authored content
+# different from upstream, verified via
+#   git diff --quiet $(git merge-base origin/main upstream/main) origin/main -- <file>
+# AGENTS.md / GEMINI.md / CLAUDE.md are upstream Zed's agent-rule files,
+# UNCHANGED from upstream; they intentionally are NOT in this list so
+# future upstream improvements still flow through.
 README.md               merge=ours
-AGENTS.md               merge=ours
-GEMINI.md               merge=ours
-CLAUDE.md               merge=ours
 CONTRIBUTING.md         merge=ours
-CODE_OF_CONDUCT.md      merge=ours
 BACKLOG.md              merge=ours
 RELEASING.md            merge=ours
 UPSTREAM_MERGE.md       merge=ours
@@ -29,7 +30,10 @@ UPSTREAM_MERGE.md       merge=ours
 .github/pull_request_template.md     merge=ours
 .github/FUNDING.yml                  merge=ours
 
-# Whole crates we own
+# Whole crates we own (NEW crates that don't exist upstream; verified via
+#   git ls-tree $BASE --name-only -d crates/
+# gpui_platform and onboarding are upstream crates that we modified —
+# they intentionally use default 3-way merge so upstream improvements
+# flow through.
 crates/gpui_android/**         merge=ours
 crates/zdroid_runtime/**       merge=ours
-crates/gpui_platform/**        merge=ours
