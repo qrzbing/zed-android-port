@@ -28,7 +28,7 @@ pub struct ReqwestClient {
 impl ReqwestClient {
     fn builder() -> reqwest::ClientBuilder {
         reqwest::Client::builder()
-            .use_rustls_tls()
+            .use_preconfigured_tls(http_client_tls::tls_config())
             .connect_timeout(Duration::from_secs(10))
     }
 
@@ -72,9 +72,7 @@ impl ReqwestClient {
             client_has_proxy = false;
         };
 
-        let client = client
-            .use_preconfigured_tls(http_client_tls::tls_config())
-            .build()?;
+        let client = client.build()?;
         let mut client: ReqwestClient = client.into();
         client.proxy = client_has_proxy.then_some(proxy).flatten();
         client.user_agent = Some(user_agent);

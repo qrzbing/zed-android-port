@@ -41,6 +41,37 @@ fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowO
     gpui::WindowOptions::default()
 }
 
+/// Initialize `rustls-platform-verifier` against the Android trust store.
+/// Required before any in-process TLS verification, since the verifier
+/// reaches into the JVM via the bundled `rustls-platform-verifier-android`
+/// `.aar` (wired into Gradle in `android/settings.gradle.kts`). Without
+/// this, every rustls handshake fails with `UnknownIssuer`.
+///
+/// Idempotent: `init_with_env` is OnceCell-gated internally, so the
+/// re-entrant `android_main` path on activity recreation is safe.
+fn init_platform_tls(android_app: &AndroidApp) {
+    use jni::{JavaVM, objects::JObject};
+
+    let result = (|| -> anyhow::Result<()> {
+        // SAFETY: vm_as_ptr and activity_as_ptr are valid for the
+        // lifetime of the process from android_main onward; the Android
+        // runtime owns both. Same pattern as `dns_bridge::query_android_dns`
+        // and `clipboard.rs`.
+        unsafe {
+            let vm = JavaVM::from_raw(android_app.vm_as_ptr().cast())?;
+            let mut env = vm.attach_current_thread()?;
+            let activity = JObject::from_raw(android_app.activity_as_ptr().cast());
+            rustls_platform_verifier::android::init_with_env(&mut env, activity)?;
+        }
+        Ok(())
+    })();
+    if let Err(err) = result {
+        log::error!("zed_android: rustls_platform_verifier init failed: {err:#}");
+    } else {
+        log::info!("zed_android: rustls_platform_verifier initialized");
+    }
+}
+
 /// Build the active adapter from `runtime.toml`, returning the boxed
 /// provider so callers can ask for its `environment_root()` and
 /// adapter-derived metadata. Returns None when no toml exists or the
@@ -103,6 +134,8 @@ fn android_main(app: AndroidApp) {
             .with_tag("zed_android"),
     );
     info!("zed_android: android_main entry");
+
+    init_platform_tls(&app);
 
     let data_path = app
         .internal_data_path()
@@ -215,20 +248,6 @@ fn android_main(app: AndroidApp) {
             // one ship target for our APK and the channel distinction
             // has no meaning here, so the upstream branch becomes a
             // static no-op rather than a runtime decision.)
-            // Point HTTPS-using subprocesses (cargo, npm, curl, …) at
-            // Termux's pre-shipped CA bundle. Without this, rust-
-            // analyzer's `cargo metadata` dies with "unable to get
-            // local issuer certificate" the first time cargo updates
-            // the crates.io index, since cargo's curl has no fallback
-            // location for a CA bundle on Android. SSL_CERT_FILE is
-            // honored by openssl-rs + rustls + curl; CURL_CA_BUNDLE
-            // covers older curl-built tooling that ignores the openssl
-            // env var.
-            let cert_path = prefix.join("etc/tls/cert.pem");
-            if cert_path.is_file() {
-                std::env::set_var("SSL_CERT_FILE", &cert_path);
-                std::env::set_var("CURL_CA_BUNDLE", &cert_path);
-            }
             // PATH + SHELL setup is now adapter-aware. The user's
             // selection in `runtime.toml` (written by the runtime
             // picker modal) decides whether sub-spawns route through

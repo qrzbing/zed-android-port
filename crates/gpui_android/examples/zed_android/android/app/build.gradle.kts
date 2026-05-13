@@ -245,4 +245,11 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // ActivityResultLauncher / ActivityResultContracts for SAF picker.
     implementation("androidx.activity:activity-ktx:1.9.3")
+    // Android trust-store bridge for the `rustls-platform-verifier` Rust
+    // crate. Cargo ships the `.aar` inside its `rustls-platform-verifier-
+    // android` crate; the maven repo wired in `settings.gradle.kts` makes
+    // gradle resolve `rustls:rustls-platform-verifier:<ver>` to that file.
+    // Without this, in-process Zed HTTPS clients (extension registry,
+    // cloud_api, auto-update, telemetry) fail with `UnknownIssuer`.
+    implementation("rustls:rustls-platform-verifier:0.1.1")
 }
