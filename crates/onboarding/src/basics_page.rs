@@ -736,13 +736,17 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
     page
 }
 
+/// Minimal inline picker for the onboarding form. Same field-level UX
+/// as Theme / Base Keymap: a ToggleButtonGroup the user clicks once to
+/// pick. Writes `runtime.toml` directly. The richer detailed view —
+/// health badges, install hints, "Get module" links — lives in the
+/// `RuntimePicker` window reached from Settings → Android Runtime,
+/// for the case where the user needs to set up an adapter that isn't
+/// installed yet.
 #[cfg(target_os = "android")]
 fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl IntoElement {
     use zdroid_runtime::{RuntimeId, config::RuntimeFile};
 
-    /// Where `zd-exec` reads the active adapter from. Lives under
-    /// `$PREFIX/etc/` so bootstrap re-extraction doesn't clobber it
-    /// (extraction touches `bin/` `lib/` etc., not `etc/`).
     const RUNTIME_TOML_PATH: &str =
         "/data/data/com.zdroid/files/usr/etc/zd-runtime.toml";
 

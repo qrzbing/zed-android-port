@@ -20,15 +20,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Render, Window,
-    actions, prelude::*, px,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Render, Size,
+    Tiling, Window, WindowBounds, WindowKind, WindowOptions, actions, prelude::*, px,
 };
+use platform_title_bar::PlatformTitleBar;
+use release_channel::ReleaseChannel;
 use theme::ActiveTheme;
 use ui::{
     Button, Chip, Clickable, Color, FluentBuilder, Headline, HeadlineSize, Icon, IconName,
     IconSize, Label, LabelCommon, LabelSize, ParentElement, Styled, h_flex, v_flex,
 };
-use workspace::{ModalView, Workspace};
+use util::ResultExt as _;
+use workspace::{Workspace, client_side_decorations};
 use zdroid_runtime::{
     HealthStatus, RuntimeId, RuntimeProvider,
     adapters,
@@ -50,34 +53,93 @@ actions!(
     ]
 );
 
-/// Register the action + workspace hook. Called from `lib.rs::android_main`
-/// during workspace init. Once registered, command-palette → "zdroid:
-/// pick runtime" toggles the modal, and the Settings page's
-/// "Android Runtime" entry can dispatch the same action.
+/// Register the `zdroid_runtime::PickRuntime` action. Called from
+/// `lib.rs::android_main` at workspace init. Once registered, the
+/// action can be triggered from anywhere via `cx.build_action(...)` +
+/// `window.dispatch_action(...)`. Three current entry points:
 ///
-/// First-run discoverability is handled by the inline runtime-picker
-/// section rendered in the onboarding `basics_page` (see
-/// `crates/onboarding/src/basics_page.rs::render_android_runtime_section`).
-/// Auto-popping the modal over the onboarding screen is bad UX — the
-/// user came to the onboarding page expecting an inline form, not a
-/// blocking overlay. The inline section lets them pick in-place
-/// alongside Theme / Base Keymap.
+///   - Command palette (`zdroid: pick runtime`).
+///   - Settings → "Android Runtime" → "Open picker".
+///   - Onboarding basics page → "Set up Android runtime" button.
+///
+/// The handler unconditionally opens the picker as a STANDALONE
+/// WINDOW (`cx.open_window`), not as a workspace Modal. The window
+/// path works from any caller's window context: action dispatched
+/// from inside the Settings window still spawns the picker as its
+/// own independent OS window (on Android, an ExtraWindowActivity).
+/// The modal path required dispatching from the workspace window and
+/// rendered behind any window stacked on top — bad UX.
 pub fn register(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
-            workspace.register_action(toggle_runtime_picker);
+            workspace.register_action(handle_pick_runtime);
         },
     )
     .detach();
 }
 
-fn toggle_runtime_picker(
-    workspace: &mut Workspace,
+fn handle_pick_runtime(
+    _workspace: &mut Workspace,
     _: &PickRuntime,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    workspace.toggle_modal(window, cx, RuntimePicker::new);
+    open_runtime_picker_window(window, cx);
+}
+
+/// Spawn the runtime picker as its own window. Public so any callsite
+/// (settings page on_click, onboarding button on_click, lib.rs first-
+/// launch hook if we ever add one back) can open the same picker with
+/// the same parameters. Dedupes against an already-open instance so
+/// repeated taps don't pile up windows.
+///
+/// `_window` is unused but matches the on_click signature gpui passes
+/// to settings_ui's ActionLink so we don't need a wrapper closure at
+/// every call site.
+pub fn open_runtime_picker_window(_window: &mut Window, cx: &mut App) {
+    let existing = cx
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<RuntimePicker>());
+
+    if let Some(existing) = existing {
+        existing
+            .update(cx, |_, window, _| window.activate_window())
+            .log_err();
+        return;
+    }
+
+    let app_id = ReleaseChannel::global(cx).app_id();
+    let window_size = Size {
+        width: px(640.0),
+        height: px(560.0),
+    };
+    let window_min_size = Size {
+        width: px(480.0),
+        height: px(360.0),
+    };
+
+    cx.open_window(
+        WindowOptions {
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Android Runtime".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(gpui::point(px(12.0), px(12.0))),
+            }),
+            focus: true,
+            show: true,
+            is_movable: true,
+            kind: WindowKind::Normal,
+            window_background: cx.theme().window_background_appearance(),
+            app_id: Some(app_id.to_owned()),
+            window_decorations: Some(gpui::WindowDecorations::Client),
+            window_bounds: Some(WindowBounds::centered(window_size, cx)),
+            window_min_size: Some(window_min_size),
+            ..Default::default()
+        },
+        |_, cx| cx.new(RuntimePicker::new),
+    )
+    .log_err();
 }
 
 struct AdapterEntry {
@@ -87,6 +149,7 @@ struct AdapterEntry {
 }
 
 pub struct RuntimePicker {
+    title_bar: Option<Entity<PlatformTitleBar>>,
     focus_handle: FocusHandle,
     entries: Vec<AdapterEntry>,
     /// The currently active adapter (from disk). Marked with a
@@ -96,8 +159,14 @@ pub struct RuntimePicker {
 }
 
 impl RuntimePicker {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let title_bar = if !cfg!(target_os = "macos") {
+            Some(cx.new(|cx| PlatformTitleBar::new("runtime-picker-title-bar", cx)))
+        } else {
+            None
+        };
         Self {
+            title_bar,
             focus_handle: cx.focus_handle(),
             entries: build_entries(),
             current: detect_current(),
@@ -107,10 +176,9 @@ impl RuntimePicker {
     fn select(&mut self, id: RuntimeId, _window: &mut Window, cx: &mut Context<Self>) {
         if Some(id) == self.current {
             log::info!(
-                "zdroid_runtime_picker: {:?} already active; closing picker",
+                "zdroid_runtime_picker: {:?} already active; no-op",
                 id
             );
-            cx.emit(DismissEvent);
             return;
         }
 
@@ -119,11 +187,12 @@ impl RuntimePicker {
         match file.save(&path) {
             Ok(()) => {
                 log::info!(
-                    "zdroid_runtime_picker: selected {:?} → wrote {}; restart Zdroid to apply",
+                    "zdroid_runtime_picker: selected {:?} -> wrote {}; restart Zdroid to apply",
                     id,
                     path.display()
                 );
                 self.current = Some(id);
+                cx.notify();
             }
             Err(err) => {
                 log::error!(
@@ -133,12 +202,8 @@ impl RuntimePicker {
                 );
             }
         }
-        cx.emit(DismissEvent);
     }
 }
-
-impl ModalView for RuntimePicker {}
-impl EventEmitter<DismissEvent> for RuntimePicker {}
 
 impl Focusable for RuntimePicker {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -147,46 +212,53 @@ impl Focusable for RuntimePicker {
 }
 
 impl Render for RuntimePicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme_colors = cx.theme().colors();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Copy out the few theme colors we need so the immutable borrow
+        // of `cx.theme()` doesn't conflict with the mutable borrow we
+        // need later for `render_card` and `client_side_decorations`.
+        let bg = cx.theme().colors().editor_background;
+        let text = cx.theme().colors().text;
 
-        v_flex()
+        let cards: Vec<AnyElement> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| render_card(idx, entry, self.current, cx))
+            .collect();
+
+        let content = v_flex()
             .key_context("RuntimePicker")
             .track_focus(&self.focus_handle)
-            .w(px(560.0))
-            .max_h(px(720.0))
+            .size_full()
             .p_6()
             .gap_4()
-            .bg(theme_colors.elevated_surface_background)
-            .border_1()
-            .border_color(theme_colors.border)
-            .rounded_lg()
-            // Clip card content that overflows the modal's nominal
-            // width — without this, gpui flexbox lets long taglines
-            // grow past the modal box and the Select button drifts
-            // off into editor space.
-            .overflow_hidden()
+            .bg(bg)
+            .when(cfg!(target_os = "macos"), |this| this.pt_10())
             .child(
                 v_flex()
                     .gap_1()
                     .child(Headline::new("Pick your runtime").size(HeadlineSize::Medium))
                     .child(
                         Label::new(
-                            "Where Zdroid runs your tools — LSPs, git, formatters, terminal. \
+                            "Where Zdroid runs your tools: LSPs, git, formatters, terminal. \
                              Switch any time from Settings.",
                         )
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                     ),
             )
-            .child(
-                v_flex().gap_3().children(
-                    self.entries
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, entry)| render_card(idx, entry, self.current, cx)),
-                ),
-            )
+            .child(v_flex().gap_3().children(cards));
+
+        client_side_decorations(
+            v_flex()
+                .size_full()
+                .text_color(text)
+                .children(self.title_bar.clone())
+                .child(content),
+            window,
+            cx,
+            Tiling::default(),
+        )
     }
 }
 

@@ -79,6 +79,7 @@ util = { path = "../../../util" }
 watch = { path = "../../../watch" }
 workspace = { path = "../../../workspace" }
 zdroid_runtime = { path = "../../../zdroid_runtime" }
+platform_title_bar = { path = "../../../platform_title_bar" }
 release_channel = { path = "../../../release_channel" }
 reqwest_client = { path = "../../../reqwest_client" }
 search = { path = "../../../search" }

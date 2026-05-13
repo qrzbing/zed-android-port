@@ -96,26 +96,23 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
 /// without command-palette knowledge — chroot mode is functionally
 /// required for LSPs, terminal, and tooling, so this can't be buried.
 ///
-/// Renders the picker INLINE inside the settings window as a SubPageLink,
-/// not as a workspace-window modal. Reason: settings UI runs as its own
-/// Android window on top of the workspace. A modal dispatched at the
-/// workspace level pops UNDERNEATH the settings window — invisible to
-/// the user, looks like a no-op. SubPageLink draws the picker as part
-/// of the settings UI itself (same render surface as Feature Flags,
-/// Tool Permissions, etc.), no window-context mismatch.
-///
-/// The render function lives in `pages/android_runtime.rs` and writes
-/// `runtime.toml` directly via `RuntimeFile::save`, identical wiring
-/// to the matching onboarding section so the two surfaces stay in sync.
+/// The click handler dispatches the `zdroid_runtime::PickRuntime`
+/// action registered in `crates/gpui_android/examples/zed_android/src/
+/// runtime_picker.rs::register`. The action handler unconditionally
+/// calls `cx.open_window` to spawn the picker as its own window
+/// (ExtraWindowActivity on Android), so it doesn't matter that this
+/// dispatch starts in the Settings window — the picker is a peer
+/// window, not nested inside Settings. Dispatched via
+/// `with_active_or_new_workspace` so the action lands on the workspace
+/// where the handler is registered.
 #[cfg(target_os = "android")]
 fn android_runtime_page() -> SettingsPage {
     SettingsPage {
         title: "Android Runtime",
         items: Box::new([
             SettingsPageItem::SectionHeader("Runtime adapter"),
-            SettingsPageItem::SubPageLink(SubPageLink {
+            SettingsPageItem::ActionLink(ActionLink {
                 title: "Pick runtime adapter".into(),
-                r#type: Default::default(),
                 description: Some(
                     "Select which userland Zdroid routes commands into: kali chroot \
                      (full Linux via zd-spawnd), bundled bootstrap (Termux-flavored \
@@ -123,10 +120,25 @@ fn android_runtime_page() -> SettingsPage {
                      terminal, LSPs, formatters, and any spawned tool to work."
                         .into(),
                 ),
-                json_path: None,
-                in_json: false,
+                button_text: "Open picker".into(),
+                on_click: Arc::new(|_settings_window, _window, cx| {
+                    workspace::with_active_or_new_workspace(
+                        cx,
+                        |_workspace, window, cx| {
+                            match cx.build_action(
+                                "zdroid_runtime::PickRuntime",
+                                None,
+                            ) {
+                                Ok(action) => window.dispatch_action(action, cx),
+                                Err(err) => log::warn!(
+                                    "settings_ui::android_runtime_page: \
+                                     zdroid_runtime::PickRuntime not registered: {err}"
+                                ),
+                            }
+                        },
+                    );
+                }),
                 files: USER,
-                render: crate::pages::render_android_runtime_page,
             }),
         ]),
     }

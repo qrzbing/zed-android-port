@@ -12916,7 +12916,6 @@ dependencies = [
  "ui",
  "util",
  "workspace",
- "zdroid_runtime",
  "zed_actions",
  "zed_credentials_provider",
 ]
@@ -17746,6 +17745,7 @@ dependencies = [
  "outline",
  "outline_panel",
  "paths",
+ "platform_title_bar",
  "project",
  "project_panel",
  "project_symbols",
