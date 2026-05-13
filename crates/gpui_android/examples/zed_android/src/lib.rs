@@ -499,14 +499,22 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     editor::init(cx);
 
     // Seed the `onboarding::runtime_global::ActiveRuntime` global with
-    // the active adapter so the onboarding page's "Current: <adapter>"
-    // label renders correctly on first show. The runtime picker
-    // mutates this global on every Select (see runtime_picker.rs),
-    // so subsequent changes propagate via `cx.observe_global` in
-    // `Onboarding::new`.
-    let provider_for_global = active_provider(data_path);
+    // the user's runtime.toml selection — NOT `active_provider`'s
+    // result. `active_provider` falls back to a default Bootstrap
+    // adapter when no toml exists so env init has something to ask;
+    // that fallback is NOT a user selection and the onboarding label
+    // must not claim "Current: Bootstrap" for a user who never picked
+    // anything. Read the toml directly: `None` flows to the label as
+    // "Not configured yet" and disappears the instant the picker
+    // writes a selection via `cx.set_global` (see runtime_picker.rs).
+    let current_from_toml = RuntimeFile::load(
+        &data_path.join("usr/etc/zd-runtime.toml"),
+    )
+    .ok()
+    .flatten()
+    .map(|f| f.runtime.kind);
     cx.set_global(onboarding::runtime_global::ActiveRuntime {
-        current: Some(provider_for_global.id()),
+        current: current_from_toml,
     });
 
     let app_db = AppDatabase::new();
