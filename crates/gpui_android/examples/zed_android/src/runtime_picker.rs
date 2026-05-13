@@ -51,10 +51,12 @@ struct ChannelProgressSink {
 
 impl ProgressSink for ChannelProgressSink {
     fn step(&mut self, label: &str) {
+        log::info!("zdroid_runtime_picker: step: {}", label);
         let _ = self.tx.unbounded_send(label.to_string());
     }
     fn progress(&mut self, _done: u64, _total: u64) {}
     fn warn(&mut self, message: &str) {
+        log::warn!("zdroid_runtime_picker: warn: {}", message);
         let _ = self.tx.unbounded_send(format!("warning: {message}"));
     }
 }
@@ -223,12 +225,18 @@ impl RuntimePicker {
                 let adapter = match adapters::bootstrap::BootstrapAdapter::new(config) {
                     Ok(a) => a,
                     Err(err) => {
+                        log::error!(
+                            "zdroid_runtime_picker: BootstrapAdapter::new failed: {err:#}"
+                        );
                         let _ = tx.unbounded_send(format!("Failed: {err:#}"));
                         return;
                     }
                 };
                 let mut sink = ChannelProgressSink { tx: tx.clone() };
                 if let Err(err) = adapter.install(&mut sink) {
+                    log::error!(
+                        "zdroid_runtime_picker: BootstrapAdapter::install failed: {err:#}"
+                    );
                     let _ = tx.unbounded_send(format!("Install failed: {err:#}"));
                 }
                 // tx + sink drop here → channel closes → foreground exits.

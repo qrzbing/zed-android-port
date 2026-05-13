@@ -18,7 +18,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
 
 use crate::health::ProgressSink;
 
@@ -39,21 +38,14 @@ const SYMLINKS_DELIM: &str = "←";
 /// the latest release tag at download time.
 const VERSION_FILE: &str = ".bootstrap-version";
 
-fn release_api_url(release_repo: &str) -> String {
-    format!("https://api.github.com/repos/{release_repo}/releases/latest")
-}
-
-/// Minimal subset of the GitHub releases JSON we care about.
-#[derive(Debug, Deserialize)]
-struct ReleaseManifest {
-    tag_name: String,
-    assets: Vec<ReleaseAsset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReleaseAsset {
-    name: String,
-    browser_download_url: String,
+/// Static download URL for the latest release. GitHub 302-redirects
+/// this to `/releases/download/<tag>/<filename>` which then 302s to
+/// the asset blob on S3. Bypasses `api.github.com` entirely, so the
+/// 60-req/hour unauthenticated rate limit doesn't apply.
+fn release_download_url(release_repo: &str) -> String {
+    format!(
+        "https://github.com/{release_repo}/releases/latest/download/{RELEASE_ASSET_NAME}"
+    )
 }
 
 /// Download the latest release zip + extract into `<prefix>` atomically.
@@ -65,43 +57,26 @@ pub fn install_latest(
     release_repo: &str,
     progress: &mut dyn ProgressSink,
 ) -> Result<()> {
-    progress.step("Resolving latest bootstrap release");
-    let manifest = fetch_release_manifest(release_repo)
-        .with_context(|| format!("fetch release manifest from {release_repo}"))?;
+    progress.step("Downloading latest bootstrap");
+    let url = release_download_url(release_repo);
+    let (zip_bytes, tag_name) =
+        download_latest_release(&url).with_context(|| format!("download from {url}"))?;
+    log::info!(
+        "bootstrap_install: downloaded {} bytes, resolved tag {}",
+        zip_bytes.len(),
+        tag_name,
+    );
 
     let version_file = prefix.join(VERSION_FILE);
     if let Ok(existing) = fs::read_to_string(&version_file)
-        && existing.trim() == manifest.tag_name
+        && existing.trim() == tag_name
     {
         log::info!(
-            "bootstrap_install: $PREFIX already at {}, skipping install",
-            manifest.tag_name
+            "bootstrap_install: $PREFIX already at {tag_name}, skipping extract"
         );
+        progress.step(&format!("Bootstrap {tag_name} already installed"));
         return Ok(());
     }
-
-    let asset = manifest
-        .assets
-        .iter()
-        .find(|a| a.name == RELEASE_ASSET_NAME)
-        .ok_or_else(|| {
-            anyhow!(
-                "release {} has no asset named {RELEASE_ASSET_NAME}",
-                manifest.tag_name
-            )
-        })?;
-
-    progress.step(&format!(
-        "Downloading {RELEASE_ASSET_NAME} ({})",
-        manifest.tag_name
-    ));
-    let zip_bytes = download_asset(&asset.browser_download_url)
-        .with_context(|| format!("download {}", asset.browser_download_url))?;
-    log::info!(
-        "bootstrap_install: downloaded {} bytes from {}",
-        zip_bytes.len(),
-        asset.browser_download_url,
-    );
 
     progress.step("Extracting bootstrap");
     let staging = prefix.with_extension("staging");
@@ -116,43 +91,87 @@ pub fn install_latest(
     }
     fs::File::create(&version_file)
         .with_context(|| format!("create version sentinel at {}", version_file.display()))?
-        .write_all(manifest.tag_name.as_bytes())?;
+        .write_all(tag_name.as_bytes())?;
 
     log::info!(
         "bootstrap_install: bootstrap {} ready at {}",
-        manifest.tag_name,
+        tag_name,
         prefix.display()
     );
-    progress.step(&format!("Bootstrap {} installed", manifest.tag_name));
+    progress.step(&format!("Bootstrap {tag_name} installed"));
     Ok(())
 }
 
-fn fetch_release_manifest(release_repo: &str) -> Result<ReleaseManifest> {
-    let url = release_api_url(release_repo);
-    let body: String = ureq::get(&url)
+/// Resolve the latest-release tag + download the asset.
+///
+/// Two requests, neither against `api.github.com`:
+///   1. `GET /<repo>/releases/latest/download/<file>` with redirects
+///      disabled. GitHub returns a 302 whose `Location` is
+///      `/<repo>/releases/download/<tag>/<file>` — parse the tag out.
+///   2. `GET` the Location URL, following redirects this time, to
+///      land on the S3 blob and stream the zip bytes back.
+fn download_latest_release(latest_url: &str) -> Result<(Vec<u8>, String)> {
+    let agent_no_redirect = ureq::builder().redirects(0).build();
+    let head = agent_no_redirect
+        .get(latest_url)
         .set("User-Agent", "zdroid-bootstrap-installer")
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| anyhow!("HTTP GET {url}: {e}"))?
-        .into_string()
-        .map_err(|e| anyhow!("read body from {url}: {e}"))?;
-    let manifest: ReleaseManifest = serde_json::from_str(&body)
-        .with_context(|| format!("parse release JSON from {url}"))?;
-    Ok(manifest)
-}
+        .call();
+    // ureq returns Err(Status(302, _)) here because we asked it not to
+    // follow. Pull the Response out of either arm: the Location header
+    // is what we need, status doesn't matter.
+    let head_resp = match head {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(_, resp)) => resp,
+        Err(e) => return Err(anyhow!("HTTP GET {latest_url}: {e}")),
+    };
+    let tag_url = head_resp
+        .header("Location")
+        .ok_or_else(|| {
+            anyhow!(
+                "no Location header on {latest_url}; got status {}",
+                head_resp.status()
+            )
+        })?
+        .to_owned();
+    let tag = parse_tag_from_download_url(&tag_url).with_context(|| {
+        format!(
+            "extract release tag from {tag_url}; expected \
+             `/releases/download/<tag>/{RELEASE_ASSET_NAME}` segment"
+        )
+    })?;
 
-fn download_asset(url: &str) -> Result<Vec<u8>> {
-    let resp = ureq::get(url)
+    // Step 2: download the actual asset. ureq follows redirects by
+    // default, so this lands on the S3 blob.
+    let resp = ureq::get(&tag_url)
         .set("User-Agent", "zdroid-bootstrap-installer")
         .call()
-        .map_err(|e| anyhow!("HTTP GET {url}: {e}"))?;
+        .map_err(|e| anyhow!("HTTP GET {tag_url}: {e}"))?;
     let cap = resp
         .header("Content-Length")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let mut buf = Vec::with_capacity(cap);
     resp.into_reader().read_to_end(&mut buf)?;
-    Ok(buf)
+    Ok((buf, tag))
+}
+
+/// Pull the release tag out of a per-tag download URL like
+/// `https://.../releases/download/<tag>/<filename>`. The tag segment
+/// sits between literal `/releases/download/` and `/<filename>`.
+fn parse_tag_from_download_url(url: &str) -> Result<String> {
+    let marker = "/releases/download/";
+    let after = url
+        .find(marker)
+        .map(|i| &url[i + marker.len()..])
+        .ok_or_else(|| anyhow!("missing /releases/download/ in {url}"))?;
+    let tag = after
+        .split('/')
+        .next()
+        .ok_or_else(|| anyhow!("empty tag segment in {url}"))?;
+    if tag.is_empty() {
+        return Err(anyhow!("empty tag segment in {url}"));
+    }
+    Ok(tag.to_owned())
 }
 
 fn extract_into_staging(zip_bytes: &[u8], staging: &Path) -> Result<()> {
