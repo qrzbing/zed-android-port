@@ -57,6 +57,31 @@ class MainActivity : GameActivity() {
     }
 
     @Suppress("unused") // called from Rust via JNI
+    /**
+     * Open an HTTPS URL in the user's default browser. Called via JNI from
+     * the Rust side's `cx.open_url(...)`. Empty Android-platform stub before;
+     * fix for the runtime picker's "Get module" button which delegates to
+     * `cx.open_url(SPAWND_RELEASE_URL)`.
+     *
+     * Safe to call from any thread; `runOnUiThread` so `startActivity` runs
+     * on main. Logs and swallows ActivityNotFoundException (rare on a stock
+     * Android with a browser installed; never propagate back to gpui).
+     */
+    fun openUrl(url: String) {
+        Log.i(TAG, "openUrl: $url")
+        runOnUiThread {
+            try {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "openUrl: startActivity ACTION_VIEW failed for $url", t)
+            }
+        }
+    }
+
     fun launchOpenTree() {
         Log.i(TAG, "launchOpenTree() invoked")
         runOnUiThread {

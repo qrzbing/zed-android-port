@@ -166,6 +166,33 @@ fn appearance_from_config(android_app: &AndroidApp) -> WindowAppearance {
     }
 }
 
+/// Dispatch `MainActivity.openUrl(url: String)` via JNI. Backs
+/// `AndroidPlatform::open_url`; the upstream gpui trait stub was empty so
+/// `cx.open_url(...)` was a silent no-op on Android. The Kotlin side wraps
+/// `startActivity(Intent.ACTION_VIEW, Uri.parse(url))` and swallows
+/// ActivityNotFoundException.
+fn jni_open_url(android_app: &AndroidApp, url: &str) -> Result<()> {
+    use anyhow::Context;
+    use jni::{JavaVM, objects::JObject};
+
+    let vm = unsafe { JavaVM::from_raw(android_app.vm_as_ptr().cast())? };
+    let mut env = vm
+        .attach_current_thread()
+        .context("attach_current_thread for open_url")?;
+    let activity = unsafe { JObject::from_raw(android_app.activity_as_ptr() as _) };
+    let url_jstring = env
+        .new_string(url)
+        .context("alloc JString for open_url argument")?;
+    env.call_method(
+        &activity,
+        "openUrl",
+        "(Ljava/lang/String;)V",
+        &[(&url_jstring).into()],
+    )
+    .context("MainActivity.openUrl")?;
+    Ok(())
+}
+
 pub struct AndroidPlatform {
     pub(crate) common: RefCell<AndroidCommon>,
     pub(crate) android_app: AndroidApp,
@@ -738,7 +765,11 @@ impl Platform for AndroidPlatform {
         self.common.borrow().appearance
     }
 
-    fn open_url(&self, _url: &str) {}
+    fn open_url(&self, url: &str) {
+        if let Err(err) = jni_open_url(&self.android_app, url) {
+            log::warn!("AndroidPlatform::open_url({url:?}) failed: {err:#}");
+        }
+    }
     fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
         self.common.borrow_mut().callbacks.open_urls = Some(callback);
     }
