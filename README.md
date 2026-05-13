@@ -12,7 +12,7 @@
 
 > **Experimental.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
 >
-> Under the hood this is **Termux + bionic libc**, not a real Linux distro. The kernel is Android's, `/usr/bin/env` doesn't exist, `/tmp` doesn't exist, `/etc/resolv.conf` doesn't exist, and any precompiled binary that assumes a glibc Linux runtime can fail in surprising ways. We hex-patch / shim the common cases (claude, npm tools, apt, dpkg) but each new tool you install is a fresh roll of the dice. If something errors with `dlopen failed: library "libfoo.so" not found` or `execve: no such file or directory` on a binary that "should" work, that's why.
+> Three runtime modes ship: **Bootstrap** (default, no root; ~250 MB Termux-derived userland with `com.zdroid` baked in), **Kali chroot** (needs Magisk + a Kali NetHunter rootfs; real glibc), or **External Termux** (proxy through your existing Termux app). Pick one in onboarding; switch anytime in Settings. See [Userland](#userland) for the tradeoffs.
 >
 > _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed)._
 
@@ -83,7 +83,7 @@ adb install -r zed-android-<version>.apk
 adb shell am start -n com.zdroid/.MainActivity
 ```
 
-Or sideload via your file manager. Android prompts for unknown-source installs. First launch extracts a 250 MB Termux userland into the app's private data dir; takes about 30 seconds. Subsequent launches are instant.
+Or sideload via your file manager. Android prompts for unknown-source installs. On first launch you'll be asked to pick a **runtime adapter** (see [Userland](#userland) below). Picking _Bootstrap_ downloads a ~250 MB Termux userland from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) and extracts it into the app's private data dir; takes about 30 seconds on a fast connection. Subsequent launches are instant.
 
 ---
 
@@ -125,13 +125,29 @@ Deep-dives in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs
 
 ---
 
+<a id="userland"></a>
 ## <img src="https://api.iconify.design/lucide:server.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Userland
 
-- **Termux, in-process.** apt, bash, ssh, node, go, git, python, openjdk all native. No SSH bridge, no proot. Integrated terminal opens straight into it.
-- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked Termux packages (go, openssh, etc.) as "unowned" and remove them.
-- **Termux rebuilt under `com.zdroid`.** apt/dpkg/bash userland with our package name baked into RUNPATHs and shebangs.
-- **`/etc/resolv.conf` hex-patch.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. We rewrite the literal in the binary's `.rodata` and in our musl libc to point at `/sdcard/.zed/r`, populated by JNI from `ConnectivityManager.getActiveDnsServers()`.
-- **`apply_runtime_patches`** stack at every boot: npm wrapper, launcher-gen patchelf, askpass helper, profile.d shim, DNS file refresh.
+The editor is bionic-linked and runs as the Android app process. Every subprocess it spawns (`bash`, `apt`, language servers, formatters, terminal shells, git, ssh) is routed through whichever **runtime adapter** the user picked in onboarding. Three adapters ship; they version independently of the editor APK.
+
+| Adapter | What it is | Where it comes from |
+|---|---|---|
+| **Bootstrap** _(default, no root)_ | A Termux userland rebuilt under `com.zdroid` — apt/dpkg/bash with our package name baked into RUNPATHs and shebangs. ~250 MB extracted into the app's private data dir. Pure bionic, no glibc; same trade-offs as any Termux install. Apt + `pkg install` work for everything Termux ships. | Auto-downloaded from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) on first selection. |
+| **Kali chroot** _(needs Magisk)_ | Real glibc Linux. Every spawn goes over a Unix socket to `zd-spawnd` (a small privileged daemon) which does `fork` + `chroot` + `setuid` + `execve` on the editor's behalf. ~5 ms per spawn vs ~200 ms for `su`-mediated. All the Termux gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because you're inside a real distro. | Flash the Magisk module from [`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd) + drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. |
+| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge is in progress (see [#36](https://github.com/Dylanmurzello/zed-android-port/issues)). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
+
+Switching is one tap (Settings → Android Runtime). Selection persists in `$PREFIX/etc/zd-runtime.toml`.
+
+### When to pick which
+
+- **Just want it to work, no root**: Bootstrap. Apt, npm, go install, rust-analyzer all work. The user-facing rough edges are: precompiled Bun CLIs (claude-code, codex) need `/etc/resolv.conf` hex-patches we ship; some glibc-only extension binaries don't run.
+- **Have Magisk, want a real Linux**: Kali chroot. Everything you'd expect on Debian/Kali works as-is, no shimming needed. The chroot is shared with whatever else uses that NetHunter rootfs.
+- **Already on Termux**: External adapter once it lands. Your `~/`, your packages, your shell history; Zdroid just spawns subprocesses there.
+
+### Bootstrap adapter notes (the ones with the funny path stuff)
+
+- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked packages (go, openssh, etc.) as "unowned" and remove them.
+- **DNS via `/sdcard/.zed/r`.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. The bootstrap ships with a musl loader + Bun-binary patcher that rewrites the literal to point at `/sdcard/.zed/r`. The file is populated by JNI from Android's `ConnectivityManager.getActiveDnsServers()` at every boot. Full writeup in [`zdroid-bootstrap/docs/hex-patch-resolv-conf.md`](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md).
 
 ---
 
@@ -199,7 +215,7 @@ This is just a proof of concept. No promises, might be highly unstable. The list
 
 ## <img src="https://api.iconify.design/lucide:file-text.svg?color=%23999999&height=22" valign="middle" /> &nbsp;License
 
-GPL-3.0-or-later, same as upstream Zed. The bundled `bootstrap-aarch64.zip` contains Termux-rebuilt packages, each under its own license (mostly BSD/MIT/Apache; gnupg/bash/coreutils are GPL). The Alpine-derived `ld-musl-aarch64.so.1` is MIT.
+GPL-3.0-or-later, same as upstream Zed. The Bootstrap-adapter zip (distributed from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap), not bundled in the APK) contains Termux-rebuilt packages each under its own license (mostly BSD/MIT/Apache; gnupg/bash/coreutils are GPL). The Alpine-derived `ld-musl-aarch64.so.1` inside it is MIT. The `zd-spawnd` daemon ([`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd)) is GPL-3.0-or-later.
 
 © Dylan Murzello, distributed under GPL-3.0-or-later. Zed itself is © Zed Industries.
 
