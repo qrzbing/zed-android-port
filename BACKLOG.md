@@ -2,6 +2,34 @@
 
 Non-blocking UX / feature gaps to revisit after the current refactor lands. Tasks in the live task list are atomic and time-bound; this file is for "noted but not yet scoped" concerns.
 
+## "Open Project" dead on first boot, works after restart
+
+**Repro:** fresh install (or after `pm clear com.zdroid`). Go through onboarding (Basics / AI / Editing / etc.), tap **Finish Setup**. Welcome page appears with the **Open Project** button. Tapping it does nothing. Close the app and reopen it; now the same button opens the SAF picker normally.
+
+**Code path on tap** (from `crates/workspace/src/welcome.rs:125`):
+
+```
+SectionButton.on_click
+  -> focus_handle.dispatch_action(&Open::DEFAULT)            welcome.rs:125
+  -> Workspace Open action handler                            zed.rs:867
+       -> workspace::prompt_for_open_path_and_open
+            -> cx.prompt_for_paths(...)
+                 -> AndroidPlatform::prompt_for_paths         platform.rs:780 (logs "invoked")
+                      -> saf::pick_folder                     saf.rs:37 (logs "pick_folder requested")
+                           -> MainActivity.launchOpenTree()   via JNI
+                                -> startActivityForResult(OPEN_DOCUMENT_TREE)
+```
+
+**Likeliest causes** (in priority order, narrow with logcat capture during a failed first-tap):
+
+1. **WelcomePage focus tree not attached to Workspace.** First boot goes through `show_onboarding_view` (`onboarding.rs:185`) -> `open_new` with an `Onboarding` pane item. After `Finish`, `go_to_welcome_page` (`onboarding.rs:450`) does `pane.add_item(WelcomePage, activate=true, focus=true)` then `pane.remove_item(onboarding_id, ...)`. If the focus update races the remove, the WelcomePage's `focus_handle` may not be inside the Workspace's focus tree at click time, so `dispatch_action` bubbles into a tree that has no `Open` handler.
+2. **Activity-result wiring incomplete on first onCreate.** `MainActivity` registers its `ActivityResultLauncher` somewhere; first onCreate may not yet have wired the result-callback when the SAF intent fires, so `launchOpenTree` launches but the picked URI never reaches `Java_com_zdroid_MainActivity_onPickerResult` (`saf.rs:126`).
+3. **`with_active_or_new_workspace` spawning a duplicate.** Same class of bug as documented in `crates/gpui_android/docs/workarounds/with-active-or-new-workspace-android-fallback.md`; the action handler isn't routed via that shim, but related multi-window state may leave the action lost in a freshly-spawned-and-discarded MultiWorkspace.
+
+**Diagnostic next step:** capture `adb logcat --pid=$(adb shell pidof com.zdroid)` from app launch through the failed Open Project tap. Look for `AndroidPlatform::prompt_for_paths invoked` and `saf: pick_folder requested`. If neither appears, the action never reached the platform (focus / handler issue, cause 1 or 3). If both appear, the platform fired correctly and the SAF Activity-result is the problem (cause 2).
+
+
+
 ## Reported via the @-mention bug-can't-be-filed loop (2026-05-13)
 
 External user tried to file these and was blocked by upstream Zed's `blank_issues_enabled: false` + Discord-redirect contact_links (fixed in `244f29a455`). Logging here so they don't get lost while the user re-files via the new templates.
