@@ -433,8 +433,8 @@ impl Render for WelcomePage {
                 // SAF-picked, FUSE noexec). The two `rust` problem — same name
                 // appearing twice in Recent Projects from different storage
                 // tiers — is otherwise indistinguishable to the user.
-                let workspace_root = std::env::var_os("TERMUX__HOME")
-                    .map(|h| std::path::PathBuf::from(h).join("projects"));
+                let workspace_root = util::env::workspace_root()
+                    .map(|h| h.join("projects"));
                 let mut workspace_entries: Vec<gpui::AnyElement> = Vec::new();
                 let mut external_entries: Vec<gpui::AnyElement> = Vec::new();
                 for (index, workspace) in recent_projects_data.iter().enumerate() {

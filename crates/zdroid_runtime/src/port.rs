@@ -208,4 +208,24 @@ pub trait RuntimeProvider: Send + Sync {
     fn terminal_shell(&self, _data_path: &Path) -> Option<PathBuf> {
         None
     }
+
+    /// Where the user's projects and Zdroid-managed cache live.
+    /// Recent-project UI groups paths under this dir as "Workspace"
+    /// (vs. SAF-picked "External"); `gpui_android::storage` derives
+    /// the `~/projects` mkdir target and the noexec-suppression cache
+    /// from this. Returns `None` when the adapter has no opinion
+    /// (external Termux, until the JNI bridge lands).
+    fn workspace_root(&self, _data_path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Path to a `libtermux-exec.so` that npm-spawned bionic CLIs
+    /// should LD_PRELOAD so their hardcoded `/data/data/com.termux/`
+    /// shebangs and dlopen calls get translated. Only the Bootstrap
+    /// adapter has this; chroot-spawned npm tools live inside the
+    /// rootfs and use glibc directly, external-Termux dispatches via
+    /// Intent and doesn't propagate LD_PRELOAD.
+    fn npm_libtermux_exec_path(&self, _data_path: &Path) -> Option<PathBuf> {
+        None
+    }
 }

@@ -129,21 +129,22 @@ pub fn setup_user_symlinks(termux_home: &Path) {
 /// We read `TERMUX__HOME` (set by lib.rs at boot to `data_path/home`) rather
 /// than `$HOME`, because lib.rs sets `$HOME` to `data_path` itself for
 /// compatibility with code that expects HOME to point at the app's data
-/// root, while Termux's profile scripts rewrite `$HOME` inside bash to
-/// `data_path/home`. Reading `TERMUX__HOME` gives the same path bash sees,
-/// so the directory we mkdir / symlink / `~/projects/<name>` references all
-/// agree. Falls back to `data_path/home` only if the env var is missing,
-/// which means lib.rs hasn't run yet — caller should avoid that path.
+/// root, while the integrated terminal lands inside `data_path/home`.
+/// Asks the active runtime adapter (via `util::env::workspace_root`)
+/// for the right path; Bootstrap returns `<data>/files/home`, chroot
+/// returns the same (visible via symmetric bind-mount). Returns None
+/// only if no adapter registered yet (lib.rs hasn't run, external
+/// Termux mode).
 pub fn projects_dir() -> Option<PathBuf> {
-    std::env::var_os("TERMUX__HOME").map(|v| PathBuf::from(v).join("projects"))
+    util::env::workspace_root().map(|root| root.join("projects"))
 }
 
 /// Path of the JSON file storing per-folder "suppress noexec warning"
-/// entries. Lives under `~/.cache/zed-android/`. Returns `None` only if
-/// `TERMUX__HOME` is unset (which means lib.rs hasn't initialized env yet).
+/// entries. Lives under `<workspace_root>/.cache/zed-android/`. Returns
+/// `None` only if no adapter registered a workspace_root yet.
 fn noexec_suppressed_file() -> Option<PathBuf> {
-    let home = std::env::var_os("TERMUX__HOME")?;
-    let dir = PathBuf::from(home).join(".cache").join("zed-android");
+    let root = util::env::workspace_root()?;
+    let dir = root.join(".cache").join("zed-android");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("noexec-suppressed.json"))
 }

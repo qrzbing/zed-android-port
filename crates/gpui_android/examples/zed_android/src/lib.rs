@@ -210,6 +210,18 @@ fn android_main(app: AndroidApp) {
     // guarded inside util::env.
     util::env::register_terminal_env_overlay(provider.env_for_terminal(&data_path));
 
+    // Publish adapter-specific filesystem hints for editor code that
+    // historically read TERMUX__HOME / TERMUX__PREFIX env vars
+    // directly. Now those readers (workspace::welcome,
+    // node_runtime::node_runtime, gpui_android::storage) ask the
+    // active adapter via these registry slots — Bootstrap publishes
+    // its Termux-flavored paths, chroot publishes the bionic-clean
+    // equivalents, external Termux publishes None.
+    util::env::register_workspace_root(provider.workspace_root(&data_path));
+    util::env::register_npm_libtermux_exec_path(
+        provider.npm_libtermux_exec_path(&data_path),
+    );
+
     // Surface the SELinux domain in logcat — this is the canary for the
     // targetSdk pin. If `untrusted_app_27` flips to `untrusted_app_all`
     // every subsequent execve into $PREFIX/bin/* will EACCES.

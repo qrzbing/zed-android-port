@@ -943,15 +943,21 @@ fn npm_command_env(node_binary: Option<&Path>) -> HashMap<String, String> {
     //    work directly via our bundled musl loader.
     #[cfg(target_os = "android")]
     {
-        if let Ok(prefix) = env::var("TERMUX__PREFIX") {
-            let termux_exec =
-                Path::new(&prefix).join("lib/libtermux-exec.so");
-            if termux_exec.is_file() {
-                command_env.insert(
-                    "LD_PRELOAD".into(),
-                    termux_exec.to_string_lossy().into_owned(),
-                );
-            }
+        // The active Zdroid runtime adapter publishes the
+        // libtermux-exec.so path via `util::env`. Bootstrap mode
+        // returns Some(<prefix>/lib/libtermux-exec.so); chroot and
+        // external Termux return None. Pre-Phase-5 this read
+        // `env::var("TERMUX__PREFIX")` directly, which worked for
+        // Bootstrap but yielded the wrong answer for chroot (the
+        // chroot's npm tools run inside the glibc rootfs and don't
+        // want a bionic-linked preload).
+        if let Some(termux_exec) = util::env::npm_libtermux_exec_path()
+            && termux_exec.is_file()
+        {
+            command_env.insert(
+                "LD_PRELOAD".into(),
+                termux_exec.to_string_lossy().into_owned(),
+            );
         }
         command_env.insert("npm_config_libc".into(), "musl".into());
     }

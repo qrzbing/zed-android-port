@@ -634,4 +634,18 @@ impl RuntimeProvider for ChrootAdapter {
     fn terminal_shell(&self, data_path: &std::path::Path) -> Option<std::path::PathBuf> {
         Some(data_path.join("bin/zd-exec"))
     }
+
+    fn workspace_root(&self, data_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        // <data>/files/home is the canonical user-files dir for both
+        // chroot and bootstrap modes — zd-spawnd's symmetric bind-
+        // mount makes the same path resolve identically inside the
+        // chroot, so a project under here is reachable from both
+        // sides without translation.
+        Some(data_path.join("home"))
+    }
+
+    // npm_libtermux_exec_path: default None. Chroot doesn't ship the
+    // bionic-flavored libtermux-exec.so; tools spawned inside the
+    // rootfs link against glibc and use shebangs that resolve
+    // normally.
 }

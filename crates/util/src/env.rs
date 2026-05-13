@@ -5,6 +5,7 @@
 //! type without a dependency cycle.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// One mutation in an adapter's env contract.
@@ -50,4 +51,48 @@ pub fn register_terminal_env_overlay(ops: Vec<(String, EnvOp)>) {
 /// registered one (non-Android builds, or pre-boot ordering bugs).
 pub fn terminal_env_overlay() -> &'static [(String, EnvOp)] {
     TERMINAL_ENV_OVERLAY.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Active adapter's workspace root: where user projects + Zdroid-
+/// managed cache live. Recent-projects UI groups paths under this
+/// dir as "Workspace", others as "External"; `gpui_android::storage`
+/// derives `~/projects` and the noexec-suppression cache from this.
+///
+/// Registered once at android_main from
+/// `RuntimeProvider::workspace_root`. Returns `None` when no adapter
+/// registered (external Termux, non-Android builds).
+static WORKSPACE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+pub fn register_workspace_root(path: Option<PathBuf>) {
+    if WORKSPACE_ROOT.set(path).is_err() {
+        log::warn!(
+            "util::env: workspace_root already registered; ignoring re-register"
+        );
+    }
+}
+
+pub fn workspace_root() -> Option<&'static PathBuf> {
+    WORKSPACE_ROOT.get().and_then(Option::as_ref)
+}
+
+/// Active adapter's `libtermux-exec.so` path, for editor code that
+/// LD_PRELOADs it when spawning bionic CLIs that have hardcoded
+/// `/data/data/com.termux/` paths baked in (Bun-compiled Termux npm
+/// packages: claude, codex). Bootstrap is the only adapter that
+/// returns Some; chroot / external-Termux return None.
+///
+/// Registered once at android_main from
+/// `RuntimeProvider::npm_libtermux_exec_path`.
+static NPM_LIBTERMUX_EXEC_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+pub fn register_npm_libtermux_exec_path(path: Option<PathBuf>) {
+    if NPM_LIBTERMUX_EXEC_PATH.set(path).is_err() {
+        log::warn!(
+            "util::env: npm_libtermux_exec_path already registered; ignoring re-register"
+        );
+    }
+}
+
+pub fn npm_libtermux_exec_path() -> Option<&'static PathBuf> {
+    NPM_LIBTERMUX_EXEC_PATH.get().and_then(Option::as_ref)
 }

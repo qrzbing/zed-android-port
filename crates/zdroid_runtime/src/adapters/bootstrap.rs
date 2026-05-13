@@ -408,4 +408,20 @@ impl RuntimeProvider for BootstrapAdapter {
     fn terminal_shell(&self, _data_path: &std::path::Path) -> Option<std::path::PathBuf> {
         Some(self.config.prefix.join("bin/bash"))
     }
+
+    fn workspace_root(&self, data_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        // <data>/files/home — same as Termux's $TERMUX__HOME and what
+        // the chroot adapter publishes. Recent-projects UI and storage
+        // hooks read this to know where workspace files live.
+        Some(data_path.join("home"))
+    }
+
+    fn npm_libtermux_exec_path(&self, _data_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        // Bootstrap is the only adapter that ships the bionic-flavored
+        // libtermux-exec.so. npm-installed CLIs (Bun-compiled Termux
+        // packages: claude, codex, …) LD_PRELOAD this so their
+        // hardcoded `/data/data/com.termux/...` shebangs and dlopen
+        // calls get path-translated to our $PREFIX.
+        Some(self.config.prefix.join("lib/libtermux-exec.so"))
+    }
 }
