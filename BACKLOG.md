@@ -2,31 +2,49 @@
 
 Non-blocking UX / feature gaps to revisit after the current refactor lands. Tasks in the live task list are atomic and time-bound; this file is for "noted but not yet scoped" concerns.
 
-## "Open Project" dead on first boot, works after restart
+## "Open Project" on first boot: SAF picker works, post-pick handoff drops the project on the floor
 
-**Repro:** fresh install (or after `pm clear com.zdroid`). Go through onboarding (Basics / AI / Editing / etc.), tap **Finish Setup**. Welcome page appears with the **Open Project** button. Tapping it does nothing. Close the app and reopen it; now the same button opens the SAF picker normally.
+**Repro:** fresh install (or after `pm clear com.zdroid`). Go through onboarding, tap **Finish Setup**. Welcome page appears. Tap **Open Project**, SAF picker opens normally, pick a folder, return to the editor. **Nothing visibly changes** (still on Welcome). Close the app and reopen it; now the picked project loads and works normally.
 
-**Code path on tap** (from `crates/workspace/src/welcome.rs:125`):
+So the action dispatch + SAF picker + Java -> Rust callback all work. The break is somewhere in the post-pick "replace this window's workspace with the new project" path.
+
+**Code path** (after the SAF URI comes back via `Java_com_zdroid_MainActivity_onPickerResult` in `saf.rs:126`):
 
 ```
-SectionButton.on_click
-  -> focus_handle.dispatch_action(&Open::DEFAULT)            welcome.rs:125
-  -> Workspace Open action handler                            zed.rs:867
-       -> workspace::prompt_for_open_path_and_open
-            -> cx.prompt_for_paths(...)
-                 -> AndroidPlatform::prompt_for_paths         platform.rs:780 (logs "invoked")
-                      -> saf::pick_folder                     saf.rs:37 (logs "pick_folder requested")
-                           -> MainActivity.launchOpenTree()   via JNI
-                                -> startActivityForResult(OPEN_DOCUMENT_TREE)
+prompt_for_open_path_and_open                                   workspace.rs:721
+  paths.await -> Some(picked)
+  multi_workspace_handle = window.window_handle().downcast::<MultiWorkspace>()
+  if !create_new_window && multi_workspace_handle.is_some():
+      multi_workspace.open_project(paths, OpenMode::Activate)   multi_workspace.rs:1933
+        if multi_workspace_enabled(cx):                          (true when agent settings enabled, default)
+            find_or_create_local_workspace(...)                  multi_workspace.rs:1968
+              -> Workspace::new_local(... OpenMode::Activate)
+                -> [either reuse current window OR spawn new one
+                    depending on serialized_workspace and the
+                    1955 vs 1995 branch in workspace.rs]
+            detach_workspace(empty_welcome_workspace)
 ```
 
-**Likeliest causes** (in priority order, narrow with logcat capture during a failed first-tap):
+**Likeliest cause:** `find_or_create_local_workspace` creates the new project workspace in a fresh MultiWorkspace window (= new `ExtraWindowActivity` on Android) instead of reusing the current MainActivity-hosted Welcome window. The Welcome window's empty workspace gets `detach_workspace`'d. The user is staring at MainActivity (which still has the now-detached Welcome surface) while the new project window opens off-screen / behind / in another freeform tile they don't notice.
 
-1. **WelcomePage focus tree not attached to Workspace.** First boot goes through `show_onboarding_view` (`onboarding.rs:185`) -> `open_new` with an `Onboarding` pane item. After `Finish`, `go_to_welcome_page` (`onboarding.rs:450`) does `pane.add_item(WelcomePage, activate=true, focus=true)` then `pane.remove_item(onboarding_id, ...)`. If the focus update races the remove, the WelcomePage's `focus_handle` may not be inside the Workspace's focus tree at click time, so `dispatch_action` bubbles into a tree that has no `Open` handler.
-2. **Activity-result wiring incomplete on first onCreate.** `MainActivity` registers its `ActivityResultLauncher` somewhere; first onCreate may not yet have wired the result-callback when the SAF intent fires, so `launchOpenTree` launches but the picked URI never reaches `Java_com_zdroid_MainActivity_onPickerResult` (`saf.rs:126`).
-3. **`with_active_or_new_workspace` spawning a duplicate.** Same class of bug as documented in `crates/gpui_android/docs/workarounds/with-active-or-new-workspace-android-fallback.md`; the action handler isn't routed via that shim, but related multi-window state may leave the action lost in a freshly-spawned-and-discarded MultiWorkspace.
+That explains why "close + reopen" works: workspace-restore at next launch loads the most-recently-activated workspace state (= the project that was opened), so it materializes in the front MainActivity that time.
 
-**Diagnostic next step:** capture `adb logcat --pid=$(adb shell pidof com.zdroid)` from app launch through the failed Open Project tap. Look for `AndroidPlatform::prompt_for_paths invoked` and `saf: pick_folder requested`. If neither appears, the action never reached the platform (focus / handler issue, cause 1 or 3). If both appear, the platform fired correctly and the SAF Activity-result is the problem (cause 2).
+Adjacent symptom of the same class: the `with-active-or-new-workspace-android-fallback` workaround doc covers an earlier instance of this multi-Activity routing problem for action-dispatched modals (theme picker, command palette).
+
+**Other possibilities to rule out with logs:**
+
+1. `multi_workspace.open_project` returns Err silently (the `.log_err()` on line 763 of workspace.rs would swallow it).
+2. The new workspace IS created in the current MultiWorkspace but `activate()` on line 1983 fails to switch the active workspace pointer, so the UI keeps rendering the empty Welcome.
+3. The current MultiWorkspace's `active_workspace` was already replaced but the underlying `ExtraWindowActivity` SurfaceView isn't getting a fresh draw call.
+
+**Diagnostic next step:** capture `adb logcat --pid=$(adb shell pidof com.zdroid)` from app launch through the failed Open Project flow. The signals to look for:
+
+- `AndroidPlatform::prompt_for_paths invoked` -> action reached platform.
+- `saf: pick_folder requested` then `saf: MainActivity.launchOpenTree() returned` -> SAF Intent dispatched cleanly.
+- `saf: onPickerResult uri=...` -> Java callback fired with the picked URI.
+- After that, anything mentioning `open_project`, `find_or_create_local_workspace`, `activate`, or new-window creation (search for `cx.open_window`, `ExtraWindowActivity` in logs) tells us whether a new window was spawned or the existing one was reused.
+
+If we see a new-window spawn line, the fix is to force `OpenMode::Activate` to reuse the current MultiWorkspace's window on Android (probably in `multi_workspace.rs:open_project`, branch on `cfg(target_os = "android")` and pick a different path that doesn't call `find_or_create_local_workspace`).
 
 
 
