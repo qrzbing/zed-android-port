@@ -1,7 +1,0 @@
-id=zdroid_spawnd
-name=Zdroid Spawn Daemon
-version=v1.1.6
-versionCode=8
-author=Dylanmurzello
-description=Persistent root-context spawn daemon + chroot rootfs init for Zdroid's chroot adapter. One su elevation at boot; per-spawn cost ~5ms (Unix socket + fork+chroot+exec). Patches /root/.bash_profile and /root/.profile inside the kali rootfs at install so Zdroid's integrated terminal lands at the project cwd and `claude` / cargo / pip --user binaries are on PATH. Required for the "chroot" runtime mode in Zdroid.
-updateJson=https://raw.githubusercontent.com/Dylanmurzello/zed-android-port/main/crates/gpui_android/native/zd-spawnd/magisk-module/update.json

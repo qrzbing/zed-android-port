@@ -5,7 +5,7 @@
 //! versus ~200ms for the Magisk-su-mediated path, plus no serialized
 //! queue contention at scale.
 //!
-//! See `crates/gpui_android/native/zd-spawnd/PROTOCOL.md` for the wire
+//! See [`zdroid-spawnd/PROTOCOL.md`](https://github.com/Dylanmurzello/zdroid-spawnd/blob/main/PROTOCOL.md) for the wire
 //! format. tl;dr: header with magic + version + flags + lengths,
 //! followed by prog/cwd/argv/envp byte streams, then a final
 //! `sendmsg` with one dummy byte + `SCM_RIGHTS` carrying stdio fds.
