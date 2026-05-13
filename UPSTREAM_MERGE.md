@@ -77,7 +77,7 @@ Then push and verify the APK builds end-to-end before the next public release.
 Worst case: upstream renames or restructures a crate we modify. Two options:
 
 1. Re-port our patch to the new structure (preferred).
-2. Drop the patch if upstream's refactor obsoletes our need for it (rare, but it happens — see e.g. Phase 8b's deletion of `termux_bootstrap.rs` once the bootstrap patches moved to the [zdroid-bootstrap](https://github.com/Dylanmurzello/zdroid-bootstrap) repo).
+2. Drop the patch if upstream's refactor obsoletes our need for it. Rare, but it happens. See e.g. Phase 8b's deletion of `termux_bootstrap.rs` once the bootstrap patches moved to the [zdroid-bootstrap](https://github.com/Dylanmurzello/zdroid-bootstrap) repo.
 
 Either way: update the corresponding workaround doc under `crates/gpui_android/docs/workarounds/`.
 
