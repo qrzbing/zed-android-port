@@ -225,21 +225,31 @@ impl RuntimeProvider for BootstrapAdapter {
         HealthStatus::Healthy
     }
 
-    fn install(&self, _progress: &mut dyn ProgressSink) -> anyhow::Result<()> {
-        // Real install: pull the latest release tarball from the
-        // bootstrap repo, verify SHA256, extract to $PREFIX. Lands in a
-        // follow-up commit alongside the bootstrap repo split.
-        anyhow::bail!(
-            "BootstrapAdapter::install pending: bootstrap-repo split + GitHub releases download to be implemented. \
-             Until then, use the bundled bootstrap that ships in the current APK (the existing termux_bootstrap.rs path)."
+    fn install(&self, progress: &mut dyn ProgressSink) -> anyhow::Result<()> {
+        // Pull the latest release zip from the configured bootstrap
+        // repo, extract into `$PREFIX` atomically, write a version
+        // sentinel. Idempotent: re-running when the on-disk version
+        // matches the latest release tag is a no-op without touching
+        // the network. See `super::bootstrap_install` for the wire
+        // protocol + extraction details.
+        super::bootstrap_install::install_latest(
+            &self.config.prefix,
+            &self.config.release_repo,
+            progress,
         )
     }
 
     fn uninstall(&self) -> anyhow::Result<()> {
-        // Real uninstall removes $PREFIX/{bin,lib,etc,share,...} but
-        // preserves config dirs the user might care about (.config,
-        // home/, projects/). Implementation lands with install().
-        anyhow::bail!("BootstrapAdapter::uninstall pending: lands with install()")
+        // Wipe `$PREFIX/{bin,lib,etc,share,...}` while preserving
+        // user-state dirs (`$PREFIX/etc/zd-runtime.toml`,
+        // `$PREFIX/home`, `$PREFIX/var/lib/apt` apt cache, etc.) is the
+        // intended behavior, but distinguishing "ours" vs "user-
+        // created" inside a 240-MB unpack is fragile without a manifest
+        // we don't currently ship. Pending until the bootstrap-repo
+        // split adds a `MANIFEST.txt` listing extract-owned paths.
+        anyhow::bail!(
+            "BootstrapAdapter::uninstall pending: needs MANIFEST.txt in the bootstrap zip"
+        )
     }
 
     #[cfg(target_os = "android")]

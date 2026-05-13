@@ -15,6 +15,7 @@
 //! their own commits.
 
 pub mod bootstrap;
+pub mod bootstrap_install;
 pub mod chroot;
 pub mod external_termux;
 

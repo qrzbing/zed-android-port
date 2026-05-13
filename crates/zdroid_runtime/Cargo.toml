@@ -26,8 +26,16 @@ path = "src/bin/zd-exec.rs"
 anyhow.workspace = true
 log.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 util.workspace = true
+
+# Phase 6: bootstrap adapter downloads its 240 MB zip from a GitHub
+# release on demand. `ureq` is a tiny sync HTTPS client (rustls TLS
+# stack, webpki-roots bundled — no JNI init needed); `zip` parses
+# the downloaded archive. Both are bootstrap-adapter-only deps.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+zip = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 nix = { workspace = true, features = ["socket", "uio"] }
