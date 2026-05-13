@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::fd::RawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use util::env::EnvOp;
 
 use crate::config::RuntimeId;
 use crate::health::{HealthStatus, ProgressSink};
@@ -161,5 +163,49 @@ pub trait RuntimeProvider: Send + Sync {
     /// find anything, which is the correct fail-closed behavior.
     fn list_binaries(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Mutations to apply to the Zed-Rust process env at android_main.
+    ///
+    /// Each active runtime adapter is the single source of truth for
+    /// the Zed-process env shape — `HOME`, `PATH`, `SHELL`, `TMPDIR`,
+    /// any Termux-flavored or chroot-flavored vars that downstream
+    /// editor code reads. lib.rs no longer hardcodes anything; it
+    /// asks the active provider and applies the result.
+    ///
+    /// `data_path` is the Zdroid app's private files root (= what
+    /// `AndroidApp::internal_data_path()` returns), passed in so the
+    /// adapter doesn't have to re-derive it from its config.
+    ///
+    /// Default impl is empty so non-Android adapters (none exist yet,
+    /// but future ones) opt in deliberately.
+    fn env_for_zed_process(&self, _data_path: &Path) -> Vec<(String, EnvOp)> {
+        Vec::new()
+    }
+
+    /// Mutations to overlay on the integrated terminal's env at spawn
+    /// time. Applied on top of whatever the Zed-Rust process env
+    /// already has (i.e. on top of [`Self::env_for_zed_process`]).
+    ///
+    /// Used by `crates/terminal/src/terminal.rs` via the static
+    /// `register_terminal_env_contributor` slot. Adapters that want
+    /// the terminal to behave identically to the editor process can
+    /// return an empty Vec — the inherited process env is then the
+    /// terminal's env.
+    fn env_for_terminal(&self, _data_path: &Path) -> Vec<(String, EnvOp)> {
+        Vec::new()
+    }
+
+    /// Absolute path of the program the integrated terminal should
+    /// exec when the user opens a new terminal. Chroot returns the
+    /// `zd-exec` wrapper (which dispatches into the rootfs); bootstrap
+    /// returns `$PREFIX/bin/bash`; external Termux returns whatever
+    /// stub shell is reachable from bionic until the JNI Intent
+    /// bridge lands.
+    ///
+    /// Returns `None` for non-Android adapters to keep the upstream
+    /// terminal code path untouched.
+    fn terminal_shell(&self, _data_path: &Path) -> Option<PathBuf> {
+        None
     }
 }

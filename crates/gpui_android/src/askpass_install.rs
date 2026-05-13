@@ -43,6 +43,28 @@ const ASSET_NAME: &str = "zed-askpass-helper";
 /// and matches the APK-bundled asset. Returns the absolute path to the
 /// installed binary so the caller can hand it to `askpass::set_program`.
 pub fn ensure_installed(android_app: &AndroidApp, data_path: &Path) -> Result<PathBuf> {
+    // One-time sweep: pre-Phase 2 of the Termux-divestment refactor
+    // installed this same binary at `$PREFIX/bin/zed-askpass-helper`
+    // (= `<data_path>/usr/bin/zed-askpass-helper`). Users upgrading
+    // over time still have that orphan sitting on disk consuming ~500
+    // KB. The new install location is app-private (no `usr/` prefix)
+    // so anything previously seeded at the old path is dead bytes.
+    // Best-effort remove; logged, not propagated, since this is
+    // hygiene, not a precondition.
+    let stale = data_path.join("usr/bin/zed-askpass-helper");
+    if stale.exists() {
+        match fs::remove_file(&stale) {
+            Ok(()) => log::info!(
+                "askpass_install: swept pre-Phase-2 stale binary at {}",
+                stale.display()
+            ),
+            Err(err) => log::warn!(
+                "askpass_install: could not remove stale {}: {err}",
+                stale.display()
+            ),
+        }
+    }
+
     let target = data_path.join(ASSET_NAME);
 
     let asset_manager = android_app.asset_manager();

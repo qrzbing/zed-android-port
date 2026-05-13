@@ -126,4 +126,44 @@ impl RuntimeProvider for ExternalTermuxAdapter {
         // until the bridge lands.
         self.config.prefix.join(".zed-env")
     }
+
+    fn env_for_zed_process(&self, data_path: &std::path::Path) -> Vec<(String, util::env::EnvOp)> {
+        // External Termux mode: spawns are dispatched via Intent to
+        // com.termux, so the Zed-Rust process doesn't propagate any
+        // Termux-flavored env into subprocesses. Keep the Zed-process
+        // env bionic-clean and minimal. The JNI Intent bridge (task
+        // #36) will carry per-spawn env across the package boundary
+        // when it lands; nothing here leaks across.
+        use std::ffi::OsString;
+        use util::env::EnvOp;
+
+        let existing_path = std::env::var_os("PATH").unwrap_or_default();
+
+        vec![
+            ("HOME".into(), EnvOp::Set(data_path.as_os_str().to_owned())),
+            ("TMPDIR".into(), EnvOp::Set(data_path.join("tmp").into_os_string())),
+            ("TERM".into(), EnvOp::Set(OsString::from("xterm-256color"))),
+            ("COLORTERM".into(), EnvOp::Set(OsString::from("truecolor"))),
+            ("LANG".into(), EnvOp::Set(OsString::from("en_US.UTF-8"))),
+            ("ZED_BUILD_REMOTE_SERVER".into(), EnvOp::Set(OsString::from("never"))),
+            ("LD_PRELOAD".into(), EnvOp::Remove),
+            ("PATH".into(), EnvOp::Set(existing_path)),
+        ]
+    }
+
+    fn env_for_terminal(&self, _data_path: &std::path::Path) -> Vec<(String, util::env::EnvOp)> {
+        // No overlay — the integrated terminal stub for external
+        // Termux is a placeholder until the Intent bridge lands. The
+        // PTY just hosts whatever shell `terminal_shell` returns; once
+        // the bridge ships, terminal spawns will route via Intent and
+        // env propagation happens at that boundary.
+        Vec::new()
+    }
+
+    fn terminal_shell(&self, _data_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        // Bionic system shell until the Intent bridge lets us launch
+        // a Termux-side bash. /system/bin/sh exists on every Android
+        // build by definition.
+        Some(std::path::PathBuf::from("/system/bin/sh"))
+    }
 }

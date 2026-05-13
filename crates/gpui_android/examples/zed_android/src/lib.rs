@@ -87,17 +87,22 @@ fn build_active_provider(
     adapters::for_config(&resolved).ok()
 }
 
-/// Read the active runtime adapter from `runtime.toml`. Both
-/// `android_main` (for env init) and `boot` (for terminal.shell) need
-/// this; cheap enough to re-read in each rather than thread state.
-/// Defaults to Bootstrap when toml is missing or unparseable so first-
-/// launch UX matches today's behavior.
-fn detect_runtime_id(data_path: &std::path::Path) -> RuntimeId {
-    RuntimeFile::load(&data_path.join("usr/etc/zd-runtime.toml"))
-        .ok()
-        .flatten()
-        .map(|f| f.runtime.kind)
-        .unwrap_or(RuntimeId::Bootstrap)
+/// Same as `build_active_provider` but never returns `None`. When no
+/// runtime.toml exists yet (first launch before the picker is opened)
+/// we fall back to a default Bootstrap adapter so the env-init path
+/// always has someone to ask. The user's eventual picker selection
+/// rewrites runtime.toml and the next launch picks up the chosen
+/// adapter via `build_active_provider`.
+fn active_provider(data_path: &std::path::Path) -> Box<dyn RuntimeProvider> {
+    if let Some(provider) = build_active_provider(data_path) {
+        return provider;
+    }
+    let file = RuntimeFile::with_defaults(RuntimeId::Bootstrap);
+    let resolved = file
+        .resolve()
+        .expect("default Bootstrap RuntimeFile must resolve");
+    adapters::for_config(&resolved)
+        .expect("default Bootstrap adapter must construct")
 }
 
 
@@ -142,185 +147,68 @@ fn android_main(app: AndroidApp) {
         .unwrap_or_else(|| PathBuf::from("/data/data/com.zdroid/files"));
     info!("zed_android: data_path = {}", data_path.display());
 
-    // SAFETY: set_var mutates libc-shared process state. The accurate
-    // invariant is "no other thread is observed reading or writing libc env
-    // via getenv/setenv at this point" — JVM service threads (GC,
-    // finalizer, binder pool) exist by android_main but don't touch libc
-    // env, so calling here is sound. Any later setenv from a callback
-    // would be a soundness bug.
+    // The Zed-Rust process env is now adapter-owned. Every set_var/
+    // remove_var that used to live inline here is produced by the
+    // active runtime adapter's `env_for_zed_process`:
     //
-    // OnceLock guard: android_main can re-enter on activity recreation. If
-    // a Rust thread from the previous invocation outlives that boundary
-    // and reads env via getenv/getenv_r, a second set_var would race. The
-    // values are deterministic (same data_path), so the OnceLock makes
-    // re-entry a no-op and keeps soundness independent of platform-side
-    // thread teardown ordering.
+    //   - Chroot adapter ships a bionic-clean env (no PREFIX, no
+    //     TERMUX__*, no libtermux-exec preload). PATH front-loaded with
+    //     the zd-runtime symlink farm so `Command::new("java")` finds
+    //     zd-exec → zd-spawnd → chroot dispatch.
     //
-    // HOME stays pointed at data_path for compat with `dirs::home_dir()`
-    // consumers in upstream zed (otherwise they panic on Android since the
-    // sandbox has no system home). The Termux-style $TERMUX__HOME at
-    // $ROOTFS/home is set separately so future shell/LSP children can
-    // override HOME per-spawn without disturbing the Rust globals.
+    //   - Bootstrap adapter keeps the historical Termux-flavored env
+    //     so dpkg patches, apt Post-Invoke hooks, and bootstrap-side
+    //     tooling keep working unchanged.
     //
-    // PATH is unconditionally set to `$PREFIX/bin:$PATH` at boot. An
-    // earlier version of this code gated the prepend on the presence of
-    // `$PREFIX/bin/bash`, on the theory that pointing PATH at a
-    // non-existent dir pre-bootstrap would break `which git` / `which
-    // grep` lookups. That theory was wrong: PATH search ignores
-    // non-existent entries and falls through to the next dir, so the
-    // gate was pure downside — on a *fresh* install (data wiped /
-    // first launch / app reinstalled), `extract_if_needed` runs AFTER
-    // `ENV_INITIALIZED.get_or_init`, so bash isn't on disk yet, the
-    // gate evaluates false, PATH stays Android-default, and the
-    // OnceLock then blocks any later re-init. Result: integrated
-    // terminal opens with PATH=`/system/bin:...` (no $PREFIX/bin), and
-    // every `pkg`, `apt`, `dpkg` invocation hits "command not found"
-    // until the user closes the terminal and re-opens it (which
-    // reinherits the post-extract Zed env — but they have no idea
-    // that's the workaround). Just always prepend; correctness is
-    // unchanged post-extract, fresh-install UX no longer broken.
-    let runtime_id = detect_runtime_id(&data_path);
+    //   - External Termux returns a minimal bionic env; spawns route
+    //     via Intent (Phase 7) so nothing here leaks across.
+    //
+    // The active provider also publishes a terminal env overlay that
+    // `crates/terminal/src/terminal.rs` applies when the PTY spawns,
+    // since alacritty wipes inherited env on bringup.
+    //
+    // SAFETY: `set_var` / `remove_var` mutate libc-shared process
+    // state. The invariant is "no other thread reads/writes libc env
+    // via getenv/setenv at this point" — JVM service threads exist by
+    // android_main but don't touch libc env. OnceLock makes activity-
+    // recreation re-entry a deterministic no-op.
+    //
+    // DELIBERATELY NOT SET: LD_LIBRARY_PATH. Setting it globally
+    // poisons every spawned subprocess (including /system/bin/
+    // app_process64 trying to load /system/lib64/libsqlite.so against
+    // our OpenSSL 3.x); Upstream Termux packages that need it set it
+    // per-spawn in their launcher scripts. ZED_RELEASE_CHANNEL is also
+    // deliberately not flipped to "nightly": channel switching
+    // namespaces Zed's app data dir and would shadow the user's
+    // existing settings. The dev-channel hard-bail in
+    // `crates/remote/src/transport/ssh.rs` is patched directly.
+    let provider = active_provider(&data_path);
+    log::info!("zed_android: runtime adapter = {:?}", provider.id());
 
     static ENV_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let _ = ENV_INITIALIZED.get_or_init(|| {
-        let prefix = data_path.join("usr");
-        let termux_home = data_path.join("home");
+        let ops = provider.env_for_zed_process(&data_path);
         unsafe {
-            std::env::set_var("HOME", &data_path);
-            std::env::set_var("TERMUX__ROOTFS", &data_path);
-            std::env::set_var("PREFIX", &prefix);
-            std::env::set_var("TERMUX__PREFIX", &prefix);
-            std::env::set_var("TERMUX__HOME", &termux_home);
-            // Read by our patched dpkg's tarfn.c at extract time. When set
-            // and != "com.termux", dpkg rewrites tar entry paths starting
-            // with /data/data/com.termux/ to /data/data/<this>/ on the fly.
-            // Lets `pkg install <upstream-deb>` Just Work with our prefix.
-            std::env::set_var("TERMUX_APP__PACKAGE_NAME", "com.zdroid");
-            std::env::set_var("TMPDIR", prefix.join("tmp"));
-            std::env::set_var("TERM", "xterm-256color");
-            std::env::set_var("LANG", "en_US.UTF-8");
-            std::env::set_var("COLORTERM", "truecolor");
-            // Disable the remote-server source-build fallback in
-            // `crates/remote/src/transport.rs::build_remote_server_from_source`
-            // unconditionally on Android. The fallback fires when Zed can't
-            // find a prebuilt remote_server binary for the target triple
-            // (typical for any locally-built / non-release-channel client),
-            // and tries to cross-compile the binary on the CLIENT — which
-            // means rustup + zig + cargo-zigbuild + a glibc-target rustup
-            // component on the device. None of that is reasonably available
-            // inside Termux on bionic Android, and even if we shipped them
-            // the cross-compile from aarch64-linux-android to
-            // x86_64-unknown-linux-gnu (or whatever the remote runs) is a
-            // multi-component lift. Setting `never` here forces Zed to use
-            // the standard CDN-or-existing-on-remote path that production
-            // clients use; users hitting a remote without a cached binary
-            // either let Zed download from the CDN or pre-stage the binary
-            // at `~/.cache/zed/remote_server` on the remote host themselves.
-            std::env::set_var("ZED_BUILD_REMOTE_SERVER", "never");
-            // Termux's bootstrap sets LD_PRELOAD=$PREFIX/lib/libtermux-exec.so
-            // for its bash subprocesses (so exec() of Android-incompatible
-            // shebangs gets shimmed). On Android this is fine — local
-            // Termux subprocesses re-source `profile.d/termux-exec.sh` at
-            // bash startup and re-set LD_PRELOAD themselves where they need
-            // it. But our gpui app process inherits LD_PRELOAD from the
-            // shell that launched it (or has it set explicitly elsewhere),
-            // and when Zed's remote SSH subprocess inherits + propagates it
-            // (either via OpenSSH's `SendEnv` or via the remote_server's
-            // own env channel), the remote shell on every connection ends
-            // up trying to dlopen our local Android-only path. ld.so on the
-            // remote (typically glibc on Linux) prints `ld.so: object …
-            // libtermux-exec.so from LD_PRELOAD cannot be preloaded:
-            // ignored.` to stderr for every command. Non-fatal but turns
-            // every remote-terminal session into a wall of spam. Clearing
-            // it from the gpui app's env at boot keeps ssh subprocesses
-            // clean while local Termux shells still get their shim via the
-            // bash profile.
-            std::env::remove_var("LD_PRELOAD");
-            // (We deliberately do NOT flip ZED_RELEASE_CHANNEL to
-            // "nightly" anymore. Channel switching namespaces Zed's
-            // app data dir, which would shadow settings.json / recent
-            // projects / ssh_connections set under whatever channel
-            // the user already had data in. The Dev-channel hard-bail
-            // at `crates/remote/src/transport/ssh.rs:850-855` is
-            // patched directly — Dev-on-Android resolves
-            // `wanted_version = None` same as Nightly, so the CDN
-            // download path works regardless of channel. There's only
-            // one ship target for our APK and the channel distinction
-            // has no meaning here, so the upstream branch becomes a
-            // static no-op rather than a runtime decision.)
-            // PATH + SHELL setup is now adapter-aware. The user's
-            // selection in `runtime.toml` (written by the runtime
-            // picker modal) decides whether sub-spawns route through
-            // `$PREFIX/bin` directly (bootstrap mode, today's default
-            // and what the editor inherits if no toml exists) or
-            // through `$PREFIX/zd-runtime/<name> -> zd-exec` symlinks
-            // that hand off to `zd-spawnd` for chroot dispatch.
-            //
-            // The chroot path is now safe to prepend: `zd-runtime/<name>`
-            // re-exec's the Rust `zd-exec` wrapper (not a bash script
-            // that re-shells through `su`), and the wrapper talks
-            // directly to the persistent `zd-spawnd` daemon over a Unix
-            // socket. ~5ms per spawn, no Magisk su mediation, no
-            // fork-bomb risk under Zed's startup load.
-            //
-            // External-Termux mode falls through to bootstrap-style env
-            // until the JNI Intent bridge lands (task #36). At that
-            // point spawning will go through Java not exec, so PATH
-            // doesn't gate it anyway.
-            log::info!("zed_android: runtime adapter = {:?}", runtime_id);
-
-            let zed_bin = prefix.join(".zed/bin");
-            let prefix_bin = prefix.join("bin");
-            let zd_runtime = prefix.join("zd-runtime");
-            let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = std::ffi::OsString::new();
-            if matches!(runtime_id, RuntimeId::Chroot) {
-                new_path.push(&zd_runtime);
-                new_path.push(":");
+            for (key, op) in &ops {
+                match op {
+                    util::env::EnvOp::Set(value) => std::env::set_var(key, value),
+                    util::env::EnvOp::Remove => std::env::remove_var(key),
+                }
             }
-            new_path.push(&zed_bin);
-            new_path.push(":");
-            new_path.push(&prefix_bin);
-            new_path.push(":");
-            new_path.push(&existing);
-            std::env::set_var("PATH", &new_path);
-
-            // SHELL points at the wrapper for chroot mode so the
-            // integrated terminal lands inside the rootfs. Bootstrap
-            // mode keeps today's bionic bash — same UX as before.
-            let shell = match runtime_id {
-                RuntimeId::Chroot => prefix.join("bin/zd-exec"),
-                RuntimeId::Bootstrap | RuntimeId::ExternalTermux => prefix.join("bin/bash"),
-            };
-            std::env::set_var("SHELL", &shell);
-
-            // DELIBERATELY NOT SET: LD_LIBRARY_PATH.
-            //
-            // Our bootstrap binaries (built with TERMUX_APP_PACKAGE=
-            // com.zdroid) have DT_RUNPATH pointing at our real lib
-            // path, so they load libs natively without help.
-            //
-            // Setting LD_LIBRARY_PATH globally poisons every spawned
-            // subprocess, including Android system processes — e.g.
-            // /system/bin/app_process64 loads /system/lib64/libsqlite.so
-            // which needs OpenSSL_add_all_algorithms; the linker
-            // searches LD_LIBRARY_PATH first, finds our OpenSSL 3.x
-            // libssl.so (which dropped that deprecated symbol),
-            // CANNOT LINK, cascading into JVM stack overflow when ART
-            // retries the failing dlopen. Crashed copy/paste from the
-            // terminal panel because of exactly this.
-            //
-            // Upstream Termux packages we install via `pkg` DO need
-            // LD_LIBRARY_PATH to find their libs at runtime, but we
-            // set it per-spawn (in the LSP launcher / terminal-panel
-            // pty bringup), not as a global env var.
-            log::info!(
-                "zed_android: PATH = {}; SHELL = {}",
-                new_path.to_string_lossy(),
-                shell.display(),
-            );
         }
+        log::info!(
+            "zed_android: PATH = {}; SHELL = {}",
+            std::env::var("PATH").unwrap_or_default(),
+            std::env::var("SHELL").unwrap_or_default(),
+        );
     });
+
+    // Publish the per-adapter terminal env overlay so
+    // `crates/terminal/src/terminal.rs` can apply it when the PTY
+    // spawns. Idempotent: subsequent android_main re-entries (activity
+    // recreation) get the same overlay; the registration is OnceLock-
+    // guarded inside util::env.
+    util::env::register_terminal_env_overlay(provider.env_for_terminal(&data_path));
 
     // Surface the SELinux domain in logcat — this is the canary for the
     // targetSdk pin. If `untrusted_app_27` flips to `untrusted_app_all`
@@ -773,29 +661,25 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     .detach();
 
     // Adapter-aware `terminal.shell`. The picker writes runtime.toml;
-    // we re-derive the spawn target every launch so flipping the
+    // we re-derive the spawn target every launch by asking the active
+    // adapter via `RuntimeProvider::terminal_shell` so flipping the
     // adapter actually changes where the integrated terminal lands.
     //
     // Why overwrite even when the user already has a shell set: the
-    // picker IS the user's terminal-target choice in this app — picking
-    // chroot means "I want the terminal in the chroot's bash". Honoring
-    // a stale settings.shell from a prior adapter would silently
-    // contradict the picker. A user who wants something custom inside
-    // the chroot configures it inside the chroot (their `$SHELL`,
-    // `chsh`, etc.), not at the alacritty entry point.
-    //
-    // Two adapter shells:
-    //   - chroot:  $PREFIX/bin/zd-exec (Rust wrapper → zd-spawnd → kali)
-    //   - else:    $PREFIX/bin/bash    (today's bionic Termux bash)
+    // picker IS the user's terminal-target choice in this app —
+    // picking chroot means "I want the terminal in the chroot's bash".
+    // Honoring a stale settings.shell from a prior adapter would
+    // silently contradict the picker. A user who wants something
+    // custom inside the chroot configures it inside the chroot (their
+    // `$SHELL`, `chsh`, etc.), not at the alacritty entry point.
     //
     // alacritty's `pw_shell` lookup on Android returns /system/bin/sh
     // (the parody) so this explicit Shell::Program is what makes any
     // useful terminal work at all.
-    let runtime_id = detect_runtime_id(data_path);
-    let shell_path = match runtime_id {
-        RuntimeId::Chroot => data_path.join("usr/bin/zd-exec"),
-        RuntimeId::Bootstrap | RuntimeId::ExternalTermux => data_path.join("usr/bin/bash"),
-    };
+    let provider = active_provider(data_path);
+    let shell_path = provider
+        .terminal_shell(data_path)
+        .unwrap_or_else(|| data_path.join("usr/bin/bash"));
     if shell_path.is_file() {
         let shell_str = shell_path.to_string_lossy().to_string();
         let fs_for_settings = app_state.fs.clone();

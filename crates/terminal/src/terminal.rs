@@ -130,79 +130,33 @@ pub fn insert_zed_terminal_env(
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
 
-    // Android: alacritty's pty spawn replaces the inherited env entirely
-    // with the explicit map, so any TERMUX_* / PREFIX / HOME / PATH we
-    // set from `lib.rs` via `std::env::set_var` would be invisible to
-    // bash. Copy the relevant subset over so the integrated terminal
-    // sees the same Termux runtime our LSP / process-spawn code does.
-    // The dpkg patches and the apt Post-Invoke hooks all read these.
-    //
-    // Also set `LD_PRELOAD` to `libtermux-exec.so` — Termux's own
-    // `bin/login` does this. termux-exec hooks `execve` to translate
-    // hardcoded `/data/data/com.termux/...` paths in upstream maintainer
-    // script shebangs (e.g. `#!/data/data/com.termux/files/usr/bin/bash`)
-    // to our prefix, so dpkg can run them. Without this, `pkg install`
-    // of any upstream package whose preinst/postinst has a hardcoded
-    // shebang fails with EACCES because the kernel can't resolve the
-    // shebang interpreter at the com.termux path that doesn't exist
-    // for our UID.
+    // Android: alacritty's pty spawn replaces the inherited env
+    // entirely with the explicit map, so we copy a small universal
+    // subset (HOME / PATH / SHELL / TMPDIR / LANG) over from the
+    // Zed-Rust process env. Anything adapter-flavored — Termux vars,
+    // libtermux-exec preload, CA bundle paths, HOME=TERMUX__HOME
+    // override — comes from the active runtime adapter's
+    // `env_for_terminal` registered into `util::env` at android_main.
+    // For chroot mode the overlay is empty (the zd-exec wrapper
+    // handles env at the chroot boundary). For bootstrap mode it
+    // carries the historical Termux-flavored shape.
     #[cfg(target_os = "android")]
     {
-        for key in [
-            "TERMUX_APP__PACKAGE_NAME",
-            "TERMUX__PREFIX",
-            "TERMUX__ROOTFS",
-            "TERMUX__HOME",
-            "PREFIX",
-            "HOME",
-            "PATH",
-            "TMPDIR",
-            "SHELL",
-            "LANG",
-        ] {
+        for key in ["HOME", "PATH", "SHELL", "TMPDIR", "LANG"] {
             if let Ok(value) = std::env::var(key) {
                 env.entry(key.to_string()).or_insert(value);
             }
         }
-        // Override HOME for the terminal subprocess. The Rust process
-        // intentionally points HOME at data_path (= /data/data/.../files)
-        // so upstream zed's `dirs::home_dir().expect(...)` calls don't
-        // panic in Project::local / git / paths code (Phase 8 notes).
-        // Bash inheriting that HOME makes `~/projects` resolve to
-        // /data/data/.../files/projects (doesn't exist) instead of
-        // /data/data/.../files/home/projects (= TERMUX__HOME/projects,
-        // where lib.rs creates the dir). Aligning HOME with TERMUX__HOME
-        // for the subshell matches Termux convention and makes
-        // `cd ~/projects`, `~/storage/shared`, etc. all just work.
-        if let Ok(termux_home) = std::env::var("TERMUX__HOME") {
-            env.insert("HOME".to_string(), termux_home);
-        }
-        // CA bundle for tools that go over HTTPS (cargo fetching
-        // crates.io, npm fetching the registry, curl, etc.). Termux
-        // ships a pre-populated bundle at $PREFIX/etc/tls/cert.pem;
-        // the standard env var rust/openssl-rs/curl/most-toolings
-        // honor is SSL_CERT_FILE. Without this, `cargo metadata` from
-        // rust-analyzer dies with "unable to get local issuer
-        // certificate" on first crates.io index update.
-        if let Ok(prefix) = std::env::var("PREFIX") {
-            let cert_path = format!("{prefix}/etc/tls/cert.pem");
-            if std::path::Path::new(&cert_path).exists() {
-                env.entry("SSL_CERT_FILE".to_string())
-                    .or_insert(cert_path.clone());
-                env.entry("CURL_CA_BUNDLE".to_string())
-                    .or_insert(cert_path);
+        for (key, op) in util::env::terminal_env_overlay() {
+            match op {
+                util::env::EnvOp::Set(value) => {
+                    env.insert(key.clone(), value.to_string_lossy().into_owned());
+                }
+                util::env::EnvOp::Remove => {
+                    env.remove(key);
+                }
             }
         }
-        // Use the canonical /data/data form for LD_PRELOAD; the bionic
-        // linker treats /data/data/<pkg> and /data/user/0/<pkg> as
-        // different namespaces. Bootstrap binaries' RUNPATH uses
-        // /data/data form, so libtermux-exec is loaded into the same
-        // namespace.
-        env.entry("LD_PRELOAD".to_string()).or_insert_with(|| {
-            "/data/data/com.zdroid/files/usr/lib/\
-             libtermux-exec.so"
-                .to_string()
-        });
     }
 }
 
