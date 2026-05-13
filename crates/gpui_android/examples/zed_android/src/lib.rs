@@ -498,6 +498,17 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     theme_settings::init(theme::LoadThemes::All(Box::new(assets::Assets)), cx);
     editor::init(cx);
 
+    // Seed the `onboarding::runtime_global::ActiveRuntime` global with
+    // the active adapter so the onboarding page's "Current: <adapter>"
+    // label renders correctly on first show. The runtime picker
+    // mutates this global on every Select (see runtime_picker.rs),
+    // so subsequent changes propagate via `cx.observe_global` in
+    // `Onboarding::new`.
+    let provider_for_global = active_provider(data_path);
+    cx.set_global(onboarding::runtime_global::ActiveRuntime {
+        current: Some(provider_for_global.id()),
+    });
+
     let app_db = AppDatabase::new();
     cx.set_global(app_db);
     info!("zed_android: AppDatabase opened + set as global");

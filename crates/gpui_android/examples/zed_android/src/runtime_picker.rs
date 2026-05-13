@@ -275,6 +275,15 @@ impl RuntimePicker {
                     path.display()
                 );
                 self.current = Some(id);
+                // Update the gpui Global so any entity observing it
+                // (e.g. the onboarding page's "Current: <adapter>"
+                // label) re-renders without waiting for an app
+                // restart. set_global pushes
+                // NotifyGlobalObservers which fans out to every
+                // registered observer.
+                cx.set_global(onboarding::runtime_global::ActiveRuntime {
+                    current: Some(id),
+                });
                 cx.notify();
             }
             Err(err) => {

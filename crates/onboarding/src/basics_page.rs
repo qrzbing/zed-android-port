@@ -738,24 +738,38 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
 
 /// Hand off the Android runtime setup to the rich picker window
 /// instead of trying to render install / progress UX inline in the
-/// onboarding form. The toggle-button version we used before could
-/// only write `runtime.toml`; it had no way to surface adapter
-/// health, kick off the 240 MB bootstrap download, or show progress.
-/// The picker window already does all three — Phase 6c wired its
-/// Install button + live ProgressSink labels — so the onboarding
-/// surface is just a single button that opens it.
+/// onboarding form. The picker window has health badges, an Install
+/// button for Bootstrap that downloads the 240 MB userland from
+/// GitHub, and a live ProgressSink-driven status label (Phase 6c).
 ///
-/// No "current selection" label here: the onboarding entity has no
-/// observer wired to runtime.toml, so a snapshot read at render time
-/// would go stale the moment the user picks something in the picker
-/// (separate window, doesn't notify back). Match the Settings UX —
-/// button-only — and let the picker be the single surface of truth
-/// for what's currently active.
+/// The "Current: <adapter>" label is reactive — it reads the
+/// `runtime_global::ActiveRuntime` global. The `Onboarding` entity
+/// owns a `_runtime_subscription` that calls `cx.notify()` whenever
+/// the picker writes a new selection via `cx.set_global`, so the
+/// label updates immediately even though the picker lives in a
+/// separate window.
 #[cfg(target_os = "android")]
-fn render_android_runtime_section(tab_index: &mut isize, _cx: &mut App) -> impl IntoElement {
+fn render_android_runtime_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
+    use zdroid_runtime::RuntimeId;
+
+    let current = cx
+        .try_global::<crate::runtime_global::ActiveRuntime>()
+        .and_then(|state| state.current);
+    let current_label: SharedString = match current {
+        Some(RuntimeId::Chroot) => "Current: Kali chroot".into(),
+        Some(RuntimeId::Bootstrap) => "Current: Bootstrap".into(),
+        Some(RuntimeId::ExternalTermux) => "Current: External Termux".into(),
+        None => "Not configured yet".into(),
+    };
+
     v_flex()
         .gap_2()
         .child(Label::new("Android Runtime"))
+        .child(
+            Label::new(current_label)
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+        )
         .child(
             Button::new("configure-android-runtime", "Configure runtime")
                 .style(ButtonStyle::OutlinedGhost)
