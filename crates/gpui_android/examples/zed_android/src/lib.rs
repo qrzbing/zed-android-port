@@ -415,14 +415,25 @@ fn android_main(app: AndroidApp) {
         );
     }
 
-    // Wire askpass to the standalone helper now that
-    // apply_runtime_patches has placed it at $PREFIX/bin/zed-askpass-helper.
-    // Must happen BEFORE any AskPassSession is created (Open Remote,
-    // git auth prompts, etc.) — the askpass crate's ASKPASS_PROGRAM
-    // OnceLock initializes on first read with current_exe() (=
-    // /system/bin/app_process64 on Android) and subsequent set_program
-    // calls are silently ignored.
-    let askpass_path = data_path.join("usr/bin/zed-askpass-helper");
+    // Wire askpass to the standalone helper. Must happen BEFORE any
+    // AskPassSession is created (Open Remote, git auth prompts, etc.)
+    // — the askpass crate's ASKPASS_PROGRAM OnceLock initializes on
+    // first read with current_exe() (= /system/bin/app_process64 on
+    // Android) and subsequent set_program calls are silently ignored.
+    let askpass_path = match gpui_android::askpass_install::ensure_installed(&app, &data_path) {
+        Ok(path) => path,
+        Err(err) => {
+            log::warn!(
+                "zed_android: askpass helper install failed: {err:#}; \
+                 SSH password / passphrase prompts will fall back to \
+                 current_exe() (= app_process64) and SIGABRT on Android"
+            );
+            // Construct the expected path anyway so set_program isn't
+            // skipped — if the binary materializes later (next boot
+            // after the install issue is resolved) it'll be picked up.
+            data_path.join("zed-askpass-helper")
+        }
+    };
     if askpass_path.is_file() {
         match askpass::set_program(askpass_path.clone()) {
             Ok(()) => log::info!(

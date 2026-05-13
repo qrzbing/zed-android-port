@@ -352,13 +352,11 @@ pub fn apply_runtime_patches(android_app: &AndroidApp, data_path: &Path) -> Resu
              a manual ld-musl-aarch64.so.1 in $PREFIX/lib"
         );
     }
-    if let Err(err) = install_askpass_helper(android_app, &prefix) {
-        log::warn!(
-            "termux_bootstrap: askpass helper install failed: {err:#}; \
-             SSH password / passphrase prompts will fall back to \
-             current_exe() (= app_process64) and SIGABRT on Android"
-        );
-    }
+    // Askpass helper now installs to an app-private path via
+    // `gpui_android::askpass_install::ensure_installed`, called from
+    // android_main BEFORE this function. Decoupled from $PREFIX so the
+    // bootstrap-vs-chroot adapter choice doesn't leak into where the
+    // ssh-spawned helper lives.
     patch_node_platform_now(&prefix);
     install_npm_launcher_generator(&prefix)?;
     install_npm_wrapper(&prefix)?;
@@ -1892,53 +1890,6 @@ fn patch_resolv_conf_in_bytes(bytes: &mut [u8]) -> usize {
         }
     }
     count
-}
-
-/// Copy the standalone `zed-askpass-helper` binary from APK assets into
-/// `$PREFIX/bin`. Wired into the askpass crate at boot via
-/// `askpass::set_program(...)` (see `examples/zed_android/src/lib.rs`)
-/// so SSH_ASKPASS calls land on this binary instead of `current_exe()`.
-///
-/// On desktop, `ASKPASS_PROGRAM` defaults to `current_exe()` — same `zed`
-/// binary, just invoked with `--askpass=<sock>` to do the socket-IPC
-/// dance. On Android, `current_exe()` is `/system/bin/app_process64`
-/// (Zygote launcher hosting our DEX runtime), and ssh exec'ing that
-/// from a non-Activity context aborts under SELinux untrusted_app_27
-/// with `Error changing dalvik-cache ownership: Permission denied`.
-/// Three SIGABRTs, ssh treats them as failed password attempts, gives
-/// up — even though the user never saw a prompt.
-///
-/// The helper is a tiny standalone aarch64 ELF (~280 KB, bionic-linked,
-/// no dynamic deps beyond libc / libdl) that replicates the wire format
-/// of `crates/askpass/src/askpass.rs::main`: read prompt from stdin,
-/// connect to unix socket passed via `--askpass=`, write prompt, read
-/// password back, write password to stdout. ssh consumes stdout.
-fn install_askpass_helper(android_app: &AndroidApp, prefix: &Path) -> Result<()> {
-    const ASSET: &str = "zed-askpass-helper";
-    let bin_dir = prefix.join("bin");
-    std::fs::create_dir_all(&bin_dir)?;
-    let target = bin_dir.join(ASSET);
-
-    let asset_manager = android_app.asset_manager();
-    let asset_name = CString::new(ASSET)?;
-    let mut asset = asset_manager
-        .open(&asset_name)
-        .ok_or_else(|| anyhow!("askpass helper asset {ASSET} missing from APK"))?;
-    let mut bytes = Vec::with_capacity(asset.length());
-    asset.read_to_end(&mut bytes)?;
-
-    std::fs::write(&target, &bytes)
-        .with_context(|| format!("write {}", target.display()))?;
-    let mut perms = std::fs::metadata(&target)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&target, perms)?;
-
-    log::info!(
-        "termux_bootstrap: installed askpass helper ({} bytes) at {}",
-        bytes.len(),
-        target.display()
-    );
-    Ok(())
 }
 
 fn replay_symlinks(staging: &Path, symlinks: &[(String, String)]) -> Result<()> {

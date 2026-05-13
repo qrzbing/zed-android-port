@@ -1,6 +1,7 @@
 #![cfg(target_os = "android")]
 //! Android backend for the GPUI Platform trait.
 
+pub mod askpass_install;
 mod clipboard;
 mod cursor;
 mod dispatcher;
