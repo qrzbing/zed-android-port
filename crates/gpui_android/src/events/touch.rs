@@ -34,6 +34,19 @@ const TWO_FINGER_WINDOW: Duration = Duration::from_millis(300);
 /// gesture as a drag and stop accepting a 2nd-finger right-click.
 const TWO_FINGER_SLOP: f64 = 12.0;
 
+/// Time window in which a second / third Down of the same button at
+/// roughly the same position counts as a double- / triple-click. ~500ms
+/// matches macOS's default `NSEvent.doubleClickInterval` and X11's
+/// `multiClickTime`. Aggressive enough to feel responsive, slow enough
+/// to be reachable with a real-world tap-tap.
+const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(500);
+
+/// Logical pixels the position may drift between successive clicks
+/// before they're treated as separate gestures rather than a multi-
+/// click. ~6 covers natural hand-jitter on a touchscreen tap-tap
+/// without misclassifying a deliberate slow-drag-then-click.
+const MULTI_CLICK_SLOP: f64 = 6.0;
+
 thread_local! {
     static PRIMARY_DOWN: Cell<Option<(Instant, Point<Pixels>)>> = const { Cell::new(None) };
     /// Set when a non-primary mouse / trackpad button is currently
@@ -42,6 +55,13 @@ thread_local! {
     /// corresponding `Up` should emit `MouseUp(stored_button)` instead
     /// of the default `Up(Left)`.
     static HELD_NON_PRIMARY: Cell<Option<MouseButton>> = const { Cell::new(None) };
+    /// Last Down event's timestamp + position + button + run-length.
+    /// A new Down within `MULTI_CLICK_WINDOW` + `MULTI_CLICK_SLOP` of
+    /// the previous one of the same button bumps the run length, which
+    /// becomes the `click_count` on the new `MouseDownEvent`. Word /
+    /// line-select in the editor key off this.
+    static LAST_CLICK: Cell<Option<(Instant, Point<Pixels>, MouseButton, usize)>> =
+        const { Cell::new(None) };
 }
 
 /// Latch the primary finger position + time. Caller emits the
@@ -63,6 +83,28 @@ pub(crate) fn mark_non_primary_down(button: MouseButton) {
 /// non-primary drag.
 pub(crate) fn current_non_primary() -> Option<MouseButton> {
     HELD_NON_PRIMARY.with(|cell| cell.get())
+}
+
+/// Compute the `click_count` for a new Down at `position` with
+/// `button`. If the previous Down was the same button, recent (within
+/// `MULTI_CLICK_WINDOW`), and nearby (within `MULTI_CLICK_SLOP`), the
+/// run-length bumps; otherwise it resets to 1. Caller stamps the
+/// returned count onto the emitted `MouseDownEvent` so the editor's
+/// word- / line-select on double- / triple-click works.
+pub(crate) fn next_click_count(button: MouseButton, position: Point<Pixels>) -> usize {
+    let now = Instant::now();
+    let count = LAST_CLICK.with(|cell| match cell.get() {
+        Some((t, p, b, c))
+            if b == button
+                && now.duration_since(t) < MULTI_CLICK_WINDOW
+                && (position - p).magnitude() <= MULTI_CLICK_SLOP =>
+        {
+            c + 1
+        }
+        _ => 1,
+    });
+    LAST_CLICK.with(|cell| cell.set(Some((now, position, button, count))));
+    count
 }
 
 /// Returns the synthetic `Cancel(Left) + Down(Right) + Up(Right)`

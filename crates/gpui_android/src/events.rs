@@ -80,15 +80,17 @@ pub(crate) fn translate_motion_event(
             if let Some(button) = pressed_mouse_button
                 && button != MouseButton::Left
             {
+                let click_count = touch::next_click_count(button, position);
                 touch::mark_non_primary_down(button);
-                out.push(mouse::button_down(button, position, modifiers, 1));
+                out.push(mouse::button_down(button, position, modifiers, click_count));
                 return out;
             }
             // First finger down (touch) or mouse left button. Latch
             // position + time and emit Down(Left) immediately for
             // instant click feedback.
+            let click_count = touch::next_click_count(MouseButton::Left, position);
             touch::record_primary_down(position);
-            out.push(mouse::button_down(MouseButton::Left, position, modifiers, 1));
+            out.push(mouse::button_down(MouseButton::Left, position, modifiers, click_count));
         }
         MotionAction::PointerDown => {
             // Additional finger touched. If the primary finger is still
@@ -230,12 +232,13 @@ pub(crate) fn translate_extra_motion_event(
             // Up resolves to the same button (Android reports
             // button_state=0 on Up, so we can't recover it from there).
             let button = pressed_button.unwrap_or(MouseButton::Left);
+            let click_count = touch::next_click_count(button, position);
             if button != MouseButton::Left {
                 touch::mark_non_primary_down(button);
             } else {
                 touch::record_primary_down(position);
             }
-            out.push(mouse::button_down(button, position, modifiers, 1));
+            out.push(mouse::button_down(button, position, modifiers, click_count));
         }
         JAVA_ACTION_UP | JAVA_ACTION_POINTER_UP => {
             // End any multi-touch scroll and resolve the latched click.
