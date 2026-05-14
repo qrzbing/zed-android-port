@@ -11,6 +11,11 @@ import android.os.Bundle
 import android.os.Process
 import android.provider.DocumentsContract
 import android.util.Log
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -54,6 +59,110 @@ class MainActivity : GameActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat
                 .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+
+        // Pointer-capture probe. When the decor view gains focus we ask
+        // Android for raw pointer events. The captured listener
+        // stringifies every event and forwards it to Rust for logging
+        // only; no synthesis yet. This is here to verify whether Samsung
+        // Book Cover Keyboard's trackpad gesture overlay (which
+        // collapses two-finger scroll into single-pointer relative
+        // motion in non-DeX tablet mode, never firing ACTION_SCROLL)
+        // sits above or below the AOSP gesture-recognizer layer that
+        // `requestPointerCapture` disables. If captured events show
+        // multi-touch with `pointerCount > 1` and proper `AXIS_RELATIVE_*`
+        // values, we know we can synthesize scroll on this hardware. If
+        // they look identical to the non-captured path, Samsung is
+        // intercepting deeper than the AOSP layer and we'd need a
+        // different approach.
+        //
+        // Captured events route to the *focused* View, not decorView.
+        // GameActivity sets focus on its SurfaceView, so we install the
+        // listener on whatever SurfaceView we find in the hierarchy
+        // (decorView's) on top of decorView as a fallback. Setting on
+        // both is harmless; whichever the system dispatches to wins.
+        val captureListener = View.OnCapturedPointerListener { _, event ->
+            NativeBridge.nativeOnCapturedPointerProbe(describeCapturedPointer(event))
+            true
+        }
+        window.decorView.setOnCapturedPointerListener(captureListener)
+        window.decorView.post {
+            installCapturedPointerListenerOnAll(window.decorView, captureListener)
+        }
+    }
+
+    private fun installCapturedPointerListenerOnAll(
+        root: View,
+        listener: View.OnCapturedPointerListener,
+    ) {
+        root.setOnCapturedPointerListener(listener)
+        if (root is SurfaceView) {
+            Log.i(TAG_CAPTURE, "captured listener installed on SurfaceView")
+            root.isFocusable = true
+            root.isFocusableInTouchMode = true
+        }
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) {
+                installCapturedPointerListenerOnAll(root.getChildAt(i), listener)
+            }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            // Only worth capturing if there's actually a pointing device
+            // attached. Touchscreen-only sessions don't benefit and
+            // capturing would hide the system cursor for any
+            // incidentally-connected mouse without giving us new info.
+            if (hasIndirectPointer()) {
+                Log.i(TAG_CAPTURE, "requestPointerCapture()")
+                window.decorView.requestPointerCapture()
+            }
+        } else {
+            window.decorView.releasePointerCapture()
+        }
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
+    }
+
+    private fun hasIndirectPointer(): Boolean {
+        val ids = InputDevice.getDeviceIds()
+        for (id in ids) {
+            val dev = InputDevice.getDevice(id) ?: continue
+            val sources = dev.sources
+            if (sources and InputDevice.SOURCE_TOUCHPAD != 0) return true
+            if (sources and InputDevice.SOURCE_MOUSE != 0) return true
+            if (sources and InputDevice.SOURCE_MOUSE_RELATIVE != 0) return true
+        }
+        return false
+    }
+
+    private fun describeCapturedPointer(event: MotionEvent): String {
+        val sb = StringBuilder()
+        sb.append("act=").append(MotionEvent.actionToString(event.actionMasked))
+        sb.append(" src=0x").append(java.lang.Integer.toHexString(event.source))
+        sb.append(" btn=0x").append(java.lang.Integer.toHexString(event.buttonState))
+        sb.append(" n=").append(event.pointerCount)
+        val pc = event.pointerCount.coerceAtMost(3)
+        for (i in 0 until pc) {
+            sb.append(" p").append(i).append("=(")
+            sb.append("%.1f".format(event.getX(i))).append(",")
+            sb.append("%.1f".format(event.getY(i))).append(" rx=")
+            sb.append("%.2f".format(event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, i))).append(" ry=")
+            sb.append("%.2f".format(event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)))
+            sb.append(" tt=").append(event.getToolType(i))
+            sb.append(")")
+        }
+        val vs = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val hs = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        if (vs != 0f || hs != 0f) {
+            sb.append(" vscroll=").append("%.2f".format(vs))
+            sb.append(" hscroll=").append("%.2f".format(hs))
+        }
+        return sb.toString()
     }
 
     @Suppress("unused") // called from Rust via JNI
@@ -246,6 +355,7 @@ class MainActivity : GameActivity() {
 
     companion object {
         private const val TAG = "zed_android_saf"
+        private const val TAG_CAPTURE = "zed_android_capture"
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
         private const val REQ_STORAGE_PERMS = 0xA3

@@ -2,6 +2,7 @@
 //! Android backend for the GPUI Platform trait.
 
 pub mod askpass_install;
+mod captured_pointer;
 mod clipboard;
 mod cursor;
 mod dispatcher;

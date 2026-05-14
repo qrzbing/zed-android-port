@@ -93,4 +93,14 @@ object NativeBridge {
         metaState: Int,
         repeatCount: Int,
     )
+
+    /// Probe pass for pointer capture. Once `requestPointerCapture()`
+    /// resolves on the decor view, Android's built-in touchpad gesture
+    /// detection is disabled and we receive raw MotionEvents on the
+    /// captured listener. This sink takes a stringified summary of each
+    /// captured event so we can read what Samsung's Book Cover trackpad
+    /// (which intercepts gestures in tablet mode and never fires
+    /// ACTION_SCROLL) actually emits at the raw layer. The Rust side
+    /// just logs it; no event synthesis yet.
+    external fun nativeOnCapturedPointerProbe(summary: String)
 }
