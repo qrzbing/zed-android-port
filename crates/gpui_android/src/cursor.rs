@@ -92,5 +92,18 @@ fn set_pointer_icon_inner(
         "(Landroid/view/PointerIcon;)V",
         &[(&pointer_icon).into()],
     )?;
+
+    // While the activity has pointer capture, the system PointerIcon
+    // we just set is hidden (we draw a software cursor in
+    // CursorOverlayView ourselves). Push the same icon-type id to
+    // MainActivity so the overlay can render the matching shape.
+    // setCapturedCursorStyle no-ops when cursorView is null (capture
+    // not active), so this is safe to call unconditionally.
+    let _ = env.call_method(
+        &activity,
+        "setCapturedCursorStyle",
+        "(I)V",
+        &[icon_type.into()],
+    );
     Ok(())
 }

@@ -125,13 +125,19 @@ class MainActivity : GameActivity() {
     ) : View(context) {
         var cursorX: Float = 0f
         var cursorY: Float = 0f
-        /// Arrow silhouette in local coords (hot-spot at origin).
-        /// Classic 7-point pointer with a slight tail / asymmetric
-        /// "south-east" slant, similar to the Windows / desktop Linux
-        /// default arrow. Drawn at `sizePx`-scaled coordinates so the
-        /// arrow size matches the user's display density.
+        /// Current cursor style. Integer IDs match Android's
+        /// `PointerIcon.TYPE_*` constants so the Rust side can pass
+        /// the same value it already computes for `setPointerIcon`
+        /// (see `crates/gpui_android/src/cursor.rs`). Unrecognized IDs
+        /// fall back to the arrow path. Updated via `setStyle` from
+        /// the UI thread (Rust calls through `setCapturedCursorStyle`
+        /// in the outer Activity which dispatches via `runOnUiThread`).
+        var cursorStyle: Int = MainActivity.STYLE_ARROW
+        /// Per-style paths in local coords (hot-spot at origin for
+        /// the arrow; centered for everything else so the cursor's
+        /// visual mass tracks the gpui-side click position).
+        private val s = sizePx.toFloat()
         private val arrowPath = Path().apply {
-            val s = sizePx.toFloat()
             moveTo(0f, 0f)
             lineTo(0f, s * 0.78f)
             lineTo(s * 0.22f, s * 0.60f)
@@ -140,6 +146,112 @@ class MainActivity : GameActivity() {
             lineTo(s * 0.36f, s * 0.55f)
             lineTo(s * 0.62f, s * 0.55f)
             close()
+        }
+        /// I-beam: vertical bar with serifs top + bottom, centered on
+        /// the hot-spot. Hot-spot is the midpoint of the bar so a
+        /// click registers at the text caret position the user sees.
+        private val iBeamPath = Path().apply {
+            val cx = 0f
+            val halfH = s * 0.45f
+            val halfW = s * 0.18f
+            val bar = s * 0.05f
+            moveTo(cx - bar, -halfH)
+            lineTo(cx + bar, -halfH)
+            lineTo(cx + bar, -halfH + bar * 2)
+            lineTo(cx + halfW * 0.4f, -halfH + bar * 2)
+            lineTo(cx + halfW * 0.4f, -halfH + bar * 3)
+            lineTo(cx + bar, -halfH + bar * 3)
+            lineTo(cx + bar, halfH - bar * 3)
+            lineTo(cx + halfW * 0.4f, halfH - bar * 3)
+            lineTo(cx + halfW * 0.4f, halfH - bar * 2)
+            lineTo(cx + bar, halfH - bar * 2)
+            lineTo(cx + bar, halfH)
+            lineTo(cx - bar, halfH)
+            lineTo(cx - bar, halfH - bar * 2)
+            lineTo(cx - halfW * 0.4f, halfH - bar * 2)
+            lineTo(cx - halfW * 0.4f, halfH - bar * 3)
+            lineTo(cx - bar, halfH - bar * 3)
+            lineTo(cx - bar, -halfH + bar * 3)
+            lineTo(cx - halfW * 0.4f, -halfH + bar * 3)
+            lineTo(cx - halfW * 0.4f, -halfH + bar * 2)
+            lineTo(cx - bar, -halfH + bar * 2)
+            close()
+        }
+        /// Pointing hand: simplified silhouette pointing up. Hot-spot
+        /// is at the index-finger tip (top center).
+        private val pointingHandPath = Path().apply {
+            val w = s * 0.55f
+            val h = s * 0.85f
+            // Index finger
+            moveTo(0f, 0f)
+            lineTo(-w * 0.18f, h * 0.45f)
+            lineTo(-w * 0.18f, h * 0.55f)
+            // Knuckle area (other fingers folded)
+            lineTo(-w * 0.50f, h * 0.55f)
+            lineTo(-w * 0.50f, h * 1.00f)
+            lineTo(w * 0.45f, h * 1.00f)
+            lineTo(w * 0.45f, h * 0.62f)
+            lineTo(w * 0.18f, h * 0.55f)
+            lineTo(w * 0.18f, h * 0.45f)
+            close()
+        }
+        /// Horizontal double-arrow: ← →. Used for ew-resize / column
+        /// resize. Hot-spot at the center, where the click registers
+        /// at the divider being dragged.
+        private val resizeLeftRightPath = Path().apply {
+            val hx = s * 0.50f
+            val tail = s * 0.07f
+            val head = s * 0.18f
+            // Left arrow head
+            moveTo(-hx, 0f)
+            lineTo(-hx + head, -head)
+            lineTo(-hx + head, -tail)
+            // Tail going right
+            lineTo(hx - head, -tail)
+            lineTo(hx - head, -head)
+            // Right arrow head
+            lineTo(hx, 0f)
+            lineTo(hx - head, head)
+            lineTo(hx - head, tail)
+            // Tail going left
+            lineTo(-hx + head, tail)
+            lineTo(-hx + head, head)
+            close()
+        }
+        /// Vertical double-arrow: ↑ ↓. Used for ns-resize / row resize.
+        private val resizeUpDownPath = Path().apply {
+            val hy = s * 0.50f
+            val tail = s * 0.07f
+            val head = s * 0.18f
+            moveTo(0f, -hy)
+            lineTo(-head, -hy + head)
+            lineTo(-tail, -hy + head)
+            lineTo(-tail, hy - head)
+            lineTo(-head, hy - head)
+            lineTo(0f, hy)
+            lineTo(head, hy - head)
+            lineTo(tail, hy - head)
+            lineTo(tail, -hy + head)
+            lineTo(head, -hy + head)
+            close()
+        }
+        /// Open hand for OpenHand (grab). Stylized palm with five
+        /// stubby fingers up. Hot-spot at palm center.
+        private val openHandPath = Path().apply {
+            val w = s * 0.55f
+            val h = s * 0.30f
+            addOval(android.graphics.RectF(-w * 0.55f, -h * 0.5f, w * 0.55f, h * 1.2f), Path.Direction.CW)
+            // 4 fingers up
+            for (i in -2..1) {
+                val x = i * (w * 0.18f) + w * 0.09f
+                addRect(x - w * 0.06f, -h * 1.5f, x + w * 0.06f, -h * 0.4f, Path.Direction.CW)
+            }
+        }
+        /// Closed hand for ClosedHand (grabbing). Roundish fist.
+        private val closedHandPath = Path().apply {
+            val w = s * 0.45f
+            val h = s * 0.40f
+            addOval(android.graphics.RectF(-w * 0.6f, -h * 0.5f, w * 0.6f, h * 1.0f), Path.Direction.CW)
         }
         private val fillPaint = Paint().apply {
             color = Color.WHITE
@@ -168,14 +280,42 @@ class MainActivity : GameActivity() {
             cursorY = y
             invalidate()
         }
+        fun setStyle(style: Int) {
+            if (cursorStyle != style) {
+                cursorStyle = style
+                invalidate()
+            }
+        }
+        private fun pathForCurrentStyle(): Path = when (cursorStyle) {
+            MainActivity.STYLE_IBEAM, MainActivity.STYLE_VERTICAL_TEXT -> iBeamPath
+            MainActivity.STYLE_HAND -> pointingHandPath
+            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW -> resizeLeftRightPath
+            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW -> resizeUpDownPath
+            MainActivity.STYLE_GRAB -> openHandPath
+            MainActivity.STYLE_GRABBING -> closedHandPath
+            else -> arrowPath
+        }
         override fun onDraw(canvas: Canvas) {
             canvas.save()
             canvas.translate(cursorX, cursorY)
+            val path = pathForCurrentStyle()
             // Fill first then outline on top so the outline reads
             // crisply against any background color.
-            canvas.drawPath(arrowPath, fillPaint)
-            canvas.drawPath(arrowPath, strokePaint)
+            canvas.drawPath(path, fillPaint)
+            canvas.drawPath(path, strokePaint)
             canvas.restore()
+        }
+    }
+
+    /// Called from Rust via JNI (`set_pointer_icon_inner` in
+    /// `crates/gpui_android/src/cursor.rs`). Dispatches to the UI
+    /// thread because cursorView is a regular Android View and field
+    /// writes / invalidation must happen on the UI thread. No-op when
+    /// pointer capture is inactive (cursorView is null).
+    @Suppress("unused")
+    fun setCapturedCursorStyle(style: Int) {
+        runOnUiThread {
+            cursorView?.setStyle(style)
         }
     }
 
@@ -620,5 +760,16 @@ class MainActivity : GameActivity() {
         /// scales naturally with the device's density to feel right
         /// at any DPI without occluding adjacent UI elements.
         private const val CURSOR_SIZE_DP = 24
+
+        // PointerIcon.TYPE_* constants — IDs Rust passes from
+        // `cursor.rs` so both code paths use the same enum values.
+        const val STYLE_ARROW = 1000
+        const val STYLE_IBEAM = 1008
+        const val STYLE_VERTICAL_TEXT = 1009
+        const val STYLE_HAND = 1002
+        const val STYLE_HORIZONTAL_DOUBLE_ARROW = 1014
+        const val STYLE_VERTICAL_DOUBLE_ARROW = 1015
+        const val STYLE_GRAB = 1020
+        const val STYLE_GRABBING = 1021
     }
 }
