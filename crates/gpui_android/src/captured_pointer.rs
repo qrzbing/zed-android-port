@@ -560,11 +560,16 @@ pub(crate) fn translate(
             JAVA_ACTION_UP => {
                 // Last finger lifted. Three cases:
                 //
-                // 1. drag_active: we were dragging (either tap-tap-drag
-                //    or hold-and-drag). Release the held button so
-                //    gpui ends the selection cleanly. Use
-                //    `hold_drag_cursor` if set (hold-and-drag, where
-                //    Kotlin's cursor stayed pinned), else `cursor`.
+                // 1. button_held is set: we were in some kind of drag
+                //    (tap-tap-drag, hold-and-drag, OR Samsung's
+                //    ACTION_BUTTON_PRESS-recognized drag where
+                //    drag_active was never set). Release the button
+                //    unconditionally — the gate is the button being
+                //    held, not whether drag_active matches. This is
+                //    load-bearing: ACTION_BUTTON_PRESS sets
+                //    button_held without setting drag_active, so
+                //    relying on drag_active to release leaks the
+                //    button on every Samsung-driver drag.
                 // 2. primary_down anchor still fresh + low motion:
                 //    synthesize a tap click. Record last_tap_at +
                 //    position so a follow-up DOWN within
@@ -573,16 +578,14 @@ pub(crate) fn translate(
                 //    without crossing into tap-drag mode): no click,
                 //    just clear state.
                 state.in_multi_touch = false;
-                if state.drag_active {
+                if let Some(button) = state.button_held.take() {
                     let release_pos = state.hold_drag_cursor.take().unwrap_or(cursor);
-                    if let Some(button) = state.button_held.take() {
-                        out.push(PlatformInput::MouseUp(MouseUpEvent {
-                            button,
-                            position: release_pos,
-                            modifiers,
-                            click_count: 1,
-                        }));
-                    }
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button,
+                        position: release_pos,
+                        modifiers,
+                        click_count: 1,
+                    }));
                     state.drag_active = false;
                 } else if let Some(anchor) = state.primary_down.take()
                     && anchor.when.elapsed() < TAP_WINDOW
