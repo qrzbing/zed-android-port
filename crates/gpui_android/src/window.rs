@@ -17,9 +17,10 @@ use gpui::{
     Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
 };
-use gpui_wgpu::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
+use gpui_wgpu::{GpuContext, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 
 use crate::display::AndroidDisplay;
+use crate::platform::set_native_window_frame_rate;
 
 /// Raw window handle wrapper for Android. Holds a `*mut ANativeWindow` pointer
 /// (obtained from `android_activity::AndroidApp::native_window()`), or null when
@@ -144,7 +145,23 @@ impl AndroidWindowStatePtr {
                 DevicePixels(height.max(1) as i32),
             ),
             transparent: false,
-            preferred_present_mode: None,
+            // Mailbox lets the swap chain discard a stale frame at present
+            // time when a newer one is ready, which under irregular paint
+            // cadence (scroll bursts, typing flurries) feels ~1 frame
+            // tighter than FIFO. Falls back to Fifo inside the renderer
+            // if the surface doesn't expose Mailbox; Adreno 740 (Tab S9)
+            // does.
+            //
+            // Triple-buffer (`Some(3)`) was tried and reverted: at 120Hz
+            // the cost is +8.33ms of in-flight latency which is invisible,
+            // but Samsung's smart-refresh aggressively drops the panel to
+            // 60/30Hz when the app isn't actively rendering, and at those
+            // rates the extra image adds 16-33ms of perceived input
+            // latency that the user feels as overall sluggishness. Stay
+            // at the wgpu default of 2 until we have a way to keep the
+            // panel pinned at 120Hz.
+            preferred_present_mode: Some(wgpu::PresentMode::Mailbox),
+            desired_maximum_frame_latency: None,
         };
 
         let mut state = self.state.borrow_mut();
@@ -180,6 +197,16 @@ impl AndroidWindowStatePtr {
             state.renderer = Some(renderer);
             log::info!("AndroidWindow::attach_surface: created renderer ({width}x{height})");
         }
+
+        // Ask the system for the panel's maximum refresh rate. On API 30+
+        // capable devices this opts us into 120Hz on Tab S9 Ultra / Pixel
+        // Tablet (otherwise the compositor leaves us at 60Hz for "compat"
+        // apps regardless of panel capability). No-op on API 26-29 — the
+        // symbol is resolved via `dlsym` rather than direct-linked so
+        // missing-symbol on older devices is silent, not a load-time
+        // crash. Issue every attach so re-attach after rotation /
+        // background-resume re-asserts the hint.
+        set_native_window_frame_rate(raw_window.native_window);
 
         // Replace the previous wrapper (if any). The drop releases the prior
         // ANativeWindow refcount; Vulkan's VkSurfaceKHR holds its own ref.

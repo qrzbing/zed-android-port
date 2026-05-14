@@ -42,6 +42,68 @@ unsafe extern "C" {
 type ChoreographerFrameCallback =
     unsafe extern "C" fn(frame_time_nanos: i64, data: *mut c_void);
 
+/// `ANativeWindow_setFrameRate` is NDK API 30+. minSdk is 26, so we
+/// can't direct-link the symbol (it would `dlopen`-fail at app load on
+/// 26-29 devices and crash before any code runs). Resolve it lazily
+/// via `dlsym` against the already-loaded libandroid.so; absent symbol
+/// just means we stay at the panel's compatibility default (typically
+/// 60Hz on devices new enough to have 120Hz panels but old enough to
+/// lack this API — a narrow band).
+type SetFrameRateFn =
+    unsafe extern "C" fn(window: *mut c_void, frame_rate: f32, compatibility: i8) -> i32;
+
+/// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`. Tells the system
+/// "this app can run at any refresh the panel offers; pick the highest
+/// you support." Pairs with `frame_rate: 0.0` for "no specific target."
+const FRAME_RATE_COMPATIBILITY_DEFAULT: i8 = 0;
+
+/// Ask the system to render the given native window at the panel's
+/// maximum refresh rate. No-op on API 26-29 (returns `false`). On API
+/// 30+, `0.0` Hz with `COMPATIBILITY_DEFAULT` translates to "as high
+/// as the panel can go" — 120Hz on Tab S9 Ultra / Pixel Tablet, 90Hz
+/// on mid-range, 60Hz everywhere else. Safe to call repeatedly; the
+/// system de-dupes.
+///
+/// The pointer must be a valid `ANativeWindow*` for at least the
+/// duration of this call. Caller (window.rs::attach_surface) holds an
+/// `ANativeWindow_acquire` refcount through the surrounding `NativeWindow`
+/// wrapper, so the lifetime requirement is satisfied trivially.
+pub(crate) fn set_native_window_frame_rate(window: *mut c_void) -> bool {
+    if window.is_null() {
+        return false;
+    }
+    // RTLD_NOLOAD asks "is this already loaded?" without mapping it
+    // afresh. libandroid.so is always loaded on Android — Choreographer
+    // FFI above depends on it — so this is effectively a handle fetch.
+    let lib = unsafe {
+        libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY)
+    };
+    if lib.is_null() {
+        log::warn!("set_native_window_frame_rate: libandroid.so not loaded; skipping");
+        return false;
+    }
+    let sym = unsafe { libc::dlsym(lib, c"ANativeWindow_setFrameRate".as_ptr()) };
+    if sym.is_null() {
+        log::info!(
+            "ANativeWindow_setFrameRate unavailable (API < 30); panel \
+             stays at compatibility-default refresh"
+        );
+        return false;
+    }
+    let set_frame_rate: SetFrameRateFn = unsafe { std::mem::transmute(sym) };
+    let result = unsafe { set_frame_rate(window, 0.0, FRAME_RATE_COMPATIBILITY_DEFAULT) };
+    if result == 0 {
+        log::info!(
+            "ANativeWindow_setFrameRate(0.0, DEFAULT) accepted; panel \
+             will run at its maximum supported refresh"
+        );
+        true
+    } else {
+        log::warn!("ANativeWindow_setFrameRate returned error code {result}");
+        false
+    }
+}
+
 /// Set by the Choreographer callback (called once per vsync on the
 /// main thread's looper, so no synchronization beyond the atomic).
 /// Drained at the top of each event-loop tick to decide whether to
@@ -50,6 +112,7 @@ static FRAME_PENDING: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" fn frame_callback(_frame_time_nanos: i64, _data: *mut c_void) {
     FRAME_PENDING.store(true, Ordering::Release);
+    crate::frame_timing::vsync_arrived();
     // Re-post for the next vsync so we get a continuous stream of
     // frame callbacks. Stopping this stream means the next tick won't
     // get a vsync wake-up; we always want to be ready to render.
@@ -661,12 +724,14 @@ impl Platform for AndroidPlatform {
                         common.extra_windows.values().cloned().collect::<Vec<_>>(),
                     )
                 };
+                crate::frame_timing::paint_started();
                 if let Some(window_ptr) = primary {
                     window_ptr.refresh();
                 }
                 for window_ptr in extras {
                     window_ptr.refresh();
                 }
+                crate::frame_timing::paint_finished();
             }
         }
 

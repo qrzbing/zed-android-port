@@ -105,7 +105,22 @@ fn android_main(app: AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
-            .with_tag("zed_android"),
+            .with_tag("zed_android")
+            // android-activity 0.6.1 hard-codes an `error!` log for
+            // "Spurious ALOOPER_POLL_CALLBACK from ALooper_pollOnce()
+            // (ignored)" every time the looper dispatches our
+            // Choreographer FD callback — which is once per vsync, so
+            // 120 lines/sec of logcat noise on Tab S9. The upstream
+            // comment says the NDK docs claim this can't happen; it
+            // does on real hardware. Silencing the module entirely
+            // because nothing else useful comes out of it. If
+            // android-activity upgrades and starts surfacing real
+            // input/lifecycle errors there, revisit.
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .parse("info,android_activity::activity_impl=off")
+                    .build(),
+            ),
     );
     info!("zed_android: android_main entry");
 
