@@ -71,10 +71,14 @@ pub(crate) fn button_up(
 }
 
 /// Build the `ScrollWheelEvent` for an `ACTION_SCROLL` event (mouse
-/// wheel, mouse-equivalent trackpad scroll). Android reports +Y for
-/// "up" (away from user) and the historical translator negated it
-/// before handing to gpui. Preserved here for the scaffolding refactor;
-/// the inversion is removed in a follow-up commit.
+/// wheel, mouse-equivalent trackpad scroll).
+///
+/// Android's `AXIS_VSCROLL` is +1.0 for "up / forward" (wheel rotated
+/// away from the user); gpui's `ScrollDelta::Lines.y` is also +1.0 for
+/// "scroll content up" (matches `terminal::mappings::mouse::is_scroll_up`
+/// and macOS's raw `scrollingDeltaY`). The two conventions align: pass
+/// through unchanged. A prior `-vscroll` flip caused BT-mouse scrolls
+/// to feel backwards, reported via the @-mention loop on 2026-05-13.
 pub(crate) fn wheel_scroll(
     vscroll: f32,
     hscroll: f32,
@@ -86,7 +90,7 @@ pub(crate) fn wheel_scroll(
     }
     Some(PlatformInput::ScrollWheel(ScrollWheelEvent {
         position,
-        delta: ScrollDelta::Lines(point(hscroll, -vscroll)),
+        delta: ScrollDelta::Lines(point(hscroll, vscroll)),
         modifiers,
         touch_phase: TouchPhase::Moved,
     }))
