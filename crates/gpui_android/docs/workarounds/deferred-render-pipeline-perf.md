@@ -1,6 +1,6 @@
 # Render-pipeline perf polish (deferred)
 
-**Status:** Deferred — input-latency feel work, no correctness bug
+**Status:** Partially landed — items 1, 2, 6 shipped 2026-05-13; items 3, 4, 5 still deferred
 
 The current rendering path is correct and GPU-accelerated end to end:
 wgpu → blade-graphics → Vulkan on Adreno (same renderer/shaders as
@@ -8,6 +8,91 @@ desktop Zed), AChoreographer-driven vsync via direct NDK FFI (no
 JNI hop per frame), `untrusted_app_27` SELinux context with full
 GPU access. Frames are drawn at the panel's primary refresh rate
 without CPU compositing.
+
+## Landed in this pass (2026-05-13)
+
+- **Item 1 (120Hz opt-in)**: `ANativeWindow_setFrameRate(0.0, COMPATIBILITY_DEFAULT)`
+  wired via `dlsym` late-binding (so API 26-29 devices silently no-op
+  instead of crashing on missing symbol). Helper at
+  `crates/gpui_android/src/platform.rs::set_native_window_frame_rate`,
+  called from `window.rs::attach_surface` on every surface attach.
+  Verified on Tab S9 Ultra: `dumpsys SurfaceFlinger` reports
+  `frameRate: 0.00 Hz, category: Default, selectionStrategy: Self`
+  for `com.zdroid`, and `frameRateOverrides=[uid=10434 frameRateHz=120.00001]`.
+  Realized frame interval dropped from 16.67ms → 8.33ms when device is
+  fully active. System still chooses 60Hz under power-saving / "smart"
+  refresh conditions even with our hint registered; that's not our
+  code's call, it's a Samsung One UI policy.
+- **Item 2 (Mailbox present mode)**: `preferred_present_mode: Some(wgpu::PresentMode::Mailbox)`
+  in `window.rs::attach_surface`. Renderer capability-falls-back to
+  Fifo if the surface doesn't expose Mailbox (it does on Adreno 740).
+  Engagement verified via a new `log::info!` in `wgpu_renderer.rs`
+  right after `surface.configure()`:
+  `present_mode=Mailbox, frame_latency=3, available_modes=[Mailbox, Fifo]`.
+- **Item 6 (Triple-buffer swap chain)**: New `desired_maximum_frame_latency:
+  Option<u32>` field on `WgpuSurfaceConfig` (additive, defaults to prior
+  behavior of 2 for all non-Android platforms). Android passes `Some(3)`.
+- **Item 4 (FrameMetrics-class instrumentation)**: New
+  `crates/gpui_android/src/frame_timing.rs` records per-frame
+  `vsync_interval` / `vsync_to_paint` / `paint_duration`, logs
+  P50/P95/P99/max every 240 frames (~2-4 seconds). Cheaper than the
+  Java `Window.addOnFrameMetricsAvailableListener` JNI bridge that
+  this doc originally sketched, because our renderer bypasses the
+  View tree anyway so Java FrameMetrics wouldn't capture our actual
+  draw — Choreographer-callback-relative timing measures what we
+  actually want. Sample baseline on Tab S9 at 120Hz active state:
+  `vsync_interval p50=8.34ms p95=34ms p99=58ms`, `paint_duration
+  p50=0.05ms p99=24ms`. The tail is dominated by rare expensive
+  paints, not by wake-up noise.
+- **Item 3 (Spurious ALooper wakes)**: The error log was misdiagnosed.
+  `android-activity 0.6.1`'s `ALooper_pollOnce` returns
+  `ALOOPER_POLL_CALLBACK` (which it documents shouldn't happen)
+  whenever our Choreographer FD callback dispatches — i.e. every
+  vsync, by design. It's not an extra wake-up, it's the one we want.
+  Silenced via `env_logger` filter in `lib.rs`:
+  `"info,android_activity::activity_impl=off"`. Saves ~12ms/sec of
+  CPU spent in the logcat write path and removes 120 lines/sec of
+  log spam. Real frame-pacing tail (p99=20ms+) comes from occasional
+  long paints, not wakes — see the frame_timing samples above.
+
+## I/O integration started (2026-05-13)
+
+Separate concern from the render-pipeline items above, but landed in
+the same session because the user explicitly tied the work together
+("then we begin working on the I/O integration"). Scope: hardware
+mouse / stylus / trackpad should feel desktop-class, not VNC-tier.
+
+- **Source segregation** (`crates/gpui_android/src/events/source.rs`):
+  New `InputSource` enum (Mouse / Stylus / Touchpad / Finger) and a
+  `classify(event: &MotionEvent)` function that reads per-pointer
+  `tool_type` first, falls back to the device `source()` bitmask.
+  Wired into the primary `translate_motion_event`. Extra-window
+  translator (Settings / Keymap / Themes) defaults to Finger because
+  the JNI bridge doesn't yet pass source / tool_type — plumb that
+  through `forwardTouchEvent` + `nativeOnExtraTouchEvent` when the
+  feel gap hits an extra window.
+- **Per-source multi-click windows** (`events/touch.rs`): The 500ms /
+  6px constants are now `multi_click_window(source)` and
+  `multi_click_slop(source)` helpers in `events/source.rs`. Hardware
+  pointers (mouse / stylus / trackpad) get 300ms / 3px to match
+  `ViewConfiguration.getDoubleTapTimeout()`; finger taps keep 500ms /
+  6px. Double-click in the editor on a hardware mouse should now
+  feel ~200ms faster.
+- **Verification log**: `touch::next_click_count` logs
+  `multi_click: source=… count=N window=… slop=…` whenever count > 1.
+  Plug in a Bluetooth mouse, double-click a word in the editor, then
+  `adb logcat -s zed_android | grep multi_click`. Expected output
+  for mouse: `source=Mouse count=2 window=300ms slop=3 button=Left`.
+  Synthetic `adb shell input mouse tap` works but the device must be
+  unlocked + Zdroid focused; locked-device synthetic taps go to the
+  lockscreen window, not us. Real-mouse verification on device still
+  to be done by hand.
+- **Pointer capture (deferred)**: `view.requestPointerCapture()` for
+  Samsung Book Cover trackpad in non-DeX mode (which collapses
+  multi-finger gestures to single-pointer relative motion, so
+  two-finger scroll doesn't work) is intentionally deferred. Only
+  worth doing if a user actually hits it on Tab S9 in tablet mode;
+  cost is rendering our own cursor sprite while captured.
 
 What it ISN'T yet: minimal-latency. Several small things compound
 to ~5-10ms of cumulative input→paint overhead the user perceives as
@@ -17,7 +102,7 @@ them up later as a focused pass; nothing here blocks correctness.
 
 ## Items, ranked by leverage
 
-### 1. Opt into 120Hz on devices that support it
+### 1. ~~Opt into 120Hz on devices that support it~~ — LANDED
 
 `crates/gpui_android/src/window.rs:147` sets
 `preferred_present_mode: None` and never calls
@@ -49,7 +134,7 @@ and graceful fallback for older devices. Validate via
 `adb shell dumpsys SurfaceFlinger --frame-stats com.zdroid` —
 should show 120Hz frame intervals after.
 
-### 2. Try `PresentMode::Mailbox` instead of FIFO default
+### 2. ~~Try `PresentMode::Mailbox` instead of FIFO default~~ — LANDED
 
 Same line — `preferred_present_mode: None` lets wgpu pick. Default
 is FIFO (hard vsync, blocks at present until next refresh). Mailbox
@@ -129,7 +214,7 @@ remove the copy. Bigger surgery — touches our `android_main` event
 loop and conflicts on every `game-activity` upgrade. Defer until
 items 1-4 are landed and measured.
 
-### 6. Triple-buffer swap chain
+### 6. ~~Triple-buffer swap chain~~ — LANDED
 
 wgpu defaults to 2 swap-chain images. 3 lets the GPU work on the
 next frame while one is held by the compositor and one is queued.
