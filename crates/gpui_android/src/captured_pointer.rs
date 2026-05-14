@@ -92,6 +92,15 @@ const ANDROID_BUTTON_TERTIARY: i32 = 1 << 2;
 const ANDROID_BUTTON_BACK: i32 = 1 << 3;
 const ANDROID_BUTTON_FORWARD: i32 = 1 << 4;
 
+/// `InputDevice.SOURCE_TOUCHPAD` = SOURCE_CLASS_POSITION (0x8) plus
+/// the touchpad bit (0x100000). Used to source-filter BUTTON_PRESS /
+/// BUTTON_RELEASE: verified empirically (logs show source=0x100008)
+/// that the Book Cover trackpad firmware fires these on every finger
+/// contact, not just real clicks. For a real mouse plugged into the
+/// tablet (SOURCE_MOUSE = 0x2002), BUTTON_PRESS is a genuine click
+/// and must still be honored.
+const ANDROID_SOURCE_TOUCHPAD: i32 = 0x00100008;
+
 /// Tap detection: a single-finger `ACTION_DOWN` → `ACTION_UP` within
 /// this time, with less than `TAP_MOTION_PX` of accumulated motion,
 /// counts as a click and synthesizes `MouseDown` + `MouseUp(Left)`.
@@ -389,17 +398,18 @@ pub(crate) fn translate(
                 state.right_click_armed = false;
             }
             JAVA_ACTION_POINTER_DOWN => {
-                // Second finger landed. Hold-and-drag gates on two
-                // conditions: finger 1 has been on the pad long enough
-                // (HOLD_DRAG_THRESHOLD) AND has been stationary long
-                // enough (HOLD_DRAG_STATIONARY). Both must hold —
-                // otherwise the user is either bringing both fingers
-                // down quickly (scroll setup) OR has finger 1 actively
-                // moving the cursor (scroll setup, not selection
-                // start). The anchor for the synthesized MouseDown is
-                // the CURRENT cursor position so the selection starts
-                // where the user moved the cursor to, not where finger
-                // 1 originally landed.
+                // Second-or-later finger landed. Three sub-cases:
+                //
+                // 1. We are ALREADY in hold-and-drag mode
+                //    (drag_active && hold_drag_cursor.is_some()):
+                //    this is finger 2 re-landing after the trackpad
+                //    momentarily dropped its contact. Do NOT
+                //    re-engage. Don't fire another MouseDown. Just
+                //    keep multi-touch state set so subsequent MOVE
+                //    events continue to grow the existing drag.
+                // 2. Conditions for hold-and-drag entry met: enter
+                //    drag mode at the current cursor.
+                // 3. Neither: scroll territory. Arm right-click.
                 let now = Instant::now();
                 let hold_elapsed = state
                     .first_finger_at
@@ -412,43 +422,47 @@ pub(crate) fn translate(
                 state.primary_down = None;
                 state.in_multi_touch = true;
                 state.tap_drag_pending = false;
-                if hold_elapsed >= HOLD_DRAG_THRESHOLD
+                if state.drag_active && state.hold_drag_cursor.is_some() {
+                    // Already in hold-drag — finger 2 contact wavered
+                    // and re-landed. Keep going, don't re-emit.
+                    log::info!(
+                        "hold_drag: CONTINUE (finger re-landed during drag, \
+                         drag_cursor=({:.0},{:.0}))",
+                        f32::from(
+                            state
+                                .hold_drag_cursor
+                                .map(|c| c.x)
+                                .unwrap_or(Pixels::ZERO),
+                        ),
+                        f32::from(
+                            state
+                                .hold_drag_cursor
+                                .map(|c| c.y)
+                                .unwrap_or(Pixels::ZERO),
+                        ),
+                    );
+                } else if hold_elapsed >= HOLD_DRAG_THRESHOLD
                     && stationary_for >= HOLD_DRAG_STATIONARY
                     && !state.drag_active
                 {
-                    // `button_held` may already be Some(Left) because
-                    // the Book Cover trackpad firmware fires
-                    // ACTION_BUTTON_PRESS (verified empirically:
-                    // source=0x100008 buttonState=0x1) shortly after
-                    // every finger contact. The corresponding
-                    // MouseDown has already reached the editor at
-                    // finger 1's position. We enter drag mode without
-                    // emitting a duplicate MouseDown; subsequent
-                    // two-finger MOVEs route as MouseMove(Left held)
-                    // and grow the selection from that anchor.
-                    let already_pressed = state.button_held.is_some();
                     log::info!(
-                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) \
-                         hold_ms={} stationary_ms={} already_pressed={}",
+                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) hold_ms={} stationary_ms={}",
                         f32::from(cursor.x),
                         f32::from(cursor.y),
                         hold_elapsed.as_millis(),
                         stationary_for.as_millis().min(99999),
-                        already_pressed,
                     );
                     state.drag_active = true;
                     state.hold_drag_cursor = Some(cursor);
                     state.right_click_armed = false;
-                    if !already_pressed {
-                        state.button_held = Some(MouseButton::Left);
-                        out.push(PlatformInput::MouseDown(MouseDownEvent {
-                            button: MouseButton::Left,
-                            position: cursor,
-                            modifiers,
-                            click_count: 1,
-                            first_mouse: false,
-                        }));
-                    }
+                    state.button_held = Some(MouseButton::Left);
+                    out.push(PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: cursor,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }));
                 } else {
                     log::info!(
                         "hold_drag: SKIPPED hold_ms={} stationary_ms={} \
@@ -654,31 +668,24 @@ pub(crate) fn translate(
                 state.tap_drag_pending = false;
             }
             JAVA_ACTION_POINTER_UP => {
-                // One of the fingers in a multi-touch gesture lifted.
-                // Three cases:
+                // A non-primary finger lifted. CRITICAL: do not tear
+                // down hold-and-drag here. The Book Cover trackpad's
+                // finger-2 contact wavers during sustained gestures
+                // (verified empirically: same-anchor hold_drag ENGAGED
+                // fires repeatedly through POINTER_UP/POINTER_DOWN
+                // cycles during one continuous user drag). If we tear
+                // down on POINTER_UP, the next POINTER_DOWN re-engages
+                // hold-drag and re-fires MouseDown, producing the
+                // click-storm. Only ACTION_UP (last finger lifted)
+                // ends the gesture.
                 //
-                // 1. drag_active with hold_drag_cursor set
-                //    (hold-and-drag in flight): either finger lifting
-                //    ends the selection. Emit MouseUp(Left) at the
-                //    drag cursor.
-                // 2. right_click_armed (two fingers landed and lifted
-                //    without significant motion): fire right-click.
-                // 3. Otherwise: just clear multi-touch state if the
-                //    remaining pointer count brings us back to single
-                //    finger.
-                if state.drag_active && state.hold_drag_cursor.is_some() {
-                    let release_pos = state.hold_drag_cursor.take().unwrap_or(cursor);
-                    if let Some(button) = state.button_held.take() {
-                        out.push(PlatformInput::MouseUp(MouseUpEvent {
-                            button,
-                            position: release_pos,
-                            modifiers,
-                            click_count: 1,
-                        }));
-                    }
-                    state.drag_active = false;
-                    state.right_click_armed = false;
-                } else if state.right_click_armed {
+                // Two things still need to happen here:
+                //   - Fire right-click if armed and motion stayed
+                //     under the tap threshold (genuine two-finger tap)
+                //   - When pointer_count drops to 1, clear
+                //     in_multi_touch so subsequent single-finger MOVE
+                //     events route through the cursor path
+                if state.right_click_armed && !state.drag_active {
                     out.push(PlatformInput::MouseDown(MouseDownEvent {
                         button: MouseButton::Right,
                         position: cursor,
@@ -694,38 +701,44 @@ pub(crate) fn translate(
                     }));
                     state.right_click_armed = false;
                 }
-                if event.pointer_count <= 2 {
+                // Keep in_multi_touch true while hold-drag is active
+                // (finger 2 wavering doesn't end the gesture; only
+                // ACTION_UP does). Clear it otherwise so single-finger
+                // motion routes through the cursor path, not scroll.
+                if event.pointer_count <= 2 && state.hold_drag_cursor.is_none() {
                     state.in_multi_touch = false;
                 }
             }
             JAVA_ACTION_BUTTON_PRESS => {
-                let button = pressed_mouse_button.unwrap_or(MouseButton::Left);
-                log::info!(
-                    "button_press: ENGAGED button={:?} source=0x{:x} buttonState=0x{:x} \
-                     cursor=({:.0},{:.0})",
-                    button,
-                    event.source,
-                    event.button_state,
-                    f32::from(cursor.x),
-                    f32::from(cursor.y),
-                );
-                state.button_held = Some(button);
-                state.primary_down = None;
-                out.push(PlatformInput::MouseDown(MouseDownEvent {
-                    button,
-                    position: cursor,
-                    modifiers,
-                    click_count: 1,
-                    first_mouse: false,
-                }));
+                // SOURCE_TOUCHPAD BUTTON_PRESS is firmware noise on
+                // the Book Cover trackpad (logs verify it fires on
+                // every finger contact, regardless of click intent).
+                // Honoring it as a click breaks the gesture state
+                // machine: it sets button_held mid-gesture, blocks
+                // hold-and-drag entry, and combines with two-finger
+                // scroll to produce "scroll triggers selection" in
+                // the editor. Ignore for touchpad source; for real
+                // mouse buttons (SOURCE_MOUSE), the event represents
+                // a genuine click and must be honored.
+                if event.source & ANDROID_SOURCE_TOUCHPAD == ANDROID_SOURCE_TOUCHPAD {
+                    // touchpad noise: drop on the floor
+                } else {
+                    let button = pressed_mouse_button.unwrap_or(MouseButton::Left);
+                    state.button_held = Some(button);
+                    state.primary_down = None;
+                    out.push(PlatformInput::MouseDown(MouseDownEvent {
+                        button,
+                        position: cursor,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }));
+                }
             }
             JAVA_ACTION_BUTTON_RELEASE => {
-                log::info!(
-                    "button_press: RELEASED source=0x{:x} buttonState=0x{:x}",
-                    event.source,
-                    event.button_state,
-                );
-                if let Some(button) = state.button_held.take() {
+                if event.source & ANDROID_SOURCE_TOUCHPAD == ANDROID_SOURCE_TOUCHPAD {
+                    // touchpad noise: drop on the floor (matches PRESS)
+                } else if let Some(button) = state.button_held.take() {
                     out.push(PlatformInput::MouseUp(MouseUpEvent {
                         button,
                         position: cursor,
