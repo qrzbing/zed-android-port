@@ -794,15 +794,27 @@ pub(crate) fn translate(
                     return out;
                 }
                 if let Some(button) = state.button_held.take() {
-                    // Drag-lock disabled for this build: lifting the
-                    // finger always ends the drag immediately.
-                    // Investigating a user-reported "whiteish overlay"
-                    // symptom that may be selection growth from
-                    // drag-lock holding the button while the user
-                    // moves the cursor. If overlay disappears with
-                    // this change, drag-lock needs a stricter end
-                    // condition. If it persists, drag-lock wasn't
-                    // the cause.
+                    // Single-finger tap-tap-drag → enter drag-lock.
+                    // Hold-and-drag → end normally.
+                    let is_tap_tap_drag =
+                        state.drag_active && state.hold_drag_cursor.is_none();
+                    if is_tap_tap_drag {
+                        log::info!(
+                            "drag_lock: ARMED at ({:.0},{:.0})",
+                            f32::from(cursor.x),
+                            f32::from(cursor.y),
+                        );
+                        // Restore button_held; we kept it held in
+                        // anticipation of a swipe-continue.
+                        state.button_held = Some(button);
+                        state.drag_lock_pending_at = Some(now);
+                        state.primary_down = None;
+                        state.motion_accum = 0.0;
+                        state.first_finger_at = None;
+                        state.last_motion_at = None;
+                        state.tap_drag_pending = false;
+                        return out;
+                    }
                     let release_pos = state.hold_drag_cursor.take().unwrap_or(cursor);
                     out.push(PlatformInput::MouseUp(MouseUpEvent {
                         button,
