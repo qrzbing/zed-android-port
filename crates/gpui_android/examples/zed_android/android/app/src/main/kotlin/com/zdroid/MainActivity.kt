@@ -16,6 +16,7 @@ import android.os.Process
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
@@ -101,6 +102,11 @@ class MainActivity : GameActivity() {
     private var cursorView: CursorOverlayView? = null
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
+    /// Desktop-classic auto-hide: cursor disappears on the first
+    /// keystroke and reappears on any pointer motion. Tracks whether
+    /// we're currently in the "hidden by keyboard" state so we don't
+    /// thrash visibility on every key.
+    private var cursorHiddenByKeyboard: Boolean = false
 
     /// Full-screen transparent overlay that paints a classic mouse
     /// cursor arrow in `onDraw` at the tracked (x, y). Hot-spot is the
@@ -242,8 +248,18 @@ class MainActivity : GameActivity() {
     }
 
     private fun handleCapturedEvent(event: MotionEvent) {
+        // Any pointer activity reawakens the cursor if the keyboard
+        // had hidden it.
+        if (cursorHiddenByKeyboard) {
+            cursorView?.visibility = View.VISIBLE
+            cursorHiddenByKeyboard = false
+        }
         if (event.actionMasked == MotionEvent.ACTION_MOVE
             && event.pointerCount == 1) {
+            // Cursor moves only on single-finger motion. Two-finger
+            // motion is exclusively scroll (or right-click on a quick
+            // tap-tap) per the desktop trackpad standard — the cursor
+            // stays put during scroll, matching every major OS.
             val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, 0)
             val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, 0)
             val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
@@ -253,6 +269,22 @@ class MainActivity : GameActivity() {
             cursorView?.move(cursorX, cursorY)
         }
         forwardCapturedPointer(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Desktop-classic auto-hide: hide the cursor on first
+        // keystroke. The cursor reappears on any pointer motion via
+        // `handleCapturedEvent`. We hide on KEY_DOWN (not UP) so the
+        // cursor disappears immediately when the user starts typing,
+        // not on the release of a key chord.
+        if (event.action == KeyEvent.ACTION_DOWN
+            && !cursorHiddenByKeyboard
+            && cursorView?.visibility == View.VISIBLE
+        ) {
+            cursorView?.visibility = View.INVISIBLE
+            cursorHiddenByKeyboard = true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
 
