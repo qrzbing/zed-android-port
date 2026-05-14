@@ -8,48 +8,68 @@
 //! to do anything special with a trackpad.
 
 use gpui::{
-    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
+    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection, PlatformInput,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
 };
 
-/// `MotionEvent.BUTTON_SECONDARY` — set when the user clicks the right
-/// mouse button or does a two-finger tap on a touchpad.
+/// Android `MotionEvent.BUTTON_*` bit constants. NDK definitions live in
+/// `ndk_sys::AMOTION_EVENT_BUTTON_*`; these mirrors are kept in sync so
+/// the extra-window JNI path (which receives `button_state` as a raw
+/// `i32`) can use the same bit checks as the primary path.
+pub(crate) const ANDROID_BUTTON_PRIMARY: i32 = 1 << 0;
+/// `BUTTON_SECONDARY`: right mouse button, or trackpad two-finger tap.
 pub(crate) const ANDROID_BUTTON_SECONDARY: i32 = 1 << 1;
+/// `BUTTON_TERTIARY`: middle mouse button (typically wheel click).
+pub(crate) const ANDROID_BUTTON_TERTIARY: i32 = 1 << 2;
+/// `BUTTON_BACK`: mouse side button pointing toward the user. Maps to
+/// gpui's `MouseButton::Navigate(NavigationDirection::Back)`.
+pub(crate) const ANDROID_BUTTON_BACK: i32 = 1 << 3;
+/// `BUTTON_FORWARD`: mouse side button pointing away from the user.
+pub(crate) const ANDROID_BUTTON_FORWARD: i32 = 1 << 4;
 
-/// Build the `MouseDown(Right)` produced when Android reports
-/// BUTTON_SECONDARY at the start of a gesture (trackpad two-finger tap,
-/// mouse right-click). Caller must also flag the touch state machine via
-/// [`crate::events::touch::mark_right_fired`] so the matching Up is
-/// emitted as Right not Left.
-pub(crate) fn secondary_button_down(
-    position: Point<Pixels>,
-    modifiers: Modifiers,
-) -> PlatformInput {
-    PlatformInput::MouseDown(MouseDownEvent {
-        button: MouseButton::Right,
-        position,
-        modifiers,
-        click_count: 1,
-        first_mouse: false,
-    })
+/// Map an Android `button_state` bitfield to the gpui `MouseButton`
+/// that should be reported. Priority: primary > tertiary > secondary >
+/// back > forward. Returns `None` when no flag is set (touch gesture
+/// with no physical button concept).
+pub(crate) fn button_from_state(state: i32) -> Option<MouseButton> {
+    if state & ANDROID_BUTTON_PRIMARY != 0 {
+        Some(MouseButton::Left)
+    } else if state & ANDROID_BUTTON_TERTIARY != 0 {
+        Some(MouseButton::Middle)
+    } else if state & ANDROID_BUTTON_SECONDARY != 0 {
+        Some(MouseButton::Right)
+    } else if state & ANDROID_BUTTON_BACK != 0 {
+        Some(MouseButton::Navigate(NavigationDirection::Back))
+    } else if state & ANDROID_BUTTON_FORWARD != 0 {
+        Some(MouseButton::Navigate(NavigationDirection::Forward))
+    } else {
+        None
+    }
 }
 
-/// Build the `MouseDown(Left)` for a single-finger touch tap / mouse
-/// left-click. `first_mouse: false` because there's no window-focus
-/// concept on Android; setting `true` would make every click look like
-/// a focus-the-window-first click, which `ClickEvent::first_focus`
-/// returns as true. Listeners like ProjectPanel's on_click bail on a
-/// "first focus" click, so files would never open / folders would never
-/// expand.
-pub(crate) fn primary_button_down(
+/// Build a `MouseDown` for any button.
+///
+/// `first_mouse: false` because there's no window-focus concept on
+/// Android; setting `true` would make every click look like a focus-
+/// the-window-first click, which `ClickEvent::first_focus` returns as
+/// true. Listeners like ProjectPanel's on_click bail on a "first focus"
+/// click, so files would never open / folders would never expand.
+///
+/// For non-primary (right / middle / nav) buttons, the caller also flags
+/// the touch state machine via
+/// [`crate::events::touch::mark_non_primary_down`] so the matching Up
+/// resolves to the right button instead of the default Left.
+pub(crate) fn button_down(
+    button: MouseButton,
     position: Point<Pixels>,
     modifiers: Modifiers,
+    click_count: usize,
 ) -> PlatformInput {
     PlatformInput::MouseDown(MouseDownEvent {
-        button: MouseButton::Left,
+        button,
         position,
         modifiers,
-        click_count: 1,
+        click_count,
         first_mouse: false,
     })
 }

@@ -64,24 +64,31 @@ pub(crate) fn translate_motion_event(
         px(primary.y() / scale_factor),
     );
     let modifiers = keyboard::modifiers_from_meta(event.meta_state());
-    let secondary_button = event.button_state().secondary();
+    let button_state = event.button_state().0 as i32;
+    let pressed_mouse_button = mouse::button_from_state(button_state);
 
     let mut out = MotionInputs::new();
     match event.action() {
         MotionAction::Down => {
-            if secondary_button {
-                // Trackpad two-finger tap or mouse right-click. Skip
-                // the touch-style two-finger detection: Android did it
-                // for us. Don't latch a primary touch; we don't want a
-                // subsequent Up to emit Up(Left).
-                touch::mark_right_fired();
-                out.push(mouse::secondary_button_down(position, modifiers));
+            // If Android resolved a non-primary mouse / trackpad button
+            // (right, middle, side-back, side-forward, or trackpad two-
+            // finger tap surfacing as BUTTON_SECONDARY), emit the
+            // corresponding Down and latch it in the touch state
+            // machine so the matching Up resolves to the same button.
+            // Skip touch's two-finger detection: Android already did it
+            // for us.
+            if let Some(button) = pressed_mouse_button
+                && button != MouseButton::Left
+            {
+                touch::mark_non_primary_down(button);
+                out.push(mouse::button_down(button, position, modifiers, 1));
                 return out;
             }
-            // First finger down. Latch position + time and emit
-            // Down(Left) immediately for instant click feedback.
+            // First finger down (touch) or mouse left button. Latch
+            // position + time and emit Down(Left) immediately for
+            // instant click feedback.
             touch::record_primary_down(position);
-            out.push(mouse::primary_button_down(position, modifiers));
+            out.push(mouse::button_down(MouseButton::Left, position, modifiers, 1));
         }
         MotionAction::PointerDown => {
             // Additional finger touched. If the primary finger is still
@@ -97,14 +104,8 @@ pub(crate) fn translate_motion_event(
             // Last finger up (or mouse button release). End any
             // multi-touch scroll gesture and resolve the latched click.
             trackpad::reset_primary();
-            match touch::finalize_up() {
-                touch::UpOutcome::EmitLeftUp => {
-                    out.push(mouse::button_up(MouseButton::Left, position, modifiers));
-                }
-                touch::UpOutcome::EmitRightUp => {
-                    out.push(mouse::button_up(MouseButton::Right, position, modifiers));
-                }
-                touch::UpOutcome::None => {}
+            if let touch::UpOutcome::Emit(button) = touch::finalize_up() {
+                out.push(mouse::button_up(button, position, modifiers));
             }
         }
         MotionAction::PointerUp => {
@@ -142,9 +143,16 @@ pub(crate) fn translate_motion_event(
             }
             trackpad::reset_primary();
             touch::update_drift(position);
+            // Drag with a non-primary button held (right-drag, middle-
+            // drag, side-button drag): report that button as the
+            // pressed_button. Falls back to Left for touch drag (no
+            // physical-button concept) and for plain mouse left-drag.
+            let pressed = touch::current_non_primary()
+                .or(pressed_mouse_button)
+                .unwrap_or(MouseButton::Left);
             out.push(PlatformInput::MouseMove(MouseMoveEvent {
                 position,
-                pressed_button: Some(MouseButton::Left),
+                pressed_button: Some(pressed),
                 modifiers,
             }));
         }
@@ -156,9 +164,18 @@ pub(crate) fn translate_motion_event(
             }));
         }
         MotionAction::Cancel => {
+            // End the gesture cleanly. Emit the up for whichever button
+            // was held (or Left as a default touch-cancel) with
+            // click_count=0 so listeners can distinguish a real click.
+            let held = touch::current_non_primary().unwrap_or(MouseButton::Left);
             touch::reset_all();
             trackpad::reset_primary();
-            out.push(mouse::button_up(MouseButton::Left, position, modifiers));
+            out.push(PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: held,
+                position,
+                modifiers,
+                click_count: 0,
+            }));
         }
         MotionAction::Scroll => {
             let vscroll = primary.axis_value(Axis::Vscroll);
@@ -202,29 +219,43 @@ pub(crate) fn translate_extra_motion_event(
     let (raw_x, raw_y, _id) = positions[0];
     let position = point(px(raw_x / scale_factor), px(raw_y / scale_factor));
     let modifiers = keyboard::modifiers_from_meta(MetaState(meta_state as u32));
-    let secondary_button = (button_state & mouse::ANDROID_BUTTON_SECONDARY) != 0;
+    let pressed_button = mouse::button_from_state(button_state);
 
     let mut out = Vec::new();
     match action_masked {
         JAVA_ACTION_DOWN | JAVA_ACTION_POINTER_DOWN => {
-            if secondary_button {
-                out.push(mouse::secondary_button_down(position, modifiers));
+            // Same shape as the primary translator's Down: non-primary
+            // mouse / trackpad button (right, middle, navigate) emits
+            // its own Down and latches HELD_NON_PRIMARY so the matching
+            // Up resolves to the same button (Android reports
+            // button_state=0 on Up, so we can't recover it from there).
+            let button = pressed_button.unwrap_or(MouseButton::Left);
+            if button != MouseButton::Left {
+                touch::mark_non_primary_down(button);
             } else {
-                out.push(mouse::primary_button_down(position, modifiers));
+                touch::record_primary_down(position);
+            }
+            out.push(mouse::button_down(button, position, modifiers, 1));
+        }
+        JAVA_ACTION_UP | JAVA_ACTION_POINTER_UP => {
+            // End any multi-touch scroll and resolve the latched click.
+            trackpad::reset_extra();
+            if let touch::UpOutcome::Emit(button) = touch::finalize_up() {
+                out.push(mouse::button_up(button, position, modifiers));
             }
         }
-        JAVA_ACTION_UP | JAVA_ACTION_POINTER_UP | JAVA_ACTION_CANCEL => {
-            // We don't track the latched-down button across events here:
-            // for the Settings window's single-pointer-tap-or-secondary
-            // workflow that's fine; emit Right-up if button_state still
-            // shows secondary, else Left-up. End any multi-touch scroll.
+        JAVA_ACTION_CANCEL => {
+            // Reset state, emit a non-click up for whichever button was
+            // held so listeners can distinguish a real click.
             trackpad::reset_extra();
-            let button = if secondary_button {
-                MouseButton::Right
-            } else {
-                MouseButton::Left
-            };
-            out.push(mouse::button_up(button, position, modifiers));
+            let held = touch::current_non_primary().unwrap_or(MouseButton::Left);
+            touch::reset_all();
+            out.push(PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: held,
+                position,
+                modifiers,
+                click_count: 0,
+            }));
         }
         JAVA_ACTION_MOVE => {
             if positions.len() >= 2 {
@@ -240,14 +271,9 @@ pub(crate) fn translate_extra_motion_event(
                 return out;
             }
             trackpad::reset_extra();
-            let pressed = if secondary_button {
-                Some(MouseButton::Right)
-            } else {
-                Some(MouseButton::Left)
-            };
             out.push(PlatformInput::MouseMove(MouseMoveEvent {
                 position,
-                pressed_button: pressed,
+                pressed_button: Some(pressed_button.unwrap_or(MouseButton::Left)),
                 modifiers,
             }));
         }

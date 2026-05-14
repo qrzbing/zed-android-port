@@ -36,23 +36,33 @@ const TWO_FINGER_SLOP: f64 = 12.0;
 
 thread_local! {
     static PRIMARY_DOWN: Cell<Option<(Instant, Point<Pixels>)>> = const { Cell::new(None) };
-    /// Set when a two-finger tap fired Right-click. The subsequent
-    /// `Up` / `PointerUp` events for the gesture should NOT emit Up(Left).
-    static RIGHT_CLICK_FIRED: Cell<bool> = const { Cell::new(false) };
+    /// Set when a non-primary mouse / trackpad button is currently
+    /// being held (or, for the two-finger touch path, was momentarily
+    /// held and resolved in-place at PointerDown time). The
+    /// corresponding `Up` should emit `MouseUp(stored_button)` instead
+    /// of the default `Up(Left)`.
+    static HELD_NON_PRIMARY: Cell<Option<MouseButton>> = const { Cell::new(None) };
 }
 
 /// Latch the primary finger position + time. Caller emits the
 /// `MouseDown(Left)` separately.
 pub(crate) fn record_primary_down(position: Point<Pixels>) {
     PRIMARY_DOWN.with(|cell| cell.set(Some((Instant::now(), position))));
-    RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
+    HELD_NON_PRIMARY.with(|cell| cell.set(None));
 }
 
-/// Caller (mouse module) tells us they emitted a `MouseDown(Right)` on a
-/// trackpad / mouse secondary button so the corresponding Up resolves to
-/// `Up(Right)` rather than `Up(Left)`.
-pub(crate) fn mark_right_fired() {
-    RIGHT_CLICK_FIRED.with(|cell| cell.set(true));
+/// Caller (mouse module) tells us they emitted a `MouseDown(button)` on
+/// a trackpad / mouse non-primary button so the corresponding Up
+/// resolves to `Up(button)` rather than `Up(Left)`.
+pub(crate) fn mark_non_primary_down(button: MouseButton) {
+    HELD_NON_PRIMARY.with(|cell| cell.set(Some(button)));
+}
+
+/// Returns the currently-held non-primary button (if any). Used by the
+/// Move handler to populate `MouseMoveEvent::pressed_button` for
+/// non-primary drag.
+pub(crate) fn current_non_primary() -> Option<MouseButton> {
+    HELD_NON_PRIMARY.with(|cell| cell.get())
 }
 
 /// Returns the synthetic `Cancel(Left) + Down(Right) + Up(Right)`
@@ -93,35 +103,33 @@ pub(crate) fn try_two_finger_right_click(
         modifiers,
         click_count: 1,
     }));
-    RIGHT_CLICK_FIRED.with(|cell| cell.set(true));
+    // Gesture fully resolved in-place: no need to latch HELD_NON_PRIMARY,
+    // and we clear PRIMARY_DOWN so the final ACTION_UP doesn't try to
+    // emit another Up(Left).
+    HELD_NON_PRIMARY.with(|cell| cell.set(None));
     PRIMARY_DOWN.with(|cell| cell.set(None));
     Some(out)
 }
 
 /// Outcome of the final `Up` (last pointer lifted or mouse-button released).
 pub(crate) enum UpOutcome {
-    /// Emit `MouseUp(Left)` to pair with the latched single-finger press.
-    EmitLeftUp,
-    /// Emit `MouseUp(Right)` to close a trackpad/mouse secondary-button drag.
-    /// The two-finger touch path already emitted both Down + Up at
-    /// PointerDown time, so this only fires when secondary was held without
-    /// a primary touch latch (i.e. mouse / trackpad secondary).
-    EmitRightUp,
-    /// Nothing to emit (gesture already resolved internally).
+    /// Emit `MouseUp(button)` to close the gesture. `button` is `Left`
+    /// for the touch / primary-finger path and the corresponding
+    /// non-primary button for trackpad / mouse secondary, middle, or
+    /// navigate-back/forward drags.
+    Emit(MouseButton),
+    /// Nothing to emit (gesture already resolved internally — e.g. the
+    /// touch two-finger right-click resolved at PointerDown time).
     None,
 }
 
 pub(crate) fn finalize_up() -> UpOutcome {
-    let fired = RIGHT_CLICK_FIRED.with(|cell| cell.take());
+    let held = HELD_NON_PRIMARY.with(|cell| cell.take());
     let had_primary = PRIMARY_DOWN.with(|cell| cell.take()).is_some();
-    if fired {
-        if had_primary {
-            UpOutcome::None
-        } else {
-            UpOutcome::EmitRightUp
-        }
+    if let Some(button) = held {
+        UpOutcome::Emit(button)
     } else if had_primary {
-        UpOutcome::EmitLeftUp
+        UpOutcome::Emit(MouseButton::Left)
     } else {
         UpOutcome::None
     }
@@ -149,5 +157,5 @@ pub(crate) fn update_drift(current: Point<Pixels>) {
 /// resolves into scroll (so the original press doesn't linger).
 pub(crate) fn reset_all() {
     PRIMARY_DOWN.with(|cell| cell.set(None));
-    RIGHT_CLICK_FIRED.with(|cell| cell.set(false));
+    HELD_NON_PRIMARY.with(|cell| cell.set(None));
 }
