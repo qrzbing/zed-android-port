@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -129,13 +131,38 @@ class MainActivity : GameActivity() {
         /// `PointerIcon.TYPE_*` constants so the Rust side can pass
         /// the same value it already computes for `setPointerIcon`
         /// (see `crates/gpui_android/src/cursor.rs`). Unrecognized IDs
-        /// fall back to the arrow path. Updated via `setStyle` from
+        /// fall back to the arrow bitmap. Updated via `setStyle` from
         /// the UI thread (Rust calls through `setCapturedCursorStyle`
         /// in the outer Activity which dispatches via `runOnUiThread`).
         var cursorStyle: Int = MainActivity.STYLE_ARROW
-        /// Per-style paths in local coords (hot-spot at origin for
-        /// the arrow; centered for everything else so the cursor's
-        /// visual mass tracks the gpui-side click position).
+        private val sizeInt = sizePx
+        /// Bitmap-backed cursors from the apple_cursor pack (GPL-3.0,
+        /// see res/raw/cursor_license.txt). Loaded once at View
+        /// construction, scaled to `sizePx`. Hot-spots match the
+        /// X11 cursor naming conventions used by apple_cursor.
+        private val arrowBitmap = loadCursor(context, R.drawable.cursor_arrow, sizePx)
+        private val iBeamBitmap = loadCursor(context, R.drawable.cursor_ibeam, sizePx)
+        private val handBitmap = loadCursor(context, R.drawable.cursor_hand, sizePx)
+        private val grabBitmap = loadCursor(context, R.drawable.cursor_grab, sizePx)
+        private val resizeHBitmap = loadCursor(context, R.drawable.cursor_resize_h, sizePx)
+        private val resizeVBitmap = loadCursor(context, R.drawable.cursor_resize_v, sizePx)
+        /// Per-style hot-spot offsets in pixels relative to the
+        /// bitmap's top-left corner. The arrow's hot-spot is its tip
+        /// (top-left), the IBeam's is the bar midpoint, etc. Each
+        /// entry is `(hot_x, hot_y)` such that drawing the bitmap at
+        /// `(cursorX - hot_x, cursorY - hot_y)` puts the hot-spot
+        /// exactly at the gpui-side cursor position.
+        private val hotSpots: Map<Int, Pair<Int, Int>> = mapOf(
+            MainActivity.STYLE_ARROW to (sizeInt * 6 / 100 to sizeInt * 6 / 100),
+            MainActivity.STYLE_IBEAM to (sizeInt / 2 to sizeInt / 2),
+            MainActivity.STYLE_VERTICAL_TEXT to (sizeInt / 2 to sizeInt / 2),
+            MainActivity.STYLE_HAND to (sizeInt * 35 / 100 to sizeInt * 6 / 100),
+            MainActivity.STYLE_GRAB to (sizeInt / 2 to sizeInt / 2),
+            MainActivity.STYLE_GRABBING to (sizeInt / 2 to sizeInt / 2),
+            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW to (sizeInt / 2 to sizeInt / 2),
+            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW to (sizeInt / 2 to sizeInt / 2),
+        )
+        /// Per-style path fallback (kept for any style without a bitmap).
         private val s = sizePx.toFloat()
         private val arrowPath = Path().apply {
             moveTo(0f, 0f)
@@ -175,24 +202,6 @@ class MainActivity : GameActivity() {
             lineTo(cx - halfW * 0.4f, -halfH + bar * 3)
             lineTo(cx - halfW * 0.4f, -halfH + bar * 2)
             lineTo(cx - bar, -halfH + bar * 2)
-            close()
-        }
-        /// Pointing hand: simplified silhouette pointing up. Hot-spot
-        /// is at the index-finger tip (top center).
-        private val pointingHandPath = Path().apply {
-            val w = s * 0.55f
-            val h = s * 0.85f
-            // Index finger
-            moveTo(0f, 0f)
-            lineTo(-w * 0.18f, h * 0.45f)
-            lineTo(-w * 0.18f, h * 0.55f)
-            // Knuckle area (other fingers folded)
-            lineTo(-w * 0.50f, h * 0.55f)
-            lineTo(-w * 0.50f, h * 1.00f)
-            lineTo(w * 0.45f, h * 1.00f)
-            lineTo(w * 0.45f, h * 0.62f)
-            lineTo(w * 0.18f, h * 0.55f)
-            lineTo(w * 0.18f, h * 0.45f)
             close()
         }
         /// Horizontal double-arrow: ← →. Used for ew-resize / column
@@ -235,24 +244,6 @@ class MainActivity : GameActivity() {
             lineTo(head, -hy + head)
             close()
         }
-        /// Open hand for OpenHand (grab). Stylized palm with five
-        /// stubby fingers up. Hot-spot at palm center.
-        private val openHandPath = Path().apply {
-            val w = s * 0.55f
-            val h = s * 0.30f
-            addOval(android.graphics.RectF(-w * 0.55f, -h * 0.5f, w * 0.55f, h * 1.2f), Path.Direction.CW)
-            // 4 fingers up
-            for (i in -2..1) {
-                val x = i * (w * 0.18f) + w * 0.09f
-                addRect(x - w * 0.06f, -h * 1.5f, x + w * 0.06f, -h * 0.4f, Path.Direction.CW)
-            }
-        }
-        /// Closed hand for ClosedHand (grabbing). Roundish fist.
-        private val closedHandPath = Path().apply {
-            val w = s * 0.45f
-            val h = s * 0.40f
-            addOval(android.graphics.RectF(-w * 0.6f, -h * 0.5f, w * 0.6f, h * 1.0f), Path.Direction.CW)
-        }
         private val fillPaint = Paint().apply {
             color = Color.WHITE
             style = Paint.Style.FILL
@@ -264,6 +255,10 @@ class MainActivity : GameActivity() {
             strokeWidth = 1.5f * context.resources.displayMetrics.density
             strokeJoin = Paint.Join.ROUND
             isAntiAlias = true
+        }
+        private val bitmapPaint = Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
         }
         init {
             // We paint manually; the View itself has no background so
@@ -286,24 +281,52 @@ class MainActivity : GameActivity() {
                 invalidate()
             }
         }
-        private fun pathForCurrentStyle(): Path = when (cursorStyle) {
-            MainActivity.STYLE_IBEAM, MainActivity.STYLE_VERTICAL_TEXT -> iBeamPath
-            MainActivity.STYLE_HAND -> pointingHandPath
-            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW -> resizeLeftRightPath
-            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW -> resizeUpDownPath
-            MainActivity.STYLE_GRAB -> openHandPath
-            MainActivity.STYLE_GRABBING -> closedHandPath
-            else -> arrowPath
+        private fun bitmapForCurrentStyle(): Bitmap? = when (cursorStyle) {
+            MainActivity.STYLE_IBEAM, MainActivity.STYLE_VERTICAL_TEXT -> iBeamBitmap
+            MainActivity.STYLE_HAND -> handBitmap
+            MainActivity.STYLE_GRAB, MainActivity.STYLE_GRABBING -> grabBitmap
+            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW -> resizeHBitmap
+            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW -> resizeVBitmap
+            else -> arrowBitmap
         }
         override fun onDraw(canvas: Canvas) {
+            val bmp = bitmapForCurrentStyle()
+            if (bmp != null) {
+                val (hotX, hotY) = hotSpots[cursorStyle] ?: (0 to 0)
+                canvas.drawBitmap(
+                    bmp,
+                    cursorX - hotX.toFloat(),
+                    cursorY - hotY.toFloat(),
+                    bitmapPaint,
+                )
+                return
+            }
+            // Bitmap missing for this style; fall back to the
+            // path-based rendering. Hot-spot at origin.
             canvas.save()
             canvas.translate(cursorX, cursorY)
-            val path = pathForCurrentStyle()
-            // Fill first then outline on top so the outline reads
-            // crisply against any background color.
-            canvas.drawPath(path, fillPaint)
-            canvas.drawPath(path, strokePaint)
+            canvas.drawPath(arrowPath, fillPaint)
+            canvas.drawPath(arrowPath, strokePaint)
             canvas.restore()
+        }
+
+        companion object {
+            /// Decode a cursor PNG resource into a `Bitmap` scaled to
+            /// the target side length. The source bitmaps are ~256px
+            /// from apple_cursor's release zip; we downscale at load
+            /// time so `onDraw` is a single `drawBitmap` per frame
+            /// with no per-frame scaling.
+            private fun loadCursor(
+                context: Context,
+                @androidx.annotation.DrawableRes resId: Int,
+                sizePx: Int,
+            ): Bitmap {
+                val raw = BitmapFactory.decodeResource(context.resources, resId)
+                if (raw.width == sizePx && raw.height == sizePx) return raw
+                val scaled = Bitmap.createScaledBitmap(raw, sizePx, sizePx, true)
+                if (scaled !== raw) raw.recycle()
+                return scaled
+            }
         }
     }
 
