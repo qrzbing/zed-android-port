@@ -186,11 +186,21 @@ class MainActivity : GameActivity() {
                 val h = bottom - top
                 if (w > 0 && h > 0) {
                     val params = view.layoutParams
-                    params.width = w
-                    params.height = h
-                    view.layoutParams = params
+                    val changed = params.width != w || params.height != h
+                    if (changed) {
+                        params.width = w
+                        params.height = h
+                        view.layoutParams = params
+                        view.requestLayout()
+                    }
                     view.x = left.toFloat()
                     view.y = top.toFloat()
+                    if (changed) {
+                        Log.i(
+                            TAG_CAPTURE,
+                            "cursorView resized to ${w}x${h} at (${left},${top})",
+                        )
+                    }
                 }
             }
         }
