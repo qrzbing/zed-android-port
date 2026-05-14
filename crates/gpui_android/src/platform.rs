@@ -181,6 +181,12 @@ pub(crate) struct AndroidCommon {
     /// events. Drained each iteration of the platform run loop. `Some`
     /// from `AndroidCommon::new` until the loop terminates.
     pub(crate) extra_event_rx: Option<futures::channel::mpsc::UnboundedReceiver<crate::multi_window::ExtraWindowEvent>>,
+    /// Receiver side of the JNI → game-thread channel for captured
+    /// pointer events. Populated when `MainActivity` activates pointer
+    /// capture; each captured `MotionEvent` is marshaled across JNI
+    /// and lands here for `translate` + dispatch.
+    pub(crate) captured_pointer_rx:
+        Option<futures::channel::mpsc::UnboundedReceiver<crate::captured_pointer::CapturedEvent>>,
     pub(crate) running: bool,
 }
 
@@ -217,6 +223,7 @@ impl AndroidCommon {
             window: None,
             extra_windows: std::collections::HashMap::new(),
             extra_event_rx: Some(crate::multi_window::init_event_channel()),
+            captured_pointer_rx: Some(crate::captured_pointer::init_event_channel()),
             running: true,
         }
     }
@@ -533,6 +540,33 @@ impl AndroidPlatform {
         self.common.borrow_mut().extra_event_rx = Some(rx);
     }
 
+    /// Pull captured-pointer events (raw trackpad input while
+    /// MainActivity has pointer capture) off the JNI channel, run them
+    /// through the synthesis state machine, and feed the resulting
+    /// `PlatformInput`s into the primary window. Cursor position is
+    /// tracked inside `captured_pointer::translate`; we just need to
+    /// give it the current window size so it can clamp.
+    fn drain_captured_pointer_events(&self) {
+        let mut rx = match self.common.borrow_mut().captured_pointer_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
+        let window_ptr = self.common.borrow().window.clone();
+        if let Some(window_ptr) = window_ptr {
+            let scale_factor = window_ptr.state.borrow().scale_factor;
+            while let Ok(event) = rx.try_recv() {
+                for input in crate::captured_pointer::translate(event, scale_factor) {
+                    window_ptr.handle_input(input);
+                }
+            }
+        } else {
+            // No primary window yet — drop pending events so the channel
+            // doesn't grow unbounded during boot.
+            while rx.try_recv().is_ok() {}
+        }
+        self.common.borrow_mut().captured_pointer_rx = Some(rx);
+    }
+
     /// Pull every queued `InputEvent` off android-activity's iterator and
     /// route translatable ones into the primary gpui window. Returning
     /// `InputStatus::Handled` for our own events lets android-activity stop
@@ -709,6 +743,11 @@ impl Platform for AndroidPlatform {
 
             // Drain JNI-side extra-window lifecycle / touch events.
             self.drain_extra_window_events();
+
+            // Drain JNI-side captured-pointer (trackpad) events. Active
+            // only while `MainActivity` has pointer capture; otherwise
+            // the channel sits idle.
+            self.drain_captured_pointer_events();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have

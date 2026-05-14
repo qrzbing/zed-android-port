@@ -94,13 +94,33 @@ object NativeBridge {
         repeatCount: Int,
     )
 
-    /// Probe pass for pointer capture. Once `requestPointerCapture()`
-    /// resolves on the decor view, Android's built-in touchpad gesture
-    /// detection is disabled and we receive raw MotionEvents on the
-    /// captured listener. This sink takes a stringified summary of each
-    /// captured event so we can read what Samsung's Book Cover trackpad
-    /// (which intercepts gestures in tablet mode and never fires
-    /// ACTION_SCROLL) actually emits at the raw layer. The Rust side
-    /// just logs it; no event synthesis yet.
+    /// Probe sink kept for diagnostic use; the structured sink below
+    /// is the real path. The probe just logs a stringified summary
+    /// when the synthesis layer is suspect on a given device.
     external fun nativeOnCapturedPointerProbe(summary: String)
+
+    /// Structured captured-pointer sink. Marshals the relevant
+    /// `MotionEvent` fields per event so the Rust side can synthesize
+    /// `MouseMove` / `MouseDown` / `MouseUp` / `ScrollWheel` from the
+    /// raw stream. `xs`/`ys` are absolute pointer positions in the
+    /// touchpad's coordinate space; `rxs`/`rys` are
+    /// `AXIS_RELATIVE_X` / `AXIS_RELATIVE_Y` per pointer (the deltas
+    /// that drive cursor motion + scroll synthesis). `vscroll`/
+    /// `hscroll` are zero for trackpad on Samsung — included for
+    /// completeness so a hardware mouse routed through the same
+    /// capture path can still scroll via `ACTION_SCROLL`.
+    external fun nativeOnCapturedPointer(
+        actionMasked: Int,
+        source: Int,
+        buttonState: Int,
+        pointerCount: Int,
+        xs: FloatArray,
+        ys: FloatArray,
+        rxs: FloatArray,
+        rys: FloatArray,
+        vscroll: Float,
+        hscroll: Float,
+        cursorPhysicalX: Float,
+        cursorPhysicalY: Float,
+    )
 }

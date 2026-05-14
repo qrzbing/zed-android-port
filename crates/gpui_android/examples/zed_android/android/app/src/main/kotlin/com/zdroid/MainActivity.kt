@@ -5,6 +5,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
@@ -80,40 +83,154 @@ class MainActivity : GameActivity() {
         // listener on whatever SurfaceView we find in the hierarchy
         // (decorView's) on top of decorView as a fallback. Setting on
         // both is harmless; whichever the system dispatches to wins.
-        val captureListener = View.OnCapturedPointerListener { _, event ->
-            NativeBridge.nativeOnCapturedPointerProbe(describeCapturedPointer(event))
-            true
+        // Captured pointer events route through `onGenericMotionEvent`
+        // on the Activity (overridden below) — Moonlight's pattern.
+        // Avoids the View-level captured-pointer listener path which
+        // requires manipulating SurfaceView focus state and on Samsung
+        // One UI triggers the accessibility tint + key dispatch
+        // regression.
+    }
+
+    /// Cursor overlay state. While pointer capture is active the
+    /// system cursor is hidden, so we render our own small View on top
+    /// of the SurfaceView and update its translation per captured
+    /// move event. Position is in physical pixels (the decor view's
+    /// coordinate space); the Rust side divides by the surface's
+    /// scale factor to get logical pixels for the gpui event.
+    private var cursorView: CursorOverlayView? = null
+    private var cursorX: Float = 0f
+    private var cursorY: Float = 0f
+
+    /// Full-screen transparent overlay that paints the cursor in
+    /// `onDraw`. Using a small View with `translationX/Y` hits an
+    /// Android compositor bug where drawing is clipped to the View's
+    /// original layout bounds — cursor visible only inside its spawn
+    /// box. A full-screen View has bounds equal to the parent so any
+    /// (x, y) inside the screen is paintable.
+    private class CursorOverlayView(
+        context: Context,
+        private val sizePx: Int,
+    ) : View(context) {
+        var cursorX: Float = 0f
+        var cursorY: Float = 0f
+        private val paint = Paint().apply {
+            color = Color.YELLOW
+            isAntiAlias = false
+            style = Paint.Style.FILL
         }
-        window.decorView.setOnCapturedPointerListener(captureListener)
-        window.decorView.post {
-            installCapturedPointerListenerOnAll(window.decorView, captureListener)
+        init {
+            // We paint manually; the View itself has no background so
+            // it doesn't draw anything full-screen.
+            setWillNotDraw(false)
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            isHapticFeedbackEnabled = false
+            isLongClickable = false
+        }
+        fun move(x: Float, y: Float) {
+            cursorX = x
+            cursorY = y
+            invalidate()
+        }
+        override fun onDraw(canvas: Canvas) {
+            canvas.drawRect(
+                cursorX,
+                cursorY,
+                cursorX + sizePx,
+                cursorY + sizePx,
+                paint,
+            )
         }
     }
 
-    private fun installCapturedPointerListenerOnAll(
-        root: View,
-        listener: View.OnCapturedPointerListener,
-    ) {
-        root.setOnCapturedPointerListener(listener)
-        if (root is SurfaceView) {
-            Log.i(TAG_CAPTURE, "captured listener installed on SurfaceView")
-            root.isFocusable = true
-            root.isFocusableInTouchMode = true
-        }
-        if (root is ViewGroup) {
-            for (i in 0 until root.childCount) {
-                installCapturedPointerListenerOnAll(root.getChildAt(i), listener)
-            }
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
+        if (hasCapture) {
+            ensureCursorView()
+            // Center the cursor on capture start so the user has a
+            // predictable landing point. Without this the cursor would
+            // start at (0, 0) and the first relative motion would
+            // travel from the top-left corner.
+            val w = window.decorView.width.toFloat()
+            val h = window.decorView.height.toFloat()
+            cursorX = (w / 2f).coerceAtLeast(0f)
+            cursorY = (h / 2f).coerceAtLeast(0f)
+            cursorView?.move(cursorX, cursorY)
+            cursorView?.visibility = View.VISIBLE
+            cursorView?.bringToFront()
+        } else {
+            cursorView?.visibility = View.GONE
         }
     }
+
+    private fun ensureCursorView() {
+        if (cursorView != null) return
+        val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
+        val view = CursorOverlayView(this, sizePx)
+        // Full-screen so the cursor can be painted anywhere on screen
+        // via onDraw, no translation involved (translation on a
+        // tiny-bounds View hits Android's compositor clip-to-layout
+        // bug and the cursor becomes invisible the moment it leaves
+        // its spawn box).
+        val lp = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        val root = window.decorView as ViewGroup
+        root.addView(view, lp)
+        // Ensure the cursor View ends up topmost in Z-order over the
+        // GameActivity SurfaceView. SurfaceView with the default
+        // `setZOrderOnTop(false)` composites below the View hierarchy,
+        // so bringToFront on the activity-decor side keeps the cursor
+        // visible against editor / panel content.
+        view.bringToFront()
+        cursorView = view
+    }
+
+    // installCapturedPointerListenerOnAll removed: we no longer
+    // install the View-level captured-pointer listener anywhere.
+    // Activity.onGenericMotionEvent below is the single capture path.
+
+    /// Activity-level catch for captured pointer events. Per Moonlight's
+    /// pattern (the only Android remote-desktop client that's solved
+    /// trackpad input on Samsung tablets): captured events also arrive
+    /// here when the window has pointer capture, regardless of which
+    /// View has focus. This avoids the `isFocusableInTouchMode=true`
+    /// trap that triggers Samsung One UI's accessibility tint and
+    /// breaks GameActivity's key dispatch.
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        val source = event.source
+        val isMouseRel = source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
+        val isTouchpad = source and InputDevice.SOURCE_TOUCHPAD != 0
+        val isMouse = source and InputDevice.SOURCE_MOUSE != 0
+        if ((isMouseRel || isTouchpad || isMouse)
+            && window.decorView.hasPointerCapture()) {
+            handleCapturedEvent(event)
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    private fun handleCapturedEvent(event: MotionEvent) {
+        if (event.actionMasked == MotionEvent.ACTION_MOVE
+            && event.pointerCount == 1) {
+            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, 0)
+            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, 0)
+            val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
+            val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
+            cursorX = (cursorX + rx).coerceIn(0f, maxX - 1f)
+            cursorY = (cursorY + ry).coerceIn(0f, maxY - 1f)
+            cursorView?.move(cursorX, cursorY)
+        }
+        forwardCapturedPointer(event)
+    }
+
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
-            // Only worth capturing if there's actually a pointing device
-            // attached. Touchscreen-only sessions don't benefit and
-            // capturing would hide the system cursor for any
-            // incidentally-connected mouse without giving us new info.
             if (hasIndirectPointer()) {
                 Log.i(TAG_CAPTURE, "requestPointerCapture()")
                 window.decorView.requestPointerCapture()
@@ -121,11 +238,6 @@ class MainActivity : GameActivity() {
         } else {
             window.decorView.releasePointerCapture()
         }
-    }
-
-    override fun onPointerCaptureChanged(hasCapture: Boolean) {
-        super.onPointerCaptureChanged(hasCapture)
-        Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
     }
 
     private fun hasIndirectPointer(): Boolean {
@@ -140,6 +252,42 @@ class MainActivity : GameActivity() {
         return false
     }
 
+    private fun forwardCapturedPointer(event: MotionEvent) {
+        val n = event.pointerCount
+        val xs = FloatArray(n)
+        val ys = FloatArray(n)
+        val rxs = FloatArray(n)
+        val rys = FloatArray(n)
+        for (i in 0 until n) {
+            xs[i] = event.getX(i)
+            ys[i] = event.getY(i)
+            rxs[i] = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
+            rys[i] = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+        }
+        val vs = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val hs = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        // `cursorX` / `cursorY` are the canonical cursor position in
+        // physical pixels (decorView coordinate space). Kotlin owns
+        // this because it also has to position `cursorView` at the
+        // same coords; passing it across JNI per event keeps the Rust
+        // side from drifting against the visible sprite.
+        NativeBridge.nativeOnCapturedPointer(
+            event.actionMasked,
+            event.source,
+            event.buttonState,
+            n,
+            xs,
+            ys,
+            rxs,
+            rys,
+            vs,
+            hs,
+            cursorX,
+            cursorY,
+        )
+    }
+
+    @Suppress("unused")
     private fun describeCapturedPointer(event: MotionEvent): String {
         val sb = StringBuilder()
         sb.append("act=").append(MotionEvent.actionToString(event.actionMasked))
@@ -359,5 +507,10 @@ class MainActivity : GameActivity() {
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
         private const val REQ_STORAGE_PERMS = 0xA3
+        /// Software cursor side length in dp. 18 dp is roughly the
+        /// size of a system cursor on a 1.75x density tablet and is
+        /// big enough to aim with on a trackpad without occluding
+        /// adjacent UI elements.
+        private const val CURSOR_SIZE_DP = 18
     }
 }
