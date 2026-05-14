@@ -46,6 +46,16 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
         PanelSizeState::default()
     }
     fn size_state_changed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    /// Snap an incoming size to a panel-specific grid before it gets
+    /// stored. Default is no-op. The terminal panel overrides this to
+    /// round to the nearest multiple of `line_height` so the dock can
+    /// never sit at a fractional-row height, which would otherwise
+    /// produce a visible padding gap that grows and snaps during
+    /// interactive drag (because rendered content is row-quantized but
+    /// the dock allotment is continuous in logical pixels).
+    fn snap_size(&self, size: Pixels, _window: &Window, _cx: &App) -> Pixels {
+        size
+    }
     fn supports_flexible_size(&self) -> bool {
         false
     }
@@ -104,6 +114,7 @@ pub trait PanelHandle: Send + Sync {
     fn min_size(&self, window: &Window, cx: &App) -> Option<Pixels>;
     fn initial_size_state(&self, window: &Window, cx: &App) -> PanelSizeState;
     fn size_state_changed(&self, window: &mut Window, cx: &mut App);
+    fn snap_size(&self, size: Pixels, window: &Window, cx: &App) -> Pixels;
     fn supports_flexible_size(&self, cx: &App) -> bool;
     fn has_flexible_size(&self, window: &Window, cx: &App) -> bool;
     fn set_flexible_size(&self, flexible: bool, window: &mut Window, cx: &mut App);
@@ -195,6 +206,10 @@ where
 
     fn size_state_changed(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| this.size_state_changed(window, cx))
+    }
+
+    fn snap_size(&self, size: Pixels, window: &Window, cx: &App) -> Pixels {
+        self.read(cx).snap_size(size, window, cx)
     }
 
     fn supports_flexible_size(&self, cx: &App) -> bool {
@@ -365,7 +380,15 @@ fn resize_panel_entry(
     window: &mut Window,
     cx: &mut App,
 ) -> (&'static str, PanelSizeState) {
-    let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE).round());
+    let size = size.map(|size| {
+        // Apply the panel's own snap policy before rounding to integer
+        // logical pixels. Panels with row-quantized content (terminal)
+        // override `snap_size` to round to a multiple of their row
+        // height so the dock can't be left at a fractional-row size,
+        // which avoids the visible padding gap during interactive drag.
+        let clamped = size.max(RESIZE_HANDLE_SIZE);
+        entry.panel.snap_size(clamped, window, cx).round()
+    });
     let uses_flexible_width = panel_uses_flexible_width(position, entry.panel.as_ref(), window, cx);
     if uses_flexible_width {
         entry.size_state.flex = flex;

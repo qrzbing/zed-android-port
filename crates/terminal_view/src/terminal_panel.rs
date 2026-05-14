@@ -13,7 +13,7 @@ use futures::{channel::oneshot, future::join_all};
 use gpui::{
     Action, Anchor, AnyView, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter,
     FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, TaskExt,
-    WeakEntity, Window, actions,
+    WeakEntity, Window, actions, px,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -21,6 +21,7 @@ use project::{Fs, Project};
 use settings::{Settings, TerminalDockPosition};
 use task::{RevealStrategy, RevealTarget, Shell, ShellBuilder, SpawnInTerminal, TaskId};
 use terminal::{Terminal, terminal_settings::TerminalSettings};
+use theme_settings::{self, ThemeSettings};
 use ui::{
     ButtonLike, Clickable, ContextMenu, FluentBuilder, PopoverMenu, SplitButton, Toggleable,
     Tooltip, prelude::*,
@@ -1568,6 +1569,39 @@ impl Panel for TerminalPanel {
             DockPosition::Left | DockPosition::Right => settings.default_width,
             DockPosition::Bottom => settings.default_height,
         }
+    }
+
+    fn snap_size(&self, size: Pixels, window: &Window, cx: &App) -> Pixels {
+        // The terminal renders content in whole rows of `line_height`
+        // logical pixels. If the dock's height isn't a multiple of
+        // `line_height` the renderer has to either pad the gap (visible
+        // catch-up during drag) or clip a partial row (text too close
+        // to the edge). Snapping the dock to a row multiple here makes
+        // the geometric mismatch impossible: the dock can't sit between
+        // rows. The drag becomes stair-stepped in row increments, which
+        // matches what every standalone terminal emulator does. Only
+        // applied when the panel is the bottom dock — at left / right
+        // the relevant quantum would be `cell_width`, but the visual
+        // cost of fractional width is less obvious and we don't bother
+        // for now.
+        if self.position(window, cx) != DockPosition::Bottom {
+            return size;
+        }
+        let theme_settings = ThemeSettings::get_global(cx);
+        let terminal_settings = TerminalSettings::get_global(cx);
+        let _ = window; // rem_size not needed because the font helpers already return Pixels
+        let buffer_font_size = theme_settings.buffer_font_size(cx);
+        let font_size = terminal_settings
+            .font_size
+            .map_or(buffer_font_size, |s| {
+                theme_settings::adjusted_font_size(s, cx)
+            });
+        let line_height_logical = f32::from(font_size) * terminal_settings.line_height.value();
+        if line_height_logical <= 0.0 {
+            return size;
+        }
+        let n = (f32::from(size) / line_height_logical).round().max(1.0);
+        px(n * line_height_logical)
     }
 
     fn supports_flexible_size(&self) -> bool {
