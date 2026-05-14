@@ -10,6 +10,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -66,6 +67,15 @@ class ExtraWindowActivity : AppCompatActivity() {
     private var cursorView: CursorOverlayView? = null
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
+    /// Container for `surfaceView` + `cursorView`. Both share the
+    /// same coordinate origin (this FrameLayout's top-left). Adding
+    /// the cursorView to decorView instead means the sprite paints
+    /// in decorView coords while the editor receives MouseDown in
+    /// surface coords; in non-edge-to-edge / freeform-windowing
+    /// layouts the two diverge, producing the "cursor on top panel,
+    /// click hits debugger below" symptom and capping cursor travel
+    /// at the smaller of the two widths.
+    private lateinit var contentRoot: FrameLayout
     private var cursorHiddenByKeyboard: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -169,7 +179,18 @@ class ExtraWindowActivity : AppCompatActivity() {
             // builds bypass that listener path when DeX windowing
             // is active.
         }
-        setContentView(surfaceView)
+        // Wrap surfaceView in a FrameLayout so the cursor overlay can
+        // be added as a sibling with a shared coordinate origin.
+        contentRoot = FrameLayout(this).apply {
+            addView(
+                surfaceView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        setContentView(contentRoot)
     }
 
     override fun onDestroy() {
@@ -214,10 +235,13 @@ class ExtraWindowActivity : AppCompatActivity() {
         Log.i(TAG, "onPointerCaptureChanged windowId=$extraWindowId hasCapture=$hasCapture")
         if (hasCapture) {
             ensureCursorView()
-            val w = window.decorView.width.toFloat()
-            val h = window.decorView.height.toFloat()
-            cursorX = (w / 2f).coerceAtLeast(0f)
-            cursorY = (h / 2f).coerceAtLeast(0f)
+            // Center the cursor inside the surfaceView's bounds (NOT
+            // decorView's). cursorX/Y is in surface coordinate space
+            // — same space the editor uses for hit-testing.
+            val w = surfaceView.width.toFloat().coerceAtLeast(1f)
+            val h = surfaceView.height.toFloat().coerceAtLeast(1f)
+            cursorX = w / 2f
+            cursorY = h / 2f
             cursorView?.move(cursorX, cursorY)
             cursorView?.visibility = View.VISIBLE
             cursorView?.bringToFront()
@@ -230,12 +254,15 @@ class ExtraWindowActivity : AppCompatActivity() {
         if (cursorView != null) return
         val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
         val view = CursorOverlayView(this, sizePx)
-        val lp = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
+        // Add as a sibling of surfaceView inside the same FrameLayout.
+        // Shared origin → cursor sprite position == editor coordinate
+        // == MouseDown position. Adding to decorView instead breaks
+        // this in non-edge-to-edge / freeform-windowing layouts.
+        val lp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
         )
-        val root = window.decorView as ViewGroup
-        root.addView(view, lp)
+        contentRoot.addView(view, lp)
         view.bringToFront()
         cursorView = view
     }
@@ -269,8 +296,8 @@ class ExtraWindowActivity : AppCompatActivity() {
                     sumRx += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
                     sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
                 }
-                val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
-                val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
+                val maxX = surfaceView.width.toFloat().coerceAtLeast(1f)
+                val maxY = surfaceView.height.toFloat().coerceAtLeast(1f)
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
                 cursorView?.move(cursorX, cursorY)
