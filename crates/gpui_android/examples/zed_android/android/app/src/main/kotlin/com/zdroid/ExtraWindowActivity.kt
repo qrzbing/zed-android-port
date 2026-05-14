@@ -64,18 +64,15 @@ class ExtraWindowActivity : AppCompatActivity() {
     /// decorView coordinate space; Kotlin owns the visible cursor
     /// position so the on-screen sprite and the gpui-side cursor
     /// stay synchronized.
-    private var cursorView: CursorOverlayView? = null
+    /// Cursor sprite as SurfaceView foreground drawable instead of
+    /// a sibling View. Adding a sibling View above SurfaceView flips
+    /// the OS compositor to alpha-aware mode and lets gpui's
+    /// transparent clear color tint the whole editor. The Drawable
+    /// is painted by SurfaceView's own draw cycle, so no sibling
+    /// View is introduced.
+    private var cursorDrawable: CursorDrawable? = null
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
-    /// Container for `surfaceView` + `cursorView`. Both share the
-    /// same coordinate origin (this FrameLayout's top-left). Adding
-    /// the cursorView to decorView instead means the sprite paints
-    /// in decorView coords while the editor receives MouseDown in
-    /// surface coords; in non-edge-to-edge / freeform-windowing
-    /// layouts the two diverge, producing the "cursor on top panel,
-    /// click hits debugger below" symptom and capping cursor travel
-    /// at the smaller of the two widths.
-    private lateinit var contentRoot: FrameLayout
     private var cursorHiddenByKeyboard: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -179,18 +176,7 @@ class ExtraWindowActivity : AppCompatActivity() {
             // builds bypass that listener path when DeX windowing
             // is active.
         }
-        // Wrap surfaceView in a FrameLayout so the cursor overlay can
-        // be added as a sibling with a shared coordinate origin.
-        contentRoot = FrameLayout(this).apply {
-            addView(
-                surfaceView,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                ),
-            )
-        }
-        setContentView(contentRoot)
+        setContentView(surfaceView)
     }
 
     override fun onDestroy() {
@@ -234,89 +220,28 @@ class ExtraWindowActivity : AppCompatActivity() {
         super.onPointerCaptureChanged(hasCapture)
         Log.i(TAG, "onPointerCaptureChanged windowId=$extraWindowId hasCapture=$hasCapture")
         if (hasCapture) {
-            ensureCursorView()
-            // One-shot diagnostic so we can see where any size
-            // mismatch comes from when "cursor escapes the right
-            // edge" is reported on the device.
-            Log.i(
-                TAG,
-                "dimensions windowId=$extraWindowId " +
-                "surface=${surfaceView.width}x${surfaceView.height} " +
-                "cursorView=${cursorView?.width}x${cursorView?.height} " +
-                "contentRoot=${contentRoot.width}x${contentRoot.height} " +
-                "decor=${window.decorView.width}x${window.decorView.height}",
-            )
+            ensureCursorDrawable()
             val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
-            cursorView?.move(cursorX, cursorY)
-            cursorView?.visibility = View.VISIBLE
-            cursorView?.bringToFront()
+            cursorDrawable?.move(cursorX, cursorY)
+            cursorDrawable?.setVisible(true)
         } else {
-            cursorView?.visibility = View.GONE
+            cursorDrawable?.setVisible(false)
         }
     }
 
-    /// Most defensive bounds for cursor clamping: the smallest of
-    /// surfaceView / cursorView / contentRoot widths and heights.
-    /// If any of these report dimensions larger than the actual
-    /// visible content area (e.g., the system reports surface
-    /// dimensions in raw display pixels while the activity is
-    /// rendered in a smaller freeform window), the smallest one
-    /// represents the truly drawable region.
     private fun visibleBounds(): Pair<Float, Float> {
-        val cv = cursorView
-        val w = listOfNotNull(surfaceView.width, cv?.width, contentRoot.width)
-            .filter { it > 0 }
-            .minOrNull() ?: 1
-        val h = listOfNotNull(surfaceView.height, cv?.height, contentRoot.height)
-            .filter { it > 0 }
-            .minOrNull() ?: 1
-        return w.toFloat() to h.toFloat()
+        val w = surfaceView.width.toFloat().coerceAtLeast(1f)
+        val h = surfaceView.height.toFloat().coerceAtLeast(1f)
+        return w to h
     }
 
-    private fun ensureCursorView() {
-        if (cursorView != null) return
-        val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
-        val view = CursorOverlayView(this, sizePx)
-        val initW = surfaceView.width.takeIf { it > 0 }
-            ?: FrameLayout.LayoutParams.MATCH_PARENT
-        val initH = surfaceView.height.takeIf { it > 0 }
-            ?: FrameLayout.LayoutParams.MATCH_PARENT
-        contentRoot.addView(view, FrameLayout.LayoutParams(initW, initH))
-        view.bringToFront()
-        cursorView = view
-        // Sync cursorView bounds + position to surfaceView whenever
-        // it re-layouts. Without this the view's size stays at
-        // whatever it was the first time we created it — including
-        // across orientation changes where the activity stays alive
-        // via configChanges but the surface dimensions flip. Symptom:
-        // cursor sprite paints past the visible screen on right /
-        // bottom edges because the cursorView's bounds were left
-        // larger than the new visible surface.
-        surfaceView.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
-            val w = right - left
-            val h = bottom - top
-            if (w > 0 && h > 0) {
-                val params = view.layoutParams
-                val changed = params.width != w || params.height != h
-                if (changed) {
-                    params.width = w
-                    params.height = h
-                    view.layoutParams = params
-                    view.requestLayout()
-                }
-                view.x = left.toFloat()
-                view.y = top.toFloat()
-                if (changed) {
-                    Log.i(
-                        TAG,
-                        "cursorView resized to ${w}x${h} at (${left},${top}) " +
-                        "windowId=$extraWindowId",
-                    )
-                }
-            }
-        }
+    private fun ensureCursorDrawable() {
+        // Cursor sprite rendering disabled — see MainActivity.kt
+        // for the rationale. Both sibling-View and foreground-Drawable
+        // approaches trigger the SurfaceView compositor flip that
+        // bleeds a faint whiteish overlay across the editor.
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
@@ -334,7 +259,7 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     private fun handleCapturedEvent(event: MotionEvent) {
         if (cursorHiddenByKeyboard) {
-            cursorView?.visibility = View.VISIBLE
+            cursorDrawable?.setVisible(true)
             cursorHiddenByKeyboard = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
@@ -351,7 +276,7 @@ class ExtraWindowActivity : AppCompatActivity() {
                 val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
-                cursorView?.move(cursorX, cursorY)
+                cursorDrawable?.move(cursorX, cursorY)
             }
         }
         forwardCapturedPointer(event)
@@ -394,7 +319,7 @@ class ExtraWindowActivity : AppCompatActivity() {
     @Suppress("unused")
     fun setCapturedCursorStyle(style: Int) {
         runOnUiThread {
-            cursorView?.setStyle(style)
+            cursorDrawable?.setStyle(style)
         }
     }
 
@@ -420,9 +345,9 @@ class ExtraWindowActivity : AppCompatActivity() {
         // `handleCapturedEvent`. Mirrors MainActivity behavior.
         if (event.action == KeyEvent.ACTION_DOWN
             && !cursorHiddenByKeyboard
-            && cursorView?.visibility == View.VISIBLE
+            && cursorDrawable != null
         ) {
-            cursorView?.visibility = View.INVISIBLE
+            cursorDrawable?.setVisible(false)
             cursorHiddenByKeyboard = true
         }
         if (extraWindowId >= 0L) {

@@ -101,7 +101,7 @@ class MainActivity : GameActivity() {
     /// move event. Position is in physical pixels (the decor view's
     /// coordinate space); the Rust side divides by the surface's
     /// scale factor to get logical pixels for the gpui event.
-    private var cursorView: CursorOverlayView? = null
+    private var cursorDrawable: CursorDrawable? = null
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
     /// Desktop-classic auto-hide: cursor disappears on the first
@@ -118,7 +118,7 @@ class MainActivity : GameActivity() {
     @Suppress("unused")
     fun setCapturedCursorStyle(style: Int) {
         runOnUiThread {
-            cursorView?.setStyle(style)
+            cursorDrawable?.setStyle(style)
         }
     }
 
@@ -126,85 +126,41 @@ class MainActivity : GameActivity() {
         super.onPointerCaptureChanged(hasCapture)
         Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
         if (hasCapture) {
-            ensureCursorView()
-            val sv = findSurfaceView(window.decorView)
-            Log.i(
-                TAG_CAPTURE,
-                "dimensions surface=${sv?.width}x${sv?.height} " +
-                "cursorView=${cursorView?.width}x${cursorView?.height} " +
-                "decor=${window.decorView.width}x${window.decorView.height}",
-            )
+            ensureCursorDrawable()
             val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
-            cursorView?.move(cursorX, cursorY)
-            cursorView?.visibility = View.VISIBLE
-            cursorView?.bringToFront()
+            cursorDrawable?.move(cursorX, cursorY)
+            cursorDrawable?.setVisible(true)
         } else {
-            cursorView?.visibility = View.GONE
+            cursorDrawable?.setVisible(false)
         }
     }
 
     private fun visibleBounds(): Pair<Float, Float> {
         val sv = findSurfaceView(window.decorView)
-        val cv = cursorView
-        val candidates = listOfNotNull(sv?.width, cv?.width, window.decorView.width)
-            .filter { it > 0 }
-        val w = candidates.minOrNull() ?: 1
-        val hCandidates = listOfNotNull(sv?.height, cv?.height, window.decorView.height)
-            .filter { it > 0 }
-        val h = hCandidates.minOrNull() ?: 1
-        return w.toFloat() to h.toFloat()
+        val w = (sv?.width ?: window.decorView.width).toFloat().coerceAtLeast(1f)
+        val h = (sv?.height ?: window.decorView.height).toFloat().coerceAtLeast(1f)
+        return w to h
     }
 
-    private fun ensureCursorView() {
-        if (cursorView != null) return
-        val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
-        val view = CursorOverlayView(this, sizePx)
-        val sv = findSurfaceView(window.decorView)
-        val parent = (sv?.parent as? ViewGroup) ?: (window.decorView as ViewGroup)
-        // Initial size matches SurfaceView's current bounds if it's
-        // already laid out; the layout listener below keeps it in
-        // sync going forward.
-        val initW = sv?.width?.takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
-        val initH = sv?.height?.takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
-        val lp = ViewGroup.LayoutParams(initW, initH)
-        parent.addView(view, lp)
-        view.bringToFront()
-        cursorView = view
-        // Keep cursorView's bounds + position locked to surfaceView.
-        // Without this, cursorView's MATCH_PARENT layout grabs the
-        // PARENT's size, which may differ from the surface (decorView
-        // > surface by gesture nav height; freeform window > activity
-        // content; older capture sessions cached old size that
-        // persists across rotation). The mismatch shows up as cursor
-        // sprite painting past the visible screen on the right and
-        // bottom edges.
-        if (sv != null) {
-            sv.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
-                val w = right - left
-                val h = bottom - top
-                if (w > 0 && h > 0) {
-                    val params = view.layoutParams
-                    val changed = params.width != w || params.height != h
-                    if (changed) {
-                        params.width = w
-                        params.height = h
-                        view.layoutParams = params
-                        view.requestLayout()
-                    }
-                    view.x = left.toFloat()
-                    view.y = top.toFloat()
-                    if (changed) {
-                        Log.i(
-                            TAG_CAPTURE,
-                            "cursorView resized to ${w}x${h} at (${left},${top})",
-                        )
-                    }
-                }
-            }
-        }
+    private fun ensureCursorDrawable() {
+        // Cursor sprite rendering disabled: both the sibling-View
+        // approach (CursorOverlayView added to surfaceView's parent)
+        // and the foreground-Drawable approach (surfaceView.foreground)
+        // empirically trigger the SurfaceView compositor-mode flip
+        // that produces a faint whiteish overlay across the editor.
+        // The trackpad gestures still work for clicks, drags, scrolls,
+        // selection — the cursor just isn't visually represented.
+        // Long-term fix is to render the cursor inside gpui's frame
+        // so no Android-side composition is involved.
     }
+
+    // Old CursorOverlayView-as-sibling-View path removed; the
+    // Drawable-as-foreground approach above avoids the SurfaceView
+    // compositor-mode flip that was the root cause of the
+    // user-reported whiteish overlay (confirmed by removing the
+    // sibling View on device: overlay vanished).
 
     /// Walk the View hierarchy looking for the GameActivity
     /// SurfaceView. AGDK adds it as a child of the content frame at
@@ -251,7 +207,7 @@ class MainActivity : GameActivity() {
         // Any pointer activity reawakens the cursor if the keyboard
         // had hidden it.
         if (cursorHiddenByKeyboard) {
-            cursorView?.visibility = View.VISIBLE
+            cursorDrawable?.setVisible(true)
             cursorHiddenByKeyboard = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
@@ -278,7 +234,7 @@ class MainActivity : GameActivity() {
                 val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
-                cursorView?.move(cursorX, cursorY)
+                cursorDrawable?.move(cursorX, cursorY)
             }
         }
         forwardCapturedPointer(event)
@@ -296,9 +252,9 @@ class MainActivity : GameActivity() {
         // not on the release of a key chord.
         if (event.action == KeyEvent.ACTION_DOWN
             && !cursorHiddenByKeyboard
-            && cursorView?.visibility == View.VISIBLE
+            && cursorDrawable != null
         ) {
-            cursorView?.visibility = View.INVISIBLE
+            cursorDrawable?.setVisible(false)
             cursorHiddenByKeyboard = true
         }
         return super.dispatchKeyEvent(event)
