@@ -82,14 +82,17 @@ internal class CursorOverlayView(
         isFocusableInTouchMode = false
         isHapticFeedbackEnabled = false
         isLongClickable = false
-        // Defensive transparency: no background, full opacity on the
-        // View itself (the bitmap's own alpha is what makes the
-        // cursor visible), and software-layer rendering so the
-        // compositor doesn't insert any hardware-accelerated layer
-        // alpha behind a paint that should be fully transparent.
+        // No background, full opacity on the View itself (the
+        // bitmap's own alpha is what makes the cursor visible).
+        // LAYER_TYPE_SOFTWARE so the cursor renders into an isolated
+        // software bitmap that's composited on top — avoids the case
+        // where invalidating this view triggers re-composition of
+        // the underlying SurfaceView layer with its alpha channel
+        // letting the window background bleed through (user-reported
+        // "whiteish overlay appears on first mouse move and persists").
         background = null
         alpha = 1f
-        setLayerType(LAYER_TYPE_NONE, null)
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
     fun move(x: Float, y: Float) {
         cursorX = x

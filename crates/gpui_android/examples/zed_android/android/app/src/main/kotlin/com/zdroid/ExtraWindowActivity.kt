@@ -93,6 +93,14 @@ class ExtraWindowActivity : AppCompatActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat
                 .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+        // Black window background — any sub-pixel alpha bleed from
+        // the SurfaceView surface composites against BLACK instead
+        // of AppCompat's light theme, eliminating the user-reported
+        // "whiteish overlay after first mouse move" symptom (which
+        // is the theme background showing through transient alpha).
+        window.setBackgroundDrawable(
+            android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK)
+        )
 
         extraWindowId = intent.getLongExtra(EXTRA_WINDOW_ID, -1L)
         if (extraWindowId < 0L) {
@@ -251,7 +259,9 @@ class ExtraWindowActivity : AppCompatActivity() {
             cursorY = h / 2f
             cursorView?.move(cursorX, cursorY)
             cursorView?.visibility = View.VISIBLE
-            cursorView?.bringToFront()
+            // bringToFront() intentionally removed; cursorView is
+            // already last in contentRoot's child list at
+            // ensureCursorView time.
         } else {
             cursorView?.visibility = View.GONE
         }
