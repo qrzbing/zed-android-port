@@ -415,26 +415,40 @@ pub(crate) fn translate(
                 if hold_elapsed >= HOLD_DRAG_THRESHOLD
                     && stationary_for >= HOLD_DRAG_STATIONARY
                     && !state.drag_active
-                    && state.button_held.is_none()
                 {
+                    // `button_held` may already be Some(Left) because
+                    // the Book Cover trackpad firmware fires
+                    // ACTION_BUTTON_PRESS (verified empirically:
+                    // source=0x100008 buttonState=0x1) shortly after
+                    // every finger contact. The corresponding
+                    // MouseDown has already reached the editor at
+                    // finger 1's position. We enter drag mode without
+                    // emitting a duplicate MouseDown; subsequent
+                    // two-finger MOVEs route as MouseMove(Left held)
+                    // and grow the selection from that anchor.
+                    let already_pressed = state.button_held.is_some();
                     log::info!(
-                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) hold_ms={} stationary_ms={}",
+                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) \
+                         hold_ms={} stationary_ms={} already_pressed={}",
                         f32::from(cursor.x),
                         f32::from(cursor.y),
                         hold_elapsed.as_millis(),
                         stationary_for.as_millis().min(99999),
+                        already_pressed,
                     );
                     state.drag_active = true;
-                    state.button_held = Some(MouseButton::Left);
                     state.hold_drag_cursor = Some(cursor);
                     state.right_click_armed = false;
-                    out.push(PlatformInput::MouseDown(MouseDownEvent {
-                        button: MouseButton::Left,
-                        position: cursor,
-                        modifiers,
-                        click_count: 1,
-                        first_mouse: false,
-                    }));
+                    if !already_pressed {
+                        state.button_held = Some(MouseButton::Left);
+                        out.push(PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: cursor,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }));
+                    }
                 } else {
                     log::info!(
                         "hold_drag: SKIPPED hold_ms={} stationary_ms={} \
@@ -445,6 +459,29 @@ pub(crate) fn translate(
                         state.button_held,
                     );
                     state.right_click_armed = true;
+                    // Verified empirically: the Book Cover trackpad's
+                    // ACTION_BUTTON_PRESS fires shortly after finger 1
+                    // DOWN regardless of user intent. If it already
+                    // emitted a MouseDown, the editor sees scroll-
+                    // while-clicked when this scroll path proceeds —
+                    // which most editors interpret as drag-select
+                    // (visible to the user as "scroll triggers
+                    // selection"). Release the button first so the
+                    // scroll is independent of the firmware-emitted
+                    // click.
+                    if let Some(button) = state.button_held.take() {
+                        log::info!(
+                            "hold_drag: releasing inherited BUTTON_PRESS before scroll \
+                             (button={:?})",
+                            button,
+                        );
+                        out.push(PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position: cursor,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
                 }
             }
             JAVA_ACTION_MOVE => {
@@ -663,6 +700,15 @@ pub(crate) fn translate(
             }
             JAVA_ACTION_BUTTON_PRESS => {
                 let button = pressed_mouse_button.unwrap_or(MouseButton::Left);
+                log::info!(
+                    "button_press: ENGAGED button={:?} source=0x{:x} buttonState=0x{:x} \
+                     cursor=({:.0},{:.0})",
+                    button,
+                    event.source,
+                    event.button_state,
+                    f32::from(cursor.x),
+                    f32::from(cursor.y),
+                );
                 state.button_held = Some(button);
                 state.primary_down = None;
                 out.push(PlatformInput::MouseDown(MouseDownEvent {
@@ -674,6 +720,11 @@ pub(crate) fn translate(
                 }));
             }
             JAVA_ACTION_BUTTON_RELEASE => {
+                log::info!(
+                    "button_press: RELEASED source=0x{:x} buttonState=0x{:x}",
+                    event.source,
+                    event.button_state,
+                );
                 if let Some(button) = state.button_held.take() {
                     out.push(PlatformInput::MouseUp(MouseUpEvent {
                         button,
