@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
@@ -101,22 +102,49 @@ class MainActivity : GameActivity() {
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
 
-    /// Full-screen transparent overlay that paints the cursor in
-    /// `onDraw`. Using a small View with `translationX/Y` hits an
-    /// Android compositor bug where drawing is clipped to the View's
-    /// original layout bounds — cursor visible only inside its spawn
-    /// box. A full-screen View has bounds equal to the parent so any
-    /// (x, y) inside the screen is paintable.
+    /// Full-screen transparent overlay that paints a classic mouse
+    /// cursor arrow in `onDraw` at the tracked (x, y). Hot-spot is the
+    /// arrow's tip at the (cursorX, cursorY) origin — clicks land
+    /// exactly where the visible arrow's tip is.
+    ///
+    /// Using a small View with `translationX/Y` hits an Android
+    /// compositor bug where drawing is clipped to the View's original
+    /// layout bounds — cursor visible only inside its spawn box. A
+    /// full-screen View has bounds equal to the parent so any (x, y)
+    /// inside the screen is paintable.
     private class CursorOverlayView(
         context: Context,
-        private val sizePx: Int,
+        sizePx: Int,
     ) : View(context) {
         var cursorX: Float = 0f
         var cursorY: Float = 0f
-        private val paint = Paint().apply {
-            color = Color.YELLOW
-            isAntiAlias = false
+        /// Arrow silhouette in local coords (hot-spot at origin).
+        /// Classic 7-point pointer with a slight tail / asymmetric
+        /// "south-east" slant, similar to the Windows / desktop Linux
+        /// default arrow. Drawn at `sizePx`-scaled coordinates so the
+        /// arrow size matches the user's display density.
+        private val arrowPath = Path().apply {
+            val s = sizePx.toFloat()
+            moveTo(0f, 0f)
+            lineTo(0f, s * 0.78f)
+            lineTo(s * 0.22f, s * 0.60f)
+            lineTo(s * 0.38f, s * 0.95f)
+            lineTo(s * 0.52f, s * 0.89f)
+            lineTo(s * 0.36f, s * 0.55f)
+            lineTo(s * 0.62f, s * 0.55f)
+            close()
+        }
+        private val fillPaint = Paint().apply {
+            color = Color.WHITE
             style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+        private val strokePaint = Paint().apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = 1.5f * context.resources.displayMetrics.density
+            strokeJoin = Paint.Join.ROUND
+            isAntiAlias = true
         }
         init {
             // We paint manually; the View itself has no background so
@@ -134,13 +162,13 @@ class MainActivity : GameActivity() {
             invalidate()
         }
         override fun onDraw(canvas: Canvas) {
-            canvas.drawRect(
-                cursorX,
-                cursorY,
-                cursorX + sizePx,
-                cursorY + sizePx,
-                paint,
-            )
+            canvas.save()
+            canvas.translate(cursorX, cursorY)
+            // Fill first then outline on top so the outline reads
+            // crisply against any background color.
+            canvas.drawPath(arrowPath, fillPaint)
+            canvas.drawPath(arrowPath, strokePaint)
+            canvas.restore()
         }
     }
 
@@ -507,10 +535,10 @@ class MainActivity : GameActivity() {
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
         private const val REQ_STORAGE_PERMS = 0xA3
-        /// Software cursor side length in dp. 18 dp is roughly the
-        /// size of a system cursor on a 1.75x density tablet and is
-        /// big enough to aim with on a trackpad without occluding
-        /// adjacent UI elements.
-        private const val CURSOR_SIZE_DP = 18
+        /// Software cursor side length in dp. 24 dp matches the
+        /// classic desktop arrow size at a 1.0x density baseline and
+        /// scales naturally with the device's density to feel right
+        /// at any DPI without occluding adjacent UI elements.
+        private const val CURSOR_SIZE_DP = 24
     }
 }
