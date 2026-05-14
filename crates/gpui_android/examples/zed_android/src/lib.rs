@@ -28,7 +28,7 @@ use settings::{Settings as _, SettingsStore};
 use util::ResultExt as _;
 use workspace::{
     AppState, CloseIntent, CloseProject, MultiWorkspace, OpenOptions, Workspace, WorkspaceStore,
-    open_new,
+    local_workspace_windows, open_new,
 };
 use reqwest_client::ReqwestClient;
 use zdroid_runtime::{
@@ -1226,10 +1226,39 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                     let _ = task.await;
                 }
             } else {
-                error!(
-                    "zed_android: active window is neither Workspace nor MultiWorkspace; \
-                     Open action ignored"
-                );
+                // active_window points at something that is neither a
+                // Workspace nor a MultiWorkspace. The classic case on Android
+                // (first-boot Open Project): the runtime picker ran in an
+                // ExtraWindowActivity, the user dismissed it, and the active
+                // window slot still points at that dismissed picker entity
+                // when the SAF Activity-result fires. Without this fallback
+                // the URI is dropped silently and the user sees "tapping Open
+                // Project does nothing until I close + reopen the app".
+                //
+                // Fall back to the first local MultiWorkspace window. Same
+                // recovery the upstream `prompt_and_open_paths` does for its
+                // own scheduling.
+                let fallback =
+                    cx.update(|cx| local_workspace_windows(cx).into_iter().next());
+                if let Some(mw) = fallback {
+                    log::warn!(
+                        "zed_android: Open action active_window was not a workspace; \
+                         falling back to the first local MultiWorkspace"
+                    );
+                    let task = mw.update(cx, |mw, window, cx| {
+                        mw.open_project(picked, workspace::OpenMode::Activate, window, cx)
+                    });
+                    if let Ok(task) = task {
+                        if let Err(err) = task.await {
+                            error!("zed_android: fallback open_project failed: {err:#}");
+                        }
+                    }
+                } else {
+                    error!(
+                        "zed_android: no local MultiWorkspace window exists; \
+                         Open action dropped"
+                    );
+                }
             }
         })
         .detach();
