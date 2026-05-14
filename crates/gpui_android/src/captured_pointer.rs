@@ -64,6 +64,7 @@
 
 use std::cell::RefCell;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
@@ -183,6 +184,15 @@ pub(crate) struct CapturedEvent {
 }
 
 static EVENT_TX: Mutex<Option<mpsc::UnboundedSender<CapturedEvent>>> = Mutex::new(None);
+
+/// Visible to Kotlin via `Java_com_zdroid_NativeBridge_isHoldDragActive`.
+/// Kotlin reads this on every multi-touch MOVE to decide whether to
+/// update its on-screen cursor sprite — during hold-and-drag we want
+/// the cursor to follow the moving finger so the user can see what
+/// they're selecting; during plain two-finger scroll the cursor stays
+/// pinned (desktop standard). Rust flips this on hold-drag entry and
+/// clears it on teardown.
+static IS_HOLD_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Construct a fresh sender/receiver pair. Returns the receiver for
 /// the platform to drain; the sender lives in `EVENT_TX` for the JNI
@@ -377,6 +387,7 @@ pub(crate) fn translate(
                         }));
                     }
                     state.drag_active = false;
+                    IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
                 }
                 let now = Instant::now();
                 let qualifies_as_tap_drag = state
@@ -456,6 +467,7 @@ pub(crate) fn translate(
                     state.hold_drag_cursor = Some(cursor);
                     state.right_click_armed = false;
                     state.button_held = Some(MouseButton::Left);
+                    IS_HOLD_DRAG_ACTIVE.store(true, Ordering::Release);
                     out.push(PlatformInput::MouseDown(MouseDownEvent {
                         button: MouseButton::Left,
                         position: cursor,
@@ -629,6 +641,7 @@ pub(crate) fn translate(
                 //    without crossing into tap-drag mode): no click,
                 //    just clear state.
                 state.in_multi_touch = false;
+                IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
                 if let Some(button) = state.button_held.take() {
                     let release_pos = state.hold_drag_cursor.take().unwrap_or(cursor);
                     out.push(PlatformInput::MouseUp(MouseUpEvent {
@@ -766,6 +779,7 @@ pub(crate) fn translate(
                 state.tap_drag_pending = false;
                 state.drag_active = false;
                 state.hold_drag_cursor = None;
+                IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
             }
             _ => {}
         }
@@ -790,6 +804,18 @@ fn button_from_state(state: i32) -> Option<MouseButton> {
 }
 
 // JNI sinks --------------------------------------------------------------
+
+/// Kotlin queries this on every multi-touch MOVE to decide whether to
+/// move the on-screen cursor sprite. `true` while a hold-and-drag is
+/// in flight; `false` during plain scroll or single-finger gestures.
+/// Atomic so we don't need a JNIEnv on the read path.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_zdroid_NativeBridge_isHoldDragActive<'local>(
+    _env: jni::JNIEnv<'local>,
+    _bridge: JObject<'local>,
+) -> bool {
+    IS_HOLD_DRAG_ACTIVE.load(Ordering::Acquire)
+}
 
 /// Probe sink (kept alongside the structured one for debug). Logs a
 /// stringified summary of each captured event.

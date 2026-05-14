@@ -255,19 +255,33 @@ class MainActivity : GameActivity() {
             cursorView?.visibility = View.VISIBLE
             cursorHiddenByKeyboard = false
         }
-        if (event.actionMasked == MotionEvent.ACTION_MOVE
-            && event.pointerCount == 1) {
-            // Cursor moves only on single-finger motion. Two-finger
-            // motion is exclusively scroll (or right-click on a quick
-            // tap-tap) per the desktop trackpad standard — the cursor
-            // stays put during scroll, matching every major OS.
-            val rx = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, 0)
-            val ry = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, 0)
-            val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
-            val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
-            cursorX = (cursorX + rx).coerceIn(0f, maxX - 1f)
-            cursorY = (cursorY + ry).coerceIn(0f, maxY - 1f)
-            cursorView?.move(cursorX, cursorY)
+        if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+            // Cursor follows the moving finger in three cases:
+            //   1. Single-finger motion (n=1): standard cursor drag.
+            //   2. Multi-touch while hold-drag is active on the Rust
+            //      side (queried via NativeBridge.isHoldDragActive):
+            //      the user is selecting text by holding finger 1 and
+            //      dragging finger 2, and expects the cursor to follow
+            //      the second finger so they can see the selection
+            //      growing.
+            // For plain two-finger scroll (multi-touch but NOT in
+            // hold-drag), cursor stays pinned per desktop standard.
+            val isHoldDragMultiTouch = event.pointerCount >= 2 &&
+                NativeBridge.isHoldDragActive()
+            if (event.pointerCount == 1 || isHoldDragMultiTouch) {
+                var sumRx = 0f
+                var sumRy = 0f
+                val limit = event.pointerCount
+                for (i in 0 until limit) {
+                    sumRx += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
+                    sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
+                }
+                val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
+                val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
+                cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
+                cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
+                cursorView?.move(cursorX, cursorY)
+            }
         }
         forwardCapturedPointer(event)
     }

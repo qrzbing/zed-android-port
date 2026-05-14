@@ -94,6 +94,15 @@ object NativeBridge {
         repeatCount: Int,
     )
 
+    /// True while a hold-and-drag gesture is in flight on the Rust
+    /// synthesis side. Kotlin queries this on every multi-touch MOVE
+    /// event to decide whether the on-screen cursor sprite should
+    /// follow the moving finger. During hold-drag the user expects
+    /// the cursor to follow so they can see where the selection is
+    /// growing; during plain scroll the cursor stays pinned (desktop
+    /// standard).
+    external fun isHoldDragActive(): Boolean
+
     /// Probe sink kept for diagnostic use; the structured sink below
     /// is the real path. The probe just logs a stringified summary
     /// when the synthesis layer is suspect on a given device.
