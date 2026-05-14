@@ -66,15 +66,6 @@ class MainActivity : GameActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat
                 .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        // Force a black window background so any sub-pixel alpha
-        // bleed from the SurfaceView's RGBA_8888 surface composites
-        // against BLACK, not the AppCompat theme's light background
-        // — the latter is what the user perceived as a "whiteish
-        // overlay" that appeared after the first cursor invalidate
-        // triggered re-composition.
-        window.setBackgroundDrawable(
-            android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK)
-        )
 
         // Pointer-capture probe. When the decor view gains focus we ask
         // Android for raw pointer events. The captured listener
@@ -148,12 +139,7 @@ class MainActivity : GameActivity() {
             cursorY = h / 2f
             cursorView?.move(cursorX, cursorY)
             cursorView?.visibility = View.VISIBLE
-            // bringToFront() intentionally removed — the view is
-            // already last in its parent's child list (= topmost) at
-            // ensureCursorView time. Reordering the child list
-            // afterwards can trigger an unexpected re-composition of
-            // sibling SurfaceView layers (implicated in the user-
-            // reported "whiteish overlay after first mouse move").
+            cursorView?.bringToFront()
         } else {
             cursorView?.visibility = View.GONE
         }
