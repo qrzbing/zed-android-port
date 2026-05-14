@@ -63,8 +63,8 @@
 //!   non-captured trackpad path.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
@@ -177,13 +177,24 @@ const DRAG_LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 const DRAG_LOCK_TAP_WINDOW: Duration = Duration::from_millis(200);
 
 
+/// `window_id` sentinel for the primary `MainActivity` window. Extra
+/// windows use their gpui-assigned non-zero `WindowId` so per-window
+/// state never collides with the primary.
+pub(crate) const PRIMARY_WINDOW_ID: u64 = 0;
+
 /// Captured `MotionEvent` shape marshaled across JNI. One per event.
 /// Pointer fields are indexed 0..pointer_count. `cursor_physical_*`
 /// is Kotlin's authoritative cursor position in physical pixels
 /// (decorView coordinate space) — Kotlin maintains it because the
 /// software cursor View has to be positioned in the same space.
+/// `window_id` is `PRIMARY_WINDOW_ID` for MainActivity events and
+/// the extra window's id (matching `multi_window::ExtraWindowEvent`)
+/// for spawned windows. State machines + hold-drag atomics are
+/// per-window so a gesture in window A can't pollute window B's
+/// drag-lock or cursor-follow state.
 #[derive(Debug)]
 pub(crate) struct CapturedEvent {
+    pub window_id: u64,
     pub action_masked: i32,
     pub source: i32,
     pub button_state: i32,
@@ -200,14 +211,33 @@ pub(crate) struct CapturedEvent {
 
 static EVENT_TX: Mutex<Option<mpsc::UnboundedSender<CapturedEvent>>> = Mutex::new(None);
 
-/// Visible to Kotlin via `Java_com_zdroid_NativeBridge_isHoldDragActive`.
-/// Kotlin reads this on every multi-touch MOVE to decide whether to
-/// update its on-screen cursor sprite — during hold-and-drag we want
-/// the cursor to follow the moving finger so the user can see what
-/// they're selecting; during plain two-finger scroll the cursor stays
-/// pinned (desktop standard). Rust flips this on hold-drag entry and
-/// clears it on teardown.
-static IS_HOLD_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Per-window hold-drag flag visible to Kotlin via
+/// `Java_com_zdroid_NativeBridge_isHoldDragActive`. Kotlin reads on
+/// every multi-touch MOVE to decide whether to update its on-screen
+/// cursor sprite. During hold-and-drag the cursor follows the moving
+/// finger (so the user sees the selection growing); during plain
+/// two-finger scroll the cursor stays pinned. Rust flips per-window
+/// on hold-drag entry and clears on teardown.
+static HOLD_DRAG_ACTIVE_PER_WINDOW: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
+
+fn set_hold_drag_active(window_id: u64, active: bool) {
+    let mut guard = HOLD_DRAG_ACTIVE_PER_WINDOW.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    if active {
+        map.insert(window_id, true);
+    } else {
+        map.remove(&window_id);
+    }
+}
+
+fn is_hold_drag_active(window_id: u64) -> bool {
+    HOLD_DRAG_ACTIVE_PER_WINDOW
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(&window_id).copied())
+        .unwrap_or(false)
+}
 
 /// Construct a fresh sender/receiver pair. Returns the receiver for
 /// the platform to drain; the sender lives in `EVENT_TX` for the JNI
@@ -345,7 +375,14 @@ impl SynthState {
 }
 
 thread_local! {
-    static STATE: RefCell<SynthState> = RefCell::new(SynthState::new());
+    /// Per-window gesture state. A gesture in one window is fully
+    /// isolated from gestures in other windows — drag-lock timers,
+    /// hold-drag cursors, tap pending state are all per-`window_id`.
+    /// Indexed by `CapturedEvent::window_id` (`PRIMARY_WINDOW_ID` for
+    /// MainActivity, the extra window's id for spawned windows).
+    /// `RefCell<HashMap>` because we mutate from a single thread (the
+    /// game thread inside `translate`).
+    static STATES: RefCell<HashMap<u64, SynthState>> = RefCell::new(HashMap::new());
 }
 
 /// Push a captured event from the JVM listener thread onto the channel.
@@ -378,8 +415,10 @@ pub(crate) fn translate(
         px(event.cursor_physical_y / scale),
     );
 
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let window_id = event.window_id;
+    STATES.with(|cell| {
+        let mut states = cell.borrow_mut();
+        let state = states.entry(window_id).or_insert_with(SynthState::new);
         state.last_cursor = cursor;
         let mut out = Vec::new();
 
@@ -452,7 +491,7 @@ pub(crate) fn translate(
                     state.drag_active = false;
                     state.drag_lock_pending_at = None;
                     state.drag_lock_resume_at = None;
-                    IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
+                    set_hold_drag_active(window_id, false);
                 }
                 let now = Instant::now();
                 let qualifies_as_tap_drag = state
@@ -532,7 +571,7 @@ pub(crate) fn translate(
                     state.hold_drag_cursor = Some(cursor);
                     state.right_click_armed = false;
                     state.button_held = Some(MouseButton::Left);
-                    IS_HOLD_DRAG_ACTIVE.store(true, Ordering::Release);
+                    set_hold_drag_active(window_id, true);
                     out.push(PlatformInput::MouseDown(MouseDownEvent {
                         button: MouseButton::Left,
                         position: cursor,
@@ -708,7 +747,7 @@ pub(crate) fn translate(
                 // 4. Plain tap (primary_down anchor fresh, low
                 //    motion): synthesize a click.
                 state.in_multi_touch = false;
-                IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
+                set_hold_drag_active(window_id, false);
                 let now = Instant::now();
                 if let Some(resume_at) = state.drag_lock_resume_at.take() {
                     let resume_elapsed = now.duration_since(resume_at);
@@ -914,7 +953,7 @@ pub(crate) fn translate(
                 state.hold_drag_cursor = None;
                 state.drag_lock_pending_at = None;
                 state.drag_lock_resume_at = None;
-                IS_HOLD_DRAG_ACTIVE.store(false, Ordering::Release);
+                set_hold_drag_active(window_id, false);
             }
             _ => {}
         }
@@ -942,14 +981,17 @@ fn button_from_state(state: i32) -> Option<MouseButton> {
 
 /// Kotlin queries this on every multi-touch MOVE to decide whether to
 /// move the on-screen cursor sprite. `true` while a hold-and-drag is
-/// in flight; `false` during plain scroll or single-finger gestures.
-/// Atomic so we don't need a JNIEnv on the read path.
+/// in flight on the given window; `false` during plain scroll or
+/// single-finger gestures. Per-window so spawned windows have their
+/// own independent flag. Pass `0` (`PRIMARY_WINDOW_ID`) for
+/// MainActivity, the extra window's id for spawned windows.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_zdroid_NativeBridge_isHoldDragActive<'local>(
     _env: jni::JNIEnv<'local>,
     _bridge: JObject<'local>,
+    window_id: jni::sys::jlong,
 ) -> bool {
-    IS_HOLD_DRAG_ACTIVE.load(Ordering::Acquire)
+    is_hold_drag_active(window_id as u64)
 }
 
 /// Probe sink (kept alongside the structured one for debug). Logs a
@@ -972,9 +1014,11 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnCapturedPointerProbe
     log::info!("captured_pointer: {summary}");
 }
 
-/// Structured sink. Marshals Kotlin-side `MotionEvent` fields, builds a
-/// `CapturedEvent`, dispatches onto the channel for the game thread to
-/// drain.
+/// Structured sink for the primary `MainActivity` window. Marshals
+/// Kotlin-side `MotionEvent` fields, builds a `CapturedEvent` tagged
+/// with `PRIMARY_WINDOW_ID`, dispatches onto the channel for the game
+/// thread to drain. Spawned `ExtraWindowActivity` windows use
+/// `nativeOnExtraCapturedPointer` instead.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnCapturedPointer<
     'local,
@@ -1000,6 +1044,55 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnCapturedPointer<
     let rxs = read_floats(&env, &rxs, n);
     let rys = read_floats(&env, &rys, n);
     dispatch(CapturedEvent {
+        window_id: PRIMARY_WINDOW_ID,
+        action_masked,
+        source,
+        button_state,
+        pointer_count: n,
+        xs,
+        ys,
+        rxs,
+        rys,
+        vscroll,
+        hscroll,
+        cursor_physical_x,
+        cursor_physical_y,
+    });
+}
+
+/// Structured sink for spawned `ExtraWindowActivity` windows. Same
+/// payload as `nativeOnCapturedPointer` plus a `windowId` so the
+/// per-window state machine routes the event to the right
+/// `SynthState`. Extra windows call this from their
+/// `onGenericMotionEvent` override; gesture pipelines (tap, scroll,
+/// hold-drag, drag-lock, cursor follow) are identical per window.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraCapturedPointer<
+    'local,
+>(
+    env: jni::JNIEnv<'local>,
+    _bridge: JObject<'local>,
+    window_id: jni::sys::jlong,
+    action_masked: i32,
+    source: i32,
+    button_state: i32,
+    pointer_count: i32,
+    xs: JFloatArray<'local>,
+    ys: JFloatArray<'local>,
+    rxs: JFloatArray<'local>,
+    rys: JFloatArray<'local>,
+    vscroll: f32,
+    hscroll: f32,
+    cursor_physical_x: f32,
+    cursor_physical_y: f32,
+) {
+    let n = pointer_count.max(0) as usize;
+    let xs = read_floats(&env, &xs, n);
+    let ys = read_floats(&env, &ys, n);
+    let rxs = read_floats(&env, &rxs, n);
+    let rys = read_floats(&env, &rys, n);
+    dispatch(CapturedEvent {
+        window_id: window_id as u64,
         action_masked,
         source,
         button_state,

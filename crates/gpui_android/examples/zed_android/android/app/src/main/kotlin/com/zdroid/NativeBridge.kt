@@ -94,14 +94,37 @@ object NativeBridge {
         repeatCount: Int,
     )
 
-    /// True while a hold-and-drag gesture is in flight on the Rust
-    /// synthesis side. Kotlin queries this on every multi-touch MOVE
-    /// event to decide whether the on-screen cursor sprite should
-    /// follow the moving finger. During hold-drag the user expects
-    /// the cursor to follow so they can see where the selection is
-    /// growing; during plain scroll the cursor stays pinned (desktop
-    /// standard).
-    external fun isHoldDragActive(): Boolean
+    /// True while a hold-and-drag gesture is in flight on the given
+    /// window's Rust-side state machine. Kotlin queries on every
+    /// multi-touch MOVE event to decide whether the on-screen cursor
+    /// sprite should follow the moving finger. Per-window because
+    /// each spawned `ExtraWindowActivity` has its own gesture state;
+    /// pass `0` for `MainActivity` (the primary window) and the
+    /// extra window's id for spawned windows.
+    external fun isHoldDragActive(windowId: Long): Boolean
+
+    /// Structured captured-pointer sink for spawned
+    /// `ExtraWindowActivity` windows. Same fields as
+    /// `nativeOnCapturedPointer` plus a `windowId` so the Rust-side
+    /// per-window state machine routes correctly. Extra activities
+    /// call this from their `onGenericMotionEvent` override; gesture
+    /// behavior (tap, scroll, hold-drag, drag-lock, cursor follow)
+    /// is identical per window.
+    external fun nativeOnExtraCapturedPointer(
+        windowId: Long,
+        actionMasked: Int,
+        source: Int,
+        buttonState: Int,
+        pointerCount: Int,
+        xs: FloatArray,
+        ys: FloatArray,
+        rxs: FloatArray,
+        rys: FloatArray,
+        vscroll: Float,
+        hscroll: Float,
+        cursorPhysicalX: Float,
+        cursorPhysicalY: Float,
+    )
 
     /// Probe sink kept for diagnostic use; the structured sink below
     /// is the real path. The probe just logs a stringified summary

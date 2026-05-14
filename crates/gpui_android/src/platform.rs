@@ -551,18 +551,27 @@ impl AndroidPlatform {
             Some(rx) => rx,
             None => return,
         };
-        let window_ptr = self.common.borrow().window.clone();
-        if let Some(window_ptr) = window_ptr {
+        while let Ok(event) = rx.try_recv() {
+            // Route the event to whichever window it came from.
+            // `PRIMARY_WINDOW_ID` (0) → MainActivity's primary window;
+            // anything else → look up in extra_windows. If the window
+            // can't be found we drop the event (window torn down or
+            // not yet attached); dropping is preferable to panicking
+            // on a transient lookup miss.
+            let target = if event.window_id == crate::captured_pointer::PRIMARY_WINDOW_ID {
+                self.common.borrow().window.clone()
+            } else {
+                self.common
+                    .borrow()
+                    .extra_windows
+                    .get(&event.window_id)
+                    .cloned()
+            };
+            let Some(window_ptr) = target else { continue };
             let scale_factor = window_ptr.state.borrow().scale_factor;
-            while let Ok(event) = rx.try_recv() {
-                for input in crate::captured_pointer::translate(event, scale_factor) {
-                    window_ptr.handle_input(input);
-                }
+            for input in crate::captured_pointer::translate(event, scale_factor) {
+                window_ptr.handle_input(input);
             }
-        } else {
-            // No primary window yet — drop pending events so the channel
-            // doesn't grow unbounded during boot.
-            while rx.try_recv().is_ok() {}
         }
         self.common.borrow_mut().captured_pointer_rx = Some(rx);
     }

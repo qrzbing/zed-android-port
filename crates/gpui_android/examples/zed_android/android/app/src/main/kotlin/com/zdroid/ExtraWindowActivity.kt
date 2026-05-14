@@ -3,10 +3,13 @@ package com.zdroid
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -49,6 +52,21 @@ import androidx.core.view.WindowInsetsControllerCompat
 class ExtraWindowActivity : AppCompatActivity() {
     private var extraWindowId: Long = -1L
     private lateinit var surfaceView: SurfaceView
+    /// Software cursor overlay + capture-mode state. Mirrors
+    /// MainActivity's pipeline so the trackpad behaves identically
+    /// inside spawned windows: requestPointerCapture intercepts raw
+    /// touchpad events, onGenericMotionEvent routes them to the
+    /// per-window Rust state machine via
+    /// `NativeBridge.nativeOnExtraCapturedPointer(extraWindowId, …)`,
+    /// and the overlay paints the bitmap cursor on top of the
+    /// SurfaceView. `cursorX`/`cursorY` are physical pixels in
+    /// decorView coordinate space; Kotlin owns the visible cursor
+    /// position so the on-screen sprite and the gpui-side cursor
+    /// stay synchronized.
+    private var cursorView: CursorOverlayView? = null
+    private var cursorX: Float = 0f
+    private var cursorY: Float = 0f
+    private var cursorHiddenByKeyboard: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +142,12 @@ class ExtraWindowActivity : AppCompatActivity() {
             // grant focus on its own.
             isFocusable = true
             isFocusableInTouchMode = true
+            // Captured-pointer events arrive via the Activity-level
+            // `onGenericMotionEvent` override below — same pattern as
+            // MainActivity. We don't install an
+            // `OnCapturedPointerListener` here because some Samsung
+            // builds bypass that listener path when DeX windowing
+            // is active.
         }
         setContentView(surfaceView)
     }
@@ -134,6 +158,146 @@ class ExtraWindowActivity : AppCompatActivity() {
             NativeBridge.nativeOnExtraActivityDestroyed(extraWindowId)
         }
         super.onDestroy()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Mirror MainActivity: request capture when this window gains
+        // focus and a trackpad/mouse is connected, release when focus
+        // is lost. Without this, spawned windows fall back to
+        // Samsung's gesture filter which mangles trackpad gestures
+        // into single-finger fake-mouse events.
+        if (hasFocus) {
+            if (hasIndirectPointer()) {
+                Log.i(TAG, "requestPointerCapture() windowId=$extraWindowId")
+                window.decorView.requestPointerCapture()
+            }
+        } else {
+            window.decorView.releasePointerCapture()
+        }
+    }
+
+    private fun hasIndirectPointer(): Boolean {
+        val ids = InputDevice.getDeviceIds()
+        for (id in ids) {
+            val dev = InputDevice.getDevice(id) ?: continue
+            val sources = dev.sources
+            if (sources and InputDevice.SOURCE_TOUCHPAD != 0) return true
+            if (sources and InputDevice.SOURCE_MOUSE != 0) return true
+            if (sources and InputDevice.SOURCE_MOUSE_RELATIVE != 0) return true
+        }
+        return false
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        Log.i(TAG, "onPointerCaptureChanged windowId=$extraWindowId hasCapture=$hasCapture")
+        if (hasCapture) {
+            ensureCursorView()
+            val w = window.decorView.width.toFloat()
+            val h = window.decorView.height.toFloat()
+            cursorX = (w / 2f).coerceAtLeast(0f)
+            cursorY = (h / 2f).coerceAtLeast(0f)
+            cursorView?.move(cursorX, cursorY)
+            cursorView?.visibility = View.VISIBLE
+            cursorView?.bringToFront()
+        } else {
+            cursorView?.visibility = View.GONE
+        }
+    }
+
+    private fun ensureCursorView() {
+        if (cursorView != null) return
+        val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
+        val view = CursorOverlayView(this, sizePx)
+        val lp = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        val root = window.decorView as ViewGroup
+        root.addView(view, lp)
+        view.bringToFront()
+        cursorView = view
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        val source = event.source
+        val isMouseRel = source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
+        val isTouchpad = source and InputDevice.SOURCE_TOUCHPAD != 0
+        val isMouse = source and InputDevice.SOURCE_MOUSE != 0
+        if ((isMouseRel || isTouchpad || isMouse)
+            && window.decorView.hasPointerCapture()) {
+            handleCapturedEvent(event)
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    private fun handleCapturedEvent(event: MotionEvent) {
+        if (cursorHiddenByKeyboard) {
+            cursorView?.visibility = View.VISIBLE
+            cursorHiddenByKeyboard = false
+        }
+        if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+            val isHoldDragMultiTouch = event.pointerCount >= 2 &&
+                NativeBridge.isHoldDragActive(extraWindowId)
+            if (event.pointerCount == 1 || isHoldDragMultiTouch) {
+                var sumRx = 0f
+                var sumRy = 0f
+                val limit = event.pointerCount
+                for (i in 0 until limit) {
+                    sumRx += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
+                    sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
+                }
+                val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
+                val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
+                cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
+                cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
+                cursorView?.move(cursorX, cursorY)
+            }
+        }
+        forwardCapturedPointer(event)
+    }
+
+    private fun forwardCapturedPointer(event: MotionEvent) {
+        val n = event.pointerCount
+        val xs = FloatArray(n)
+        val ys = FloatArray(n)
+        val rxs = FloatArray(n)
+        val rys = FloatArray(n)
+        for (i in 0 until n) {
+            xs[i] = event.getX(i)
+            ys[i] = event.getY(i)
+            rxs[i] = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
+            rys[i] = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
+        }
+        val vs = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val hs = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        NativeBridge.nativeOnExtraCapturedPointer(
+            extraWindowId,
+            event.actionMasked,
+            event.source,
+            event.buttonState,
+            n,
+            xs,
+            ys,
+            rxs,
+            rys,
+            vs,
+            hs,
+            cursorX,
+            cursorY,
+        )
+    }
+
+    /// Called from Rust via JNI (`cursor.rs::set_pointer_icon_inner`)
+    /// to update the cursor sprite shape inside this window. Same
+    /// shape as MainActivity's setCapturedCursorStyle.
+    @Suppress("unused")
+    fun setCapturedCursorStyle(style: Int) {
+        runOnUiThread {
+            cursorView?.setStyle(style)
+        }
     }
 
     /// Forward hardware key events to the gpui-side window. AppCompatActivity
@@ -153,6 +317,16 @@ class ExtraWindowActivity : AppCompatActivity() {
     /// mapping for that action, which is the same policy as the primary
     /// window's translate_key_event uses.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Desktop-classic auto-hide: hide the cursor on first
+        // keystroke. Reappears on any pointer motion via
+        // `handleCapturedEvent`. Mirrors MainActivity behavior.
+        if (event.action == KeyEvent.ACTION_DOWN
+            && !cursorHiddenByKeyboard
+            && cursorView?.visibility == View.VISIBLE
+        ) {
+            cursorView?.visibility = View.INVISIBLE
+            cursorHiddenByKeyboard = true
+        }
         if (extraWindowId >= 0L) {
             NativeBridge.nativeOnExtraKeyEvent(
                 extraWindowId,
@@ -224,6 +398,9 @@ class ExtraWindowActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "zed_android_extra"
         const val EXTRA_WINDOW_ID = "com.zdroid.window_id"
+        /// Cursor size matches MainActivity's so the sprite is
+        /// identical across all windows the user can spawn.
+        private const val CURSOR_SIZE_DP = 24
     }
 }
 

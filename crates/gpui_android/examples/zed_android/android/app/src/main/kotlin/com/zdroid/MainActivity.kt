@@ -109,226 +109,6 @@ class MainActivity : GameActivity() {
     /// we're currently in the "hidden by keyboard" state so we don't
     /// thrash visibility on every key.
     private var cursorHiddenByKeyboard: Boolean = false
-    private var batchingObserved: Boolean = false
-
-    /// Full-screen transparent overlay that paints a classic mouse
-    /// cursor arrow in `onDraw` at the tracked (x, y). Hot-spot is the
-    /// arrow's tip at the (cursorX, cursorY) origin — clicks land
-    /// exactly where the visible arrow's tip is.
-    ///
-    /// Using a small View with `translationX/Y` hits an Android
-    /// compositor bug where drawing is clipped to the View's original
-    /// layout bounds — cursor visible only inside its spawn box. A
-    /// full-screen View has bounds equal to the parent so any (x, y)
-    /// inside the screen is paintable.
-    private class CursorOverlayView(
-        context: Context,
-        sizePx: Int,
-    ) : View(context) {
-        var cursorX: Float = 0f
-        var cursorY: Float = 0f
-        /// Current cursor style. Integer IDs match Android's
-        /// `PointerIcon.TYPE_*` constants so the Rust side can pass
-        /// the same value it already computes for `setPointerIcon`
-        /// (see `crates/gpui_android/src/cursor.rs`). Unrecognized IDs
-        /// fall back to the arrow bitmap. Updated via `setStyle` from
-        /// the UI thread (Rust calls through `setCapturedCursorStyle`
-        /// in the outer Activity which dispatches via `runOnUiThread`).
-        var cursorStyle: Int = MainActivity.STYLE_ARROW
-        private val sizeInt = sizePx
-        /// Bitmap-backed cursors from the apple_cursor pack (GPL-3.0,
-        /// see res/raw/cursor_license.txt). Loaded once at View
-        /// construction, scaled to `sizePx`. Hot-spots match the
-        /// X11 cursor naming conventions used by apple_cursor.
-        private val arrowBitmap = loadCursor(context, R.drawable.cursor_arrow, sizePx)
-        private val iBeamBitmap = loadCursor(context, R.drawable.cursor_ibeam, sizePx)
-        private val handBitmap = loadCursor(context, R.drawable.cursor_hand, sizePx)
-        private val grabBitmap = loadCursor(context, R.drawable.cursor_grab, sizePx)
-        private val resizeHBitmap = loadCursor(context, R.drawable.cursor_resize_h, sizePx)
-        private val resizeVBitmap = loadCursor(context, R.drawable.cursor_resize_v, sizePx)
-        /// Per-style hot-spot offsets in pixels relative to the
-        /// bitmap's top-left corner. The arrow's hot-spot is its tip
-        /// (top-left), the IBeam's is the bar midpoint, etc. Each
-        /// entry is `(hot_x, hot_y)` such that drawing the bitmap at
-        /// `(cursorX - hot_x, cursorY - hot_y)` puts the hot-spot
-        /// exactly at the gpui-side cursor position.
-        private val hotSpots: Map<Int, Pair<Int, Int>> = mapOf(
-            MainActivity.STYLE_ARROW to (sizeInt * 6 / 100 to sizeInt * 6 / 100),
-            MainActivity.STYLE_IBEAM to (sizeInt / 2 to sizeInt / 2),
-            MainActivity.STYLE_VERTICAL_TEXT to (sizeInt / 2 to sizeInt / 2),
-            MainActivity.STYLE_HAND to (sizeInt * 35 / 100 to sizeInt * 6 / 100),
-            MainActivity.STYLE_GRAB to (sizeInt / 2 to sizeInt / 2),
-            MainActivity.STYLE_GRABBING to (sizeInt / 2 to sizeInt / 2),
-            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW to (sizeInt / 2 to sizeInt / 2),
-            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW to (sizeInt / 2 to sizeInt / 2),
-        )
-        /// Per-style path fallback (kept for any style without a bitmap).
-        private val s = sizePx.toFloat()
-        private val arrowPath = Path().apply {
-            moveTo(0f, 0f)
-            lineTo(0f, s * 0.78f)
-            lineTo(s * 0.22f, s * 0.60f)
-            lineTo(s * 0.38f, s * 0.95f)
-            lineTo(s * 0.52f, s * 0.89f)
-            lineTo(s * 0.36f, s * 0.55f)
-            lineTo(s * 0.62f, s * 0.55f)
-            close()
-        }
-        /// I-beam: vertical bar with serifs top + bottom, centered on
-        /// the hot-spot. Hot-spot is the midpoint of the bar so a
-        /// click registers at the text caret position the user sees.
-        private val iBeamPath = Path().apply {
-            val cx = 0f
-            val halfH = s * 0.45f
-            val halfW = s * 0.18f
-            val bar = s * 0.05f
-            moveTo(cx - bar, -halfH)
-            lineTo(cx + bar, -halfH)
-            lineTo(cx + bar, -halfH + bar * 2)
-            lineTo(cx + halfW * 0.4f, -halfH + bar * 2)
-            lineTo(cx + halfW * 0.4f, -halfH + bar * 3)
-            lineTo(cx + bar, -halfH + bar * 3)
-            lineTo(cx + bar, halfH - bar * 3)
-            lineTo(cx + halfW * 0.4f, halfH - bar * 3)
-            lineTo(cx + halfW * 0.4f, halfH - bar * 2)
-            lineTo(cx + bar, halfH - bar * 2)
-            lineTo(cx + bar, halfH)
-            lineTo(cx - bar, halfH)
-            lineTo(cx - bar, halfH - bar * 2)
-            lineTo(cx - halfW * 0.4f, halfH - bar * 2)
-            lineTo(cx - halfW * 0.4f, halfH - bar * 3)
-            lineTo(cx - bar, halfH - bar * 3)
-            lineTo(cx - bar, -halfH + bar * 3)
-            lineTo(cx - halfW * 0.4f, -halfH + bar * 3)
-            lineTo(cx - halfW * 0.4f, -halfH + bar * 2)
-            lineTo(cx - bar, -halfH + bar * 2)
-            close()
-        }
-        /// Horizontal double-arrow: ← →. Used for ew-resize / column
-        /// resize. Hot-spot at the center, where the click registers
-        /// at the divider being dragged.
-        private val resizeLeftRightPath = Path().apply {
-            val hx = s * 0.50f
-            val tail = s * 0.07f
-            val head = s * 0.18f
-            // Left arrow head
-            moveTo(-hx, 0f)
-            lineTo(-hx + head, -head)
-            lineTo(-hx + head, -tail)
-            // Tail going right
-            lineTo(hx - head, -tail)
-            lineTo(hx - head, -head)
-            // Right arrow head
-            lineTo(hx, 0f)
-            lineTo(hx - head, head)
-            lineTo(hx - head, tail)
-            // Tail going left
-            lineTo(-hx + head, tail)
-            lineTo(-hx + head, head)
-            close()
-        }
-        /// Vertical double-arrow: ↑ ↓. Used for ns-resize / row resize.
-        private val resizeUpDownPath = Path().apply {
-            val hy = s * 0.50f
-            val tail = s * 0.07f
-            val head = s * 0.18f
-            moveTo(0f, -hy)
-            lineTo(-head, -hy + head)
-            lineTo(-tail, -hy + head)
-            lineTo(-tail, hy - head)
-            lineTo(-head, hy - head)
-            lineTo(0f, hy)
-            lineTo(head, hy - head)
-            lineTo(tail, hy - head)
-            lineTo(tail, -hy + head)
-            lineTo(head, -hy + head)
-            close()
-        }
-        private val fillPaint = Paint().apply {
-            color = Color.WHITE
-            style = Paint.Style.FILL
-            isAntiAlias = true
-        }
-        private val strokePaint = Paint().apply {
-            color = Color.BLACK
-            style = Paint.Style.STROKE
-            strokeWidth = 1.5f * context.resources.displayMetrics.density
-            strokeJoin = Paint.Join.ROUND
-            isAntiAlias = true
-        }
-        private val bitmapPaint = Paint().apply {
-            isAntiAlias = true
-            isFilterBitmap = true
-        }
-        init {
-            // We paint manually; the View itself has no background so
-            // it doesn't draw anything full-screen.
-            setWillNotDraw(false)
-            isClickable = false
-            isFocusable = false
-            isFocusableInTouchMode = false
-            isHapticFeedbackEnabled = false
-            isLongClickable = false
-        }
-        fun move(x: Float, y: Float) {
-            cursorX = x
-            cursorY = y
-            invalidate()
-        }
-        fun setStyle(style: Int) {
-            if (cursorStyle != style) {
-                cursorStyle = style
-                invalidate()
-            }
-        }
-        private fun bitmapForCurrentStyle(): Bitmap? = when (cursorStyle) {
-            MainActivity.STYLE_IBEAM, MainActivity.STYLE_VERTICAL_TEXT -> iBeamBitmap
-            MainActivity.STYLE_HAND -> handBitmap
-            MainActivity.STYLE_GRAB, MainActivity.STYLE_GRABBING -> grabBitmap
-            MainActivity.STYLE_HORIZONTAL_DOUBLE_ARROW -> resizeHBitmap
-            MainActivity.STYLE_VERTICAL_DOUBLE_ARROW -> resizeVBitmap
-            else -> arrowBitmap
-        }
-        override fun onDraw(canvas: Canvas) {
-            val bmp = bitmapForCurrentStyle()
-            if (bmp != null) {
-                val (hotX, hotY) = hotSpots[cursorStyle] ?: (0 to 0)
-                canvas.drawBitmap(
-                    bmp,
-                    cursorX - hotX.toFloat(),
-                    cursorY - hotY.toFloat(),
-                    bitmapPaint,
-                )
-                return
-            }
-            // Bitmap missing for this style; fall back to the
-            // path-based rendering. Hot-spot at origin.
-            canvas.save()
-            canvas.translate(cursorX, cursorY)
-            canvas.drawPath(arrowPath, fillPaint)
-            canvas.drawPath(arrowPath, strokePaint)
-            canvas.restore()
-        }
-
-        companion object {
-            /// Decode a cursor PNG resource into a `Bitmap` scaled to
-            /// the target side length. The source bitmaps are ~256px
-            /// from apple_cursor's release zip; we downscale at load
-            /// time so `onDraw` is a single `drawBitmap` per frame
-            /// with no per-frame scaling.
-            private fun loadCursor(
-                context: Context,
-                @androidx.annotation.DrawableRes resId: Int,
-                sizePx: Int,
-            ): Bitmap {
-                val raw = BitmapFactory.decodeResource(context.resources, resId)
-                if (raw.width == sizePx && raw.height == sizePx) return raw
-                val scaled = Bitmap.createScaledBitmap(raw, sizePx, sizePx, true)
-                if (scaled !== raw) raw.recycle()
-                return scaled
-            }
-        }
-    }
 
     /// Called from Rust via JNI (`set_pointer_icon_inner` in
     /// `crates/gpui_android/src/cursor.rs`). Dispatches to the UI
@@ -430,7 +210,7 @@ class MainActivity : GameActivity() {
             // For plain two-finger scroll (multi-touch but NOT in
             // hold-drag), cursor stays pinned per desktop standard.
             val isHoldDragMultiTouch = event.pointerCount >= 2 &&
-                NativeBridge.isHoldDragActive()
+                NativeBridge.isHoldDragActive(PRIMARY_WINDOW_ID)
             if (event.pointerCount == 1 || isHoldDragMultiTouch) {
                 var sumRx = 0f
                 var sumRy = 0f
@@ -449,38 +229,9 @@ class MainActivity : GameActivity() {
         forwardCapturedPointer(event)
     }
 
-    /**
-     * Sum all historical samples + the current value for a relative
-     * axis on the given pointer. Per Android's documented contract for
-     * `AXIS_RELATIVE_X` / `AXIS_RELATIVE_Y`, relative axes are NOT
-     * accumulated across batched samples in the same event — the
-     * caller must iterate `getHistoricalAxisValue` for every
-     * historical sample and add `getAxisValue` for the current sample.
-     *
-     * Without this, fast finger motion silently loses ~80–90% of its
-     * travel because the OS batches ~6–10 samples into a single
-     * MotionEvent and `getAxisValue` returns only the most recent one.
-     * The visible symptom is selection / cursor lagging far behind
-     * where the finger actually is.
-     */
-    private fun sumRelativeAxis(event: MotionEvent, axis: Int, pointerIndex: Int): Float {
-        var sum = 0f
-        val historySize = event.historySize
-        if (historySize > 0 && !batchingObserved) {
-            Log.i(
-                TAG_CAPTURE,
-                "batching CONFIRMED: historySize=$historySize pointers=${event.pointerCount} " +
-                "currentRx=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, pointerIndex)} " +
-                "(fix is load-bearing — previously losing $historySize samples per event)"
-            )
-            batchingObserved = true
-        }
-        for (h in 0 until historySize) {
-            sum += event.getHistoricalAxisValue(axis, pointerIndex, h)
-        }
-        sum += event.getAxisValue(axis, pointerIndex)
-        return sum
-    }
+    // `sumRelativeAxis` moved to `CursorOverlayView.kt` as a
+    // package-level helper so `ExtraWindowActivity` can use the same
+    // implementation. The batching-confirmation probe lives there too.
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Desktop-classic auto-hide: hide the cursor on first
@@ -786,13 +537,12 @@ class MainActivity : GameActivity() {
 
         // PointerIcon.TYPE_* constants — IDs Rust passes from
         // `cursor.rs` so both code paths use the same enum values.
-        const val STYLE_ARROW = 1000
-        const val STYLE_IBEAM = 1008
-        const val STYLE_VERTICAL_TEXT = 1009
-        const val STYLE_HAND = 1002
-        const val STYLE_HORIZONTAL_DOUBLE_ARROW = 1014
-        const val STYLE_VERTICAL_DOUBLE_ARROW = 1015
-        const val STYLE_GRAB = 1020
-        const val STYLE_GRABBING = 1021
+        /// Matches `captured_pointer::PRIMARY_WINDOW_ID` on the Rust
+        /// side. MainActivity always passes this when querying the
+        /// per-window hold-drag flag; spawned `ExtraWindowActivity`
+        /// instances pass their own `extraWindowId`. The cursor
+        /// `STYLE_*` constants live on `CursorOverlayView` so both
+        /// Activities share one source of truth.
+        const val PRIMARY_WINDOW_ID: Long = 0
     }
 }
