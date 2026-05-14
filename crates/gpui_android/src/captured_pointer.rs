@@ -58,8 +58,9 @@
 //!   text. Discriminates from scroll because scroll lands both fingers
 //!   near-simultaneously (hold-elapsed < threshold).
 //! - Move (both fingers landed near-simultaneously): scroll. The
-//!   centroid delta drives `ScrollDelta::Pixels`, sign-flipped for
-//!   natural scrolling.
+//!   centroid delta drives `ScrollDelta::Pixels`. Sign matches
+//!   `events/trackpad.rs` so behavior is consistent with the
+//!   non-captured trackpad path.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -331,16 +332,43 @@ pub(crate) fn translate(
 
         match event.action_masked {
             JAVA_ACTION_DOWN => {
-                // First finger landed. Two roles:
+                // First finger landed. Three roles:
                 //
-                // 1. Tap-tap-drag detection: if this DOWN follows a
+                // 1. Defensive cleanup: if a previous gesture left
+                //    `drag_active` or `button_held` set (e.g., the OS
+                //    delivered a malformed up sequence after a
+                //    multi-touch transition), emit a synthesized
+                //    MouseUp at last_cursor and clear the state.
+                //    Without this, every subsequent gesture sees
+                //    stale drag-locked state and falls to the SKIPPED
+                //    branch in POINTER_DOWN.
+                // 2. Tap-tap-drag detection: if this DOWN follows a
                 //    recent tap (within TAP_DRAG_WINDOW) near the same
                 //    position, this is the second touch of a
                 //    tap-tap-drag gesture. Arm tap_drag_pending; the
                 //    first MOVE past slop will commit to drag mode.
-                // 2. Single-tap detection: latch the anchor so the
+                // 3. Single-tap detection: latch the anchor so the
                 //    matching UP can synthesize a click if motion
                 //    stays low.
+                if state.drag_active || state.button_held.is_some() {
+                    log::info!(
+                        "captured_pointer: stale drag state cleared on DOWN \
+                         (drag_active={} button_held={:?} hold_drag_cursor={})",
+                        state.drag_active,
+                        state.button_held,
+                        state.hold_drag_cursor.is_some(),
+                    );
+                    let release_pos = state.hold_drag_cursor.take().unwrap_or(state.last_cursor);
+                    if let Some(button) = state.button_held.take() {
+                        out.push(PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position: release_pos,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
+                    state.drag_active = false;
+                }
                 let now = Instant::now();
                 let qualifies_as_tap_drag = state
                     .last_tap_at
@@ -409,9 +437,12 @@ pub(crate) fn translate(
                     }));
                 } else {
                     log::info!(
-                        "hold_drag: SKIPPED hold_ms={} stationary_ms={} (scroll path)",
+                        "hold_drag: SKIPPED hold_ms={} stationary_ms={} \
+                         drag_active={} button_held={:?} (scroll path)",
                         hold_elapsed.as_millis(),
                         stationary_for.as_millis().min(99999),
+                        state.drag_active,
+                        state.button_held,
                     );
                     state.right_click_armed = true;
                 }
@@ -446,9 +477,10 @@ pub(crate) fn translate(
                     } else {
                         // Plain two-finger scroll (no hold-drag in
                         // flight). Centroid delta drives
-                        // ScrollDelta::Pixels; sign-flipped for
-                        // natural scrolling (finger down = content
-                        // moves down).
+                        // ScrollDelta::Pixels. Sign matches
+                        // `events/trackpad.rs` (the non-captured path)
+                        // so behavior is consistent whether or not
+                        // capture is engaged.
                         let n = event.pointer_count.max(1) as f32;
                         let sum_rx: f32 = event.rxs.iter().sum();
                         let sum_ry: f32 = event.rys.iter().sum();
@@ -464,7 +496,7 @@ pub(crate) fn translate(
                             state.last_motion_at = Some(Instant::now());
                             out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
                                 position: cursor,
-                                delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
+                                delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
                                 modifiers,
                                 touch_phase: TouchPhase::Moved,
                             }));
