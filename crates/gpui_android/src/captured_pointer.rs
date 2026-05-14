@@ -127,6 +127,16 @@ const TAP_DRAG_WINDOW: Duration = Duration::from_millis(300);
 /// fast scroll gestures.
 const HOLD_DRAG_THRESHOLD: Duration = Duration::from_millis(100);
 
+/// Stationary requirement for the hold-finger-drag-finger gesture.
+/// Finger 1 must have been still (no `AXIS_RELATIVE_*` motion) for at
+/// least this long before finger 2 lands; otherwise the user is
+/// actively driving the cursor with finger 1, and the second finger
+/// landing means "scroll" not "start selection." Without this guard,
+/// any time the user has finger 1 on the pad (even just resting it
+/// while reading) and places finger 2 to scroll, hold-drag erroneously
+/// engages and starts selecting text on the scroll gesture.
+const HOLD_DRAG_STATIONARY: Duration = Duration::from_millis(80);
+
 /// Tap-tap-drag position slop: the second touch must land within
 /// this many logical pixels of the first tap's position to count as
 /// part of the same gesture. Matches the click-position slop used by
@@ -195,6 +205,11 @@ struct SynthState {
     /// measure how long the first finger has been on the pad before
     /// the second one landed. Cleared only on UP / CANCEL.
     first_finger_at: Option<Instant>,
+    /// When the most recent non-zero motion delta arrived (any
+    /// pointer count, any finger). Used to gate hold-and-drag entry:
+    /// finger 2 only triggers the gesture if finger 1 has been still
+    /// for `HOLD_DRAG_STATIONARY`. Cleared on DOWN / UP / CANCEL.
+    last_motion_at: Option<Instant>,
     /// Accumulated cursor motion since the last tap anchor was set.
     /// Compared to `TAP_MOTION_PX` to decide whether a Down→Up
     /// sequence is a tap or a drag.
@@ -261,6 +276,7 @@ impl SynthState {
             button_held: None,
             primary_down: None,
             first_finger_at: None,
+            last_motion_at: None,
             motion_accum: 0.0,
             in_multi_touch: false,
             right_click_armed: false,
@@ -339,63 +355,70 @@ pub(crate) fn translate(
                     cursor,
                 });
                 state.first_finger_at = Some(now);
+                state.last_motion_at = None;
                 state.motion_accum = 0.0;
                 state.in_multi_touch = false;
                 state.right_click_armed = false;
             }
             JAVA_ACTION_POINTER_DOWN => {
-                // Second finger landed. Two outcomes:
-                //
-                // 1. Finger 1 has been on the pad for >=
-                //    HOLD_DRAG_THRESHOLD: this is a deliberate
-                //    "hold finger 1, drag with finger 2" gesture.
-                //    Emit MouseDown(Left) at finger 1's anchor and
-                //    enter drag mode. Subsequent two-finger motion
-                //    grows the drag (MouseMove with Left held) and
-                //    EITHER pointer lifting releases the button.
-                // 2. Both fingers landed close in time: this is
-                //    scroll / two-finger-tap territory. Arm
-                //    right-click; motion will resolve to scroll.
+                // Second finger landed. Hold-and-drag gates on two
+                // conditions: finger 1 has been on the pad long enough
+                // (HOLD_DRAG_THRESHOLD) AND has been stationary long
+                // enough (HOLD_DRAG_STATIONARY). Both must hold —
+                // otherwise the user is either bringing both fingers
+                // down quickly (scroll setup) OR has finger 1 actively
+                // moving the cursor (scroll setup, not selection
+                // start). The anchor for the synthesized MouseDown is
+                // the CURRENT cursor position so the selection starts
+                // where the user moved the cursor to, not where finger
+                // 1 originally landed.
+                let now = Instant::now();
                 let hold_elapsed = state
                     .first_finger_at
-                    .map(|t| t.elapsed())
+                    .map(|t| now.duration_since(t))
                     .unwrap_or_default();
-                let anchor = state
-                    .primary_down
-                    .as_ref()
-                    .map(|a| a.cursor)
-                    .unwrap_or(cursor);
+                let stationary_for = state
+                    .last_motion_at
+                    .map(|t| now.duration_since(t))
+                    .unwrap_or(Duration::MAX);
                 state.primary_down = None;
                 state.in_multi_touch = true;
                 state.tap_drag_pending = false;
                 if hold_elapsed >= HOLD_DRAG_THRESHOLD
+                    && stationary_for >= HOLD_DRAG_STATIONARY
                     && !state.drag_active
                     && state.button_held.is_none()
                 {
                     log::info!(
-                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) hold_ms={}",
-                        f32::from(anchor.x),
-                        f32::from(anchor.y),
+                        "hold_drag: ENGAGED anchor=({:.0},{:.0}) hold_ms={} stationary_ms={}",
+                        f32::from(cursor.x),
+                        f32::from(cursor.y),
                         hold_elapsed.as_millis(),
+                        stationary_for.as_millis().min(99999),
                     );
                     state.drag_active = true;
                     state.button_held = Some(MouseButton::Left);
-                    state.hold_drag_cursor = Some(anchor);
+                    state.hold_drag_cursor = Some(cursor);
                     state.right_click_armed = false;
                     out.push(PlatformInput::MouseDown(MouseDownEvent {
                         button: MouseButton::Left,
-                        position: anchor,
+                        position: cursor,
                         modifiers,
                         click_count: 1,
                         first_mouse: false,
                     }));
                 } else {
+                    log::info!(
+                        "hold_drag: SKIPPED hold_ms={} stationary_ms={} (scroll path)",
+                        hold_elapsed.as_millis(),
+                        stationary_for.as_millis().min(99999),
+                    );
                     state.right_click_armed = true;
                 }
             }
             JAVA_ACTION_MOVE => {
                 if event.pointer_count >= 2 || state.in_multi_touch {
-                    if let Some(drag_cursor) = state.hold_drag_cursor.as_mut() {
+                    if let Some(mut drag_cursor) = state.hold_drag_cursor {
                         // Hold-and-drag in progress: route motion as
                         // drag-MouseMove, NOT scroll. Sum of relative
                         // deltas approximates finger 2's motion since
@@ -411,9 +434,11 @@ pub(crate) fn translate(
                         let dy = sum_ry / scale;
                         drag_cursor.x += px(dx);
                         drag_cursor.y += px(dy);
+                        state.hold_drag_cursor = Some(drag_cursor);
                         if dx != 0.0 || dy != 0.0 {
+                            state.last_motion_at = Some(Instant::now());
                             out.push(PlatformInput::MouseMove(MouseMoveEvent {
-                                position: *drag_cursor,
+                                position: drag_cursor,
                                 pressed_button: state.button_held,
                                 modifiers,
                             }));
@@ -436,6 +461,7 @@ pub(crate) fn translate(
                             state.right_click_armed = false;
                         }
                         if dx != 0.0 || dy != 0.0 {
+                            state.last_motion_at = Some(Instant::now());
                             out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
                                 position: cursor,
                                 delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
@@ -452,7 +478,11 @@ pub(crate) fn translate(
                     // past the tap threshold.
                     let dx = *event.rxs.first().unwrap_or(&0.0);
                     let dy = *event.rys.first().unwrap_or(&0.0);
-                    state.motion_accum += (dx * dx + dy * dy).sqrt();
+                    let mag = (dx * dx + dy * dy).sqrt();
+                    state.motion_accum += mag;
+                    if mag > 0.0 {
+                        state.last_motion_at = Some(Instant::now());
+                    }
                     if state.motion_accum > TAP_MOTION_PX {
                         state.primary_down = None;
                     }
@@ -548,6 +578,7 @@ pub(crate) fn translate(
                 state.motion_accum = 0.0;
                 state.right_click_armed = false;
                 state.first_finger_at = None;
+                state.last_motion_at = None;
                 state.tap_drag_pending = false;
             }
             JAVA_ACTION_POINTER_UP => {
@@ -629,6 +660,7 @@ pub(crate) fn translate(
                 }
                 state.primary_down = None;
                 state.first_finger_at = None;
+                state.last_motion_at = None;
                 state.motion_accum = 0.0;
                 state.in_multi_touch = false;
                 state.right_click_armed = false;

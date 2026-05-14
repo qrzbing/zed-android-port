@@ -107,6 +107,7 @@ class MainActivity : GameActivity() {
     /// we're currently in the "hidden by keyboard" state so we don't
     /// thrash visibility on every key.
     private var cursorHiddenByKeyboard: Boolean = false
+    private var batchingObserved: Boolean = false
 
     /// Full-screen transparent overlay that paints a classic mouse
     /// cursor arrow in `onDraw` at the tracked (x, y). Hot-spot is the
@@ -260,8 +261,8 @@ class MainActivity : GameActivity() {
             // motion is exclusively scroll (or right-click on a quick
             // tap-tap) per the desktop trackpad standard — the cursor
             // stays put during scroll, matching every major OS.
-            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, 0)
-            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, 0)
+            val rx = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, 0)
+            val ry = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, 0)
             val maxX = window.decorView.width.toFloat().coerceAtLeast(1f)
             val maxY = window.decorView.height.toFloat().coerceAtLeast(1f)
             cursorX = (cursorX + rx).coerceIn(0f, maxX - 1f)
@@ -269,6 +270,39 @@ class MainActivity : GameActivity() {
             cursorView?.move(cursorX, cursorY)
         }
         forwardCapturedPointer(event)
+    }
+
+    /**
+     * Sum all historical samples + the current value for a relative
+     * axis on the given pointer. Per Android's documented contract for
+     * `AXIS_RELATIVE_X` / `AXIS_RELATIVE_Y`, relative axes are NOT
+     * accumulated across batched samples in the same event — the
+     * caller must iterate `getHistoricalAxisValue` for every
+     * historical sample and add `getAxisValue` for the current sample.
+     *
+     * Without this, fast finger motion silently loses ~80–90% of its
+     * travel because the OS batches ~6–10 samples into a single
+     * MotionEvent and `getAxisValue` returns only the most recent one.
+     * The visible symptom is selection / cursor lagging far behind
+     * where the finger actually is.
+     */
+    private fun sumRelativeAxis(event: MotionEvent, axis: Int, pointerIndex: Int): Float {
+        var sum = 0f
+        val historySize = event.historySize
+        if (historySize > 0 && !batchingObserved) {
+            Log.i(
+                TAG_CAPTURE,
+                "batching CONFIRMED: historySize=$historySize pointers=${event.pointerCount} " +
+                "currentRx=${event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, pointerIndex)} " +
+                "(fix is load-bearing — previously losing $historySize samples per event)"
+            )
+            batchingObserved = true
+        }
+        for (h in 0 until historySize) {
+            sum += event.getHistoricalAxisValue(axis, pointerIndex, h)
+        }
+        sum += event.getAxisValue(axis, pointerIndex)
+        return sum
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -321,8 +355,8 @@ class MainActivity : GameActivity() {
         for (i in 0 until n) {
             xs[i] = event.getX(i)
             ys[i] = event.getY(i)
-            rxs[i] = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
-            rys[i] = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+            rxs[i] = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
+            rys[i] = sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
         }
         val vs = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
         val hs = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
