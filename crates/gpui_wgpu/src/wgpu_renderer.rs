@@ -79,6 +79,12 @@ pub struct WgpuSurfaceConfig {
     /// Mobile platforms may prefer `Mailbox` (triple-buffering) to avoid
     /// blocking in `get_current_texture()` during lifecycle transitions.
     pub preferred_present_mode: Option<wgpu::PresentMode>,
+    /// `wgpu::SurfaceConfiguration::desired_maximum_frame_latency`. When
+    /// `Some(n)`, the renderer asks the swap chain for at least `n`
+    /// images in flight. `None` keeps the prior default of `2`. Mobile
+    /// platforms typically benefit from `3` (triple-buffering) for
+    /// smoother pacing under thermal load and irregular paint cadence.
+    pub desired_maximum_frame_latency: Option<u32>,
 }
 
 struct WgpuPipelines {
@@ -339,13 +345,21 @@ impl WgpuRenderer {
                 .preferred_present_mode
                 .filter(|mode| surface_caps.present_modes.contains(mode))
                 .unwrap_or(wgpu::PresentMode::Fifo),
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: config.desired_maximum_frame_latency.unwrap_or(2),
             alpha_mode,
             view_formats: vec![],
         };
         // Configure the surface immediately. The adapter selection process already validated
         // that this adapter can successfully configure this surface.
         surface.configure(&context.device, &surface_config);
+        log::info!(
+            "wgpu surface configured: present_mode={:?} (requested={:?}), \
+             frame_latency={}, available_modes={:?}",
+            surface_config.present_mode,
+            config.preferred_present_mode,
+            surface_config.desired_maximum_frame_latency,
+            surface_caps.present_modes,
+        );
 
         let queue = Arc::clone(&context.queue);
         let dual_source_blending = context.supports_dual_source_blending();
@@ -1734,6 +1748,9 @@ impl WgpuRenderer {
         if let Some(mode) = config.preferred_present_mode {
             self.surface_config.present_mode = mode;
         }
+        if let Some(n) = config.desired_maximum_frame_latency {
+            self.surface_config.desired_maximum_frame_latency = n;
+        }
 
         {
             let res = self
@@ -1825,6 +1842,7 @@ impl WgpuRenderer {
             },
             transparent: self.surface_config.alpha_mode != wgpu::CompositeAlphaMode::Opaque,
             preferred_present_mode: Some(self.surface_config.present_mode),
+            desired_maximum_frame_latency: Some(self.surface_config.desired_maximum_frame_latency),
         };
         let gpu_context = Rc::clone(gpu_context);
         let ctx_ref = gpu_context.borrow();

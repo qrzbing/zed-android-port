@@ -347,6 +347,7 @@ impl WaylandWindowState {
                 },
                 transparent: true,
                 preferred_present_mode: None,
+                desired_maximum_frame_latency: None,
             };
             WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
         };
