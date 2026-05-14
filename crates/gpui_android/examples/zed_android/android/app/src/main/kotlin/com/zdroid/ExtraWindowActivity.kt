@@ -133,9 +133,29 @@ class ExtraWindowActivity : AppCompatActivity() {
             // OnGenericMotionListener. Without this, scrolling with a
             // hardware mouse / trackpad over a settings/secondary window
             // is a no-op.
+            //
+            // CRITICAL: when pointer capture is active for a connected
+            // trackpad / mouse, the captured-pointer pipeline (the
+            // Activity-level `onGenericMotionEvent` override below)
+            // owns those events. If this listener returns `true` for
+            // captured events it claims them and the Activity handler
+            // never fires — the cursor sprite never updates and the
+            // editor gets raw absolute-coordinate hovers instead of
+            // synthesized MouseMove events from the gesture state
+            // machine. Return `false` for captured sources so the
+            // event falls through to the Activity handler.
             setOnGenericMotionListener { _, event ->
-                forwardTouchEvent(id, event)
-                true
+                val source = event.source
+                val isCaptureSource =
+                    source and InputDevice.SOURCE_TOUCHPAD != 0
+                        || source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
+                        || source and InputDevice.SOURCE_MOUSE != 0
+                if (isCaptureSource && window.decorView.hasPointerCapture()) {
+                    false
+                } else {
+                    forwardTouchEvent(id, event)
+                    true
+                }
             }
             // SurfaceView wants to be the focusable target for IME / key
             // events; AppCompatActivity's default content view doesn't
