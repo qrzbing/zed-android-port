@@ -41,37 +41,6 @@ fn minimal_window_options(_: Option<uuid::Uuid>, _cx: &mut App) -> gpui::WindowO
     gpui::WindowOptions::default()
 }
 
-/// Initialize `rustls-platform-verifier` against the Android trust store.
-/// Required before any in-process TLS verification, since the verifier
-/// reaches into the JVM via the bundled `rustls-platform-verifier-android`
-/// `.aar` (wired into Gradle in `android/settings.gradle.kts`). Without
-/// this, every rustls handshake fails with `UnknownIssuer`.
-///
-/// Idempotent: `init_with_env` is OnceCell-gated internally, so the
-/// re-entrant `android_main` path on activity recreation is safe.
-fn init_platform_tls(android_app: &AndroidApp) {
-    use jni::{JavaVM, objects::JObject};
-
-    let result = (|| -> anyhow::Result<()> {
-        // SAFETY: vm_as_ptr and activity_as_ptr are valid for the
-        // lifetime of the process from android_main onward; the Android
-        // runtime owns both. Same pattern as `dns_bridge::query_android_dns`
-        // and `clipboard.rs`.
-        unsafe {
-            let vm = JavaVM::from_raw(android_app.vm_as_ptr().cast())?;
-            let mut env = vm.attach_current_thread()?;
-            let activity = JObject::from_raw(android_app.activity_as_ptr().cast());
-            rustls_platform_verifier::android::init_with_env(&mut env, activity)?;
-        }
-        Ok(())
-    })();
-    if let Err(err) = result {
-        log::error!("zed_android: rustls_platform_verifier init failed: {err:#}");
-    } else {
-        log::info!("zed_android: rustls_platform_verifier initialized");
-    }
-}
-
 /// Build the active adapter from `runtime.toml`, returning the boxed
 /// provider so callers can ask for its `environment_root()` and
 /// adapter-derived metadata. Returns None when no toml exists or the
@@ -139,8 +108,6 @@ fn android_main(app: AndroidApp) {
             .with_tag("zed_android"),
     );
     info!("zed_android: android_main entry");
-
-    init_platform_tls(&app);
 
     let data_path = app
         .internal_data_path()

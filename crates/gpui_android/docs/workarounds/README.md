@@ -57,7 +57,7 @@ patches.
 |---|---|---|
 | [HOME env dual-pointing](home-env-dual-pointing.md) | Active | Rust process needs HOME=data_path; bash needs HOME=$TERMUX__HOME |
 | [Terminal HOME override](terminal-home-override.md) | Active | Pass TERMUX__HOME into bash without disturbing Rust globals |
-| [SSL_CERT_FILE / CURL_CA_BUNDLE](ssl-cert-bundle.md) | Removed | Native CA via rustls-platform-verifier-android; subprocess CA is adapter-owned |
+| [SSL_CERT_FILE / CURL_CA_BUNDLE](ssl-cert-bundle.md) | Removed | In-process trust via webpki-roots; subprocess CA is adapter-owned |
 | [.gitconfig safe.directory = *](gitconfig-safe-directory.md) | Active | libgit2 dubious-ownership check fires for media_rw-owned /sdcard repos |
 | [Activity-recreation idempotency](activity-recreation-idempotency.md) | Active | `android_main` re-enters; everything must be re-entrant |
 | [SELinux context canary log](selinux-canary.md) | Active | Detect if `targetSdk` regresses by checking `untrusted_app_27` domain |
