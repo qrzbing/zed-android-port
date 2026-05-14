@@ -127,17 +127,14 @@ class MainActivity : GameActivity() {
         Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
         if (hasCapture) {
             ensureCursorView()
-            // Center the cursor on capture start. Use the
-            // GameActivity SurfaceView's dimensions, NOT decorView's
-            // — the editor lives inside the SurfaceView, and the
-            // coordinate system the editor uses for hit-testing is
-            // surface-relative. In non-edge-to-edge or freeform-
-            // windowing layouts decorView includes inset padding the
-            // SurfaceView doesn't, and using decorView coords means
-            // clicks land below where the cursor sprite appears.
             val sv = findSurfaceView(window.decorView)
-            val w = (sv?.width ?: window.decorView.width).toFloat().coerceAtLeast(1f)
-            val h = (sv?.height ?: window.decorView.height).toFloat().coerceAtLeast(1f)
+            Log.i(
+                TAG_CAPTURE,
+                "dimensions surface=${sv?.width}x${sv?.height} " +
+                "cursorView=${cursorView?.width}x${cursorView?.height} " +
+                "decor=${window.decorView.width}x${window.decorView.height}",
+            )
+            val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
             cursorView?.move(cursorX, cursorY)
@@ -146,6 +143,18 @@ class MainActivity : GameActivity() {
         } else {
             cursorView?.visibility = View.GONE
         }
+    }
+
+    private fun visibleBounds(): Pair<Float, Float> {
+        val sv = findSurfaceView(window.decorView)
+        val cv = cursorView
+        val candidates = listOfNotNull(sv?.width, cv?.width, window.decorView.width)
+            .filter { it > 0 }
+        val w = candidates.minOrNull() ?: 1
+        val hCandidates = listOfNotNull(sv?.height, cv?.height, window.decorView.height)
+            .filter { it > 0 }
+        val h = hCandidates.minOrNull() ?: 1
+        return w.toFloat() to h.toFloat()
     }
 
     private fun ensureCursorView() {
@@ -238,14 +247,7 @@ class MainActivity : GameActivity() {
                     sumRx += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
                     sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
                 }
-                // Clamp to the SurfaceView's bounds (the editor's
-                // coordinate space). Falling back to decorView bounds
-                // here would let the cursor wander into padding /
-                // inset areas where the editor doesn't render and
-                // clicks would land outside the editable surface.
-                val sv = findSurfaceView(window.decorView)
-                val maxX = (sv?.width ?: window.decorView.width).toFloat().coerceAtLeast(1f)
-                val maxY = (sv?.height ?: window.decorView.height).toFloat().coerceAtLeast(1f)
+                val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
                 cursorView?.move(cursorX, cursorY)

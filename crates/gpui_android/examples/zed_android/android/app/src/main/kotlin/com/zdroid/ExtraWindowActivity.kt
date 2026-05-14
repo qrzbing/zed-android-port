@@ -235,11 +235,18 @@ class ExtraWindowActivity : AppCompatActivity() {
         Log.i(TAG, "onPointerCaptureChanged windowId=$extraWindowId hasCapture=$hasCapture")
         if (hasCapture) {
             ensureCursorView()
-            // Center the cursor inside the surfaceView's bounds (NOT
-            // decorView's). cursorX/Y is in surface coordinate space
-            // — same space the editor uses for hit-testing.
-            val w = surfaceView.width.toFloat().coerceAtLeast(1f)
-            val h = surfaceView.height.toFloat().coerceAtLeast(1f)
+            // One-shot diagnostic so we can see where any size
+            // mismatch comes from when "cursor escapes the right
+            // edge" is reported on the device.
+            Log.i(
+                TAG,
+                "dimensions windowId=$extraWindowId " +
+                "surface=${surfaceView.width}x${surfaceView.height} " +
+                "cursorView=${cursorView?.width}x${cursorView?.height} " +
+                "contentRoot=${contentRoot.width}x${contentRoot.height} " +
+                "decor=${window.decorView.width}x${window.decorView.height}",
+            )
+            val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
             cursorView?.move(cursorX, cursorY)
@@ -248,6 +255,24 @@ class ExtraWindowActivity : AppCompatActivity() {
         } else {
             cursorView?.visibility = View.GONE
         }
+    }
+
+    /// Most defensive bounds for cursor clamping: the smallest of
+    /// surfaceView / cursorView / contentRoot widths and heights.
+    /// If any of these report dimensions larger than the actual
+    /// visible content area (e.g., the system reports surface
+    /// dimensions in raw display pixels while the activity is
+    /// rendered in a smaller freeform window), the smallest one
+    /// represents the truly drawable region.
+    private fun visibleBounds(): Pair<Float, Float> {
+        val cv = cursorView
+        val w = listOfNotNull(surfaceView.width, cv?.width, contentRoot.width)
+            .filter { it > 0 }
+            .minOrNull() ?: 1
+        val h = listOfNotNull(surfaceView.height, cv?.height, contentRoot.height)
+            .filter { it > 0 }
+            .minOrNull() ?: 1
+        return w.toFloat() to h.toFloat()
     }
 
     private fun ensureCursorView() {
@@ -296,8 +321,7 @@ class ExtraWindowActivity : AppCompatActivity() {
                     sumRx += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_X, i)
                     sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
                 }
-                val maxX = surfaceView.width.toFloat().coerceAtLeast(1f)
-                val maxY = surfaceView.height.toFloat().coerceAtLeast(1f)
+                val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
                 cursorView?.move(cursorX, cursorY)
