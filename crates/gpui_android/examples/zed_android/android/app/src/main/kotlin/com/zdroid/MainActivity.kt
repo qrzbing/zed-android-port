@@ -161,21 +161,39 @@ class MainActivity : GameActivity() {
         if (cursorView != null) return
         val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
         val view = CursorOverlayView(this, sizePx)
-        // Add the cursor view as a sibling of the SurfaceView inside
-        // the same ViewGroup. Shared origin → cursor sprite position
-        // matches editor hit-test position. Fallback to decorView
-        // only if no SurfaceView is found (which would mean
-        // GameActivity hasn't initialized yet — also a bug, but the
-        // fallback avoids a null cursor).
         val sv = findSurfaceView(window.decorView)
         val parent = (sv?.parent as? ViewGroup) ?: (window.decorView as ViewGroup)
-        val lp = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        )
+        // Initial size matches SurfaceView's current bounds if it's
+        // already laid out; the layout listener below keeps it in
+        // sync going forward.
+        val initW = sv?.width?.takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
+        val initH = sv?.height?.takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
+        val lp = ViewGroup.LayoutParams(initW, initH)
         parent.addView(view, lp)
         view.bringToFront()
         cursorView = view
+        // Keep cursorView's bounds + position locked to surfaceView.
+        // Without this, cursorView's MATCH_PARENT layout grabs the
+        // PARENT's size, which may differ from the surface (decorView
+        // > surface by gesture nav height; freeform window > activity
+        // content; older capture sessions cached old size that
+        // persists across rotation). The mismatch shows up as cursor
+        // sprite painting past the visible screen on the right and
+        // bottom edges.
+        if (sv != null) {
+            sv.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+                val w = right - left
+                val h = bottom - top
+                if (w > 0 && h > 0) {
+                    val params = view.layoutParams
+                    params.width = w
+                    params.height = h
+                    view.layoutParams = params
+                    view.x = left.toFloat()
+                    view.y = top.toFloat()
+                }
+            }
+        }
     }
 
     /// Walk the View hierarchy looking for the GameActivity

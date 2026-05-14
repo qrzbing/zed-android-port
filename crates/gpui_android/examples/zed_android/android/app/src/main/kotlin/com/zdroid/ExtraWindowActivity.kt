@@ -279,17 +279,33 @@ class ExtraWindowActivity : AppCompatActivity() {
         if (cursorView != null) return
         val sizePx = (CURSOR_SIZE_DP * resources.displayMetrics.density).toInt().coerceAtLeast(8)
         val view = CursorOverlayView(this, sizePx)
-        // Add as a sibling of surfaceView inside the same FrameLayout.
-        // Shared origin → cursor sprite position == editor coordinate
-        // == MouseDown position. Adding to decorView instead breaks
-        // this in non-edge-to-edge / freeform-windowing layouts.
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-        )
-        contentRoot.addView(view, lp)
+        val initW = surfaceView.width.takeIf { it > 0 }
+            ?: FrameLayout.LayoutParams.MATCH_PARENT
+        val initH = surfaceView.height.takeIf { it > 0 }
+            ?: FrameLayout.LayoutParams.MATCH_PARENT
+        contentRoot.addView(view, FrameLayout.LayoutParams(initW, initH))
         view.bringToFront()
         cursorView = view
+        // Sync cursorView bounds + position to surfaceView whenever
+        // it re-layouts. Without this the view's size stays at
+        // whatever it was the first time we created it — including
+        // across orientation changes where the activity stays alive
+        // via configChanges but the surface dimensions flip. Symptom:
+        // cursor sprite paints past the visible screen on right /
+        // bottom edges because the cursorView's bounds were left
+        // larger than the new visible surface.
+        surfaceView.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+            val w = right - left
+            val h = bottom - top
+            if (w > 0 && h > 0) {
+                val params = view.layoutParams
+                params.width = w
+                params.height = h
+                view.layoutParams = params
+                view.x = left.toFloat()
+                view.y = top.toFloat()
+            }
+        }
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
