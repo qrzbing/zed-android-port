@@ -22,6 +22,8 @@ use gpui::{
     Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Point, Pixels,
 };
 
+use crate::events::source::{InputSource, multi_click_slop, multi_click_window};
+
 /// Two-finger tap = right-click. The second finger must come down within
 /// this window of the first (and the first must not have drifted into a
 /// drag) for the gesture to register as a secondary click. VNC clients
@@ -34,18 +36,12 @@ const TWO_FINGER_WINDOW: Duration = Duration::from_millis(300);
 /// gesture as a drag and stop accepting a 2nd-finger right-click.
 const TWO_FINGER_SLOP: f64 = 12.0;
 
-/// Time window in which a second / third Down of the same button at
-/// roughly the same position counts as a double- / triple-click. ~500ms
-/// matches macOS's default `NSEvent.doubleClickInterval` and X11's
-/// `multiClickTime`. Aggressive enough to feel responsive, slow enough
-/// to be reachable with a real-world tap-tap.
-const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(500);
-
-/// Logical pixels the position may drift between successive clicks
-/// before they're treated as separate gestures rather than a multi-
-/// click. ~6 covers natural hand-jitter on a touchscreen tap-tap
-/// without misclassifying a deliberate slow-drag-then-click.
-const MULTI_CLICK_SLOP: f64 = 6.0;
+// `MULTI_CLICK_WINDOW` and `MULTI_CLICK_SLOP` are no longer constants;
+// they're per-source via `events::source::multi_click_window` /
+// `multi_click_slop`. Mouse / stylus get tighter timing + slop to match
+// `ViewConfiguration.getDoubleTapTimeout()` (~300ms / ~3px) which is
+// the system convention for indirect pointing. Finger taps keep the
+// historical 500ms / 6px.
 
 thread_local! {
     static PRIMARY_DOWN: Cell<Option<(Instant, Point<Pixels>)>> = const { Cell::new(None) };
@@ -86,24 +82,42 @@ pub(crate) fn current_non_primary() -> Option<MouseButton> {
 }
 
 /// Compute the `click_count` for a new Down at `position` with
-/// `button`. If the previous Down was the same button, recent (within
-/// `MULTI_CLICK_WINDOW`), and nearby (within `MULTI_CLICK_SLOP`), the
-/// run-length bumps; otherwise it resets to 1. Caller stamps the
-/// returned count onto the emitted `MouseDownEvent` so the editor's
-/// word- / line-select on double- / triple-click works.
-pub(crate) fn next_click_count(button: MouseButton, position: Point<Pixels>) -> usize {
+/// `button` on `source`. If the previous Down was the same button,
+/// recent (within `multi_click_window(source)`), and nearby (within
+/// `multi_click_slop(source)`), the run-length bumps; otherwise it
+/// resets to 1. Caller stamps the returned count onto the emitted
+/// `MouseDownEvent` so the editor's word- / line-select on double- /
+/// triple-click works.
+///
+/// `source` is plumbed by the dispatcher so we apply the system's
+/// 300ms / 3px hardware-pointer timing when the click came from a
+/// mouse / stylus / trackpad, and keep the historical 500ms / 6px for
+/// finger taps.
+pub(crate) fn next_click_count(
+    button: MouseButton,
+    position: Point<Pixels>,
+    source: InputSource,
+) -> usize {
     let now = Instant::now();
+    let window = multi_click_window(source);
+    let slop = multi_click_slop(source);
     let count = LAST_CLICK.with(|cell| match cell.get() {
         Some((t, p, b, c))
             if b == button
-                && now.duration_since(t) < MULTI_CLICK_WINDOW
-                && (position - p).magnitude() <= MULTI_CLICK_SLOP =>
+                && now.duration_since(t) < window
+                && (position - p).magnitude() <= slop =>
         {
             c + 1
         }
         _ => 1,
     });
     LAST_CLICK.with(|cell| cell.set(Some((now, position, button, count))));
+    if count > 1 {
+        log::info!(
+            "multi_click: source={source:?} count={count} window={window:?} \
+             slop={slop} button={button:?}"
+        );
+    }
     count
 }
 

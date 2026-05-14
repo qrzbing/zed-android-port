@@ -20,6 +20,7 @@
 
 pub(crate) mod keyboard;
 pub(crate) mod mouse;
+pub(crate) mod source;
 pub(crate) mod touch;
 pub(crate) mod trackpad;
 
@@ -67,6 +68,10 @@ pub(crate) fn translate_motion_event(
     let modifiers = keyboard::modifiers_from_meta(event.meta_state());
     let button_state = event.button_state().0 as i32;
     let pressed_mouse_button = mouse::button_from_state(button_state);
+    // Source classification feeds `touch::next_click_count` so mouse
+    // gets the system-default 300ms / 3px double-click semantics while
+    // finger taps keep 500ms / 6px. See `events/source.rs`.
+    let input_source = source::classify(event);
 
     let mut out = MotionInputs::new();
     match event.action() {
@@ -81,7 +86,7 @@ pub(crate) fn translate_motion_event(
             if let Some(button) = pressed_mouse_button
                 && button != MouseButton::Left
             {
-                let click_count = touch::next_click_count(button, position);
+                let click_count = touch::next_click_count(button, position, input_source);
                 touch::mark_non_primary_down(button);
                 out.push(mouse::button_down(button, position, modifiers, click_count));
                 return out;
@@ -89,7 +94,7 @@ pub(crate) fn translate_motion_event(
             // First finger down (touch) or mouse left button. Latch
             // position + time and emit Down(Left) immediately for
             // instant click feedback.
-            let click_count = touch::next_click_count(MouseButton::Left, position);
+            let click_count = touch::next_click_count(MouseButton::Left, position, input_source);
             touch::record_primary_down(position);
             out.push(mouse::button_down(MouseButton::Left, position, modifiers, click_count));
         }
@@ -240,7 +245,16 @@ pub(crate) fn translate_extra_motion_event(
             // Up resolves to the same button (Android reports
             // button_state=0 on Up, so we can't recover it from there).
             let button = pressed_button.unwrap_or(MouseButton::Left);
-            let click_count = touch::next_click_count(button, position);
+            // Extra-window JNI bridge doesn't yet plumb source / tool_type
+            // through. Assume Finger as the conservative default until we
+            // extend the marshaling. Mouse-class double-clicks in extra
+            // windows (Settings, Keymap, Themes) will still work, just
+            // with the 500ms / 6px timing of the touch path.
+            let click_count = touch::next_click_count(
+                button,
+                position,
+                source::InputSource::Finger,
+            );
             if button != MouseButton::Left {
                 touch::mark_non_primary_down(button);
             } else {
