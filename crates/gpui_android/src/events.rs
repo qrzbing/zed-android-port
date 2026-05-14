@@ -46,6 +46,7 @@ const JAVA_ACTION_POINTER_DOWN: i32 = 5;
 const JAVA_ACTION_POINTER_UP: i32 = 6;
 const JAVA_ACTION_HOVER_MOVE: i32 = 7;
 const JAVA_ACTION_SCROLL: i32 = 8;
+const JAVA_ACTION_HOVER_ENTER: i32 = 9;
 
 /// Convert an Android `MotionEvent` (touch / mouse / stylus) into one or
 /// more gpui `PlatformInput`s. Coordinates arrive from Android in
@@ -158,7 +159,14 @@ pub(crate) fn translate_motion_event(
                 modifiers,
             }));
         }
-        MotionAction::HoverMove => {
+        MotionAction::HoverEnter | MotionAction::HoverMove => {
+            // Mouse entered or moved over the window without a button
+            // held. Both surface as `MouseMove { pressed_button: None }`
+            // so gpui's hover-tracking state stays current.
+            // `HoverExit` falls through silently: native backends
+            // generally stop reporting hover when the cursor leaves the
+            // window rather than synthesizing a "moved-to-infinity"
+            // event.
             out.push(PlatformInput::MouseMove(MouseMoveEvent {
                 position,
                 pressed_button: None,
@@ -280,11 +288,13 @@ pub(crate) fn translate_extra_motion_event(
                 modifiers,
             }));
         }
-        JAVA_ACTION_HOVER_MOVE => {
-            // Mouse moved without a button held. The scrollbar autohide
-            // state machine (`crates/ui/src/components/scrollbar.rs`)
-            // listens for `MouseMoveEvent { pressed_button: None }` to
-            // fade the thumb in on parent-region entry.
+        JAVA_ACTION_HOVER_ENTER | JAVA_ACTION_HOVER_MOVE => {
+            // Mouse entered or moved without a button held. The
+            // scrollbar autohide state machine
+            // (`crates/ui/src/components/scrollbar.rs`) listens for
+            // `MouseMoveEvent { pressed_button: None }` to fade the
+            // thumb in on parent-region entry. HOVER_EXIT (10) falls
+            // through silently.
             out.push(PlatformInput::MouseMove(MouseMoveEvent {
                 position,
                 pressed_button: None,
