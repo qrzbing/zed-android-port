@@ -132,13 +132,21 @@ pub fn open_runtime_picker_window(_window: &mut Window, cx: &mut App) {
     }
 
     let app_id = ReleaseChannel::global(cx).app_id();
+    // Sized to fit all three adapter cards on a fresh open without the
+    // user having to drag the window taller. The cards (with NotInstalled
+    // detail lines visible) come in around ~165px each in DP; three
+    // stacked plus header, title bar, gap_3 spacing, and p_6 container
+    // padding lands at ~700 DP minimum content. The 800 DP height gives
+    // headroom for theme variance and Samsung DeX's chrome insets.
+    // Width stays generous so the right-hand action button doesn't
+    // wrap into the body text on the longest tagline.
     let window_size = Size {
         width: px(640.0),
-        height: px(560.0),
+        height: px(800.0),
     };
     let window_min_size = Size {
         width: px(480.0),
-        height: px(360.0),
+        height: px(560.0),
     };
 
     cx.open_window(
