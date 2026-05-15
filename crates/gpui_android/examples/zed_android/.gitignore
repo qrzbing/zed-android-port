@@ -1,6 +1,7 @@
 target/
 android/.gradle/
 android/.idea/
+android/.kotlin/
 android/build/
 android/app/build/
 android/app/src/main/jniLibs/
