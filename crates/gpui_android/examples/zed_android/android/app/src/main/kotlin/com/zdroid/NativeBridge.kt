@@ -131,6 +131,15 @@ object NativeBridge {
     /// when the synthesis layer is suspect on a given device.
     external fun nativeOnCapturedPointerProbe(summary: String)
 
+    /// Polled every frame by the SplashScreen's
+    /// `setKeepOnScreenCondition`. Returns true once gpui has run at
+    /// least one paint cycle; the splash then exits with its
+    /// registered animation and the activity switches to
+    /// `Theme.Zdroid.Main`. The Rust side flips the atomic backing
+    /// this in `platform.rs` immediately after the first
+    /// `frame_timing::paint_finished` call.
+    external fun nativeIsZedReady(): Boolean
+
     /// Structured captured-pointer sink. Marshals the relevant
     /// `MotionEvent` fields per event so the Rust side can synthesize
     /// `MouseMove` / `MouseDown` / `MouseUp` / `ScrollWheel` from the

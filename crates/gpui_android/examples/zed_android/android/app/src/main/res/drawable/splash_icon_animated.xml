@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The animated icon shown by SplashScreen while gpui boots. Wraps
+     the named-group VectorDrawable in `splash_icon_vector.xml` with
+     four infinite-loop animators:
+       - outer rings  : slow clockwise rotation (16s/cycle)
+       - mid ring     : slow counter-clockwise rotation (12s/cycle)
+       - inner halo   : 8% scale breathing (1.8s, reverse)
+       - orb          : 10% scale heartbeat (1.2s, reverse)
+     The combined effect reads as ambient "ripple water with a
+     breathing orb at the center" — matches the launcher icon's
+     brand motif (dropped-stone ripple) brought to life. -->
+<animated-vector
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/splash_icon_vector">
+    <target
+        android:name="outer_rings"
+        android:animation="@animator/splash_outer_rings_rotate" />
+    <target
+        android:name="mid_ring"
+        android:animation="@animator/splash_mid_ring_rotate" />
+    <target
+        android:name="inner_halo"
+        android:animation="@animator/splash_halo_pulse" />
+    <target
+        android:name="orb_group"
+        android:animation="@animator/splash_orb_pulse" />
+</animated-vector>

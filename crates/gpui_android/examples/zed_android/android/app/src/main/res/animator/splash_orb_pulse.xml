@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tighter scale pulse on the orb itself. Faster than the halo
+     (1.2s vs 1.8s) so the orb has its own heartbeat that occasionally
+     lines up with the halo's slower breath. -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:ordering="together">
+    <objectAnimator
+        android:propertyName="scaleX"
+        android:valueFrom="0.96"
+        android:valueTo="1.06"
+        android:duration="1200"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+    <objectAnimator
+        android:propertyName="scaleY"
+        android:valueFrom="0.96"
+        android:valueTo="1.06"
+        android:duration="1200"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:interpolator="@android:anim/accelerate_decelerate_interpolator" />
+</set>

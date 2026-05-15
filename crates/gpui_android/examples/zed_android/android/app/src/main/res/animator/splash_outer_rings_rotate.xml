@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Slow clockwise rotation on the outer + outermost rings. 16s/cycle
+     keeps it ambient rather than busy; the eye reads it as "water
+     moving" not "spinner". Linear interpolation so the rotation never
+     visibly speeds up or slows down. -->
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:propertyName="rotation"
+    android:valueFrom="0"
+    android:valueTo="360"
+    android:duration="16000"
+    android:repeatCount="infinite"
+    android:interpolator="@android:anim/linear_interpolator" />

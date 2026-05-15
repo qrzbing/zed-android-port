@@ -6,6 +6,7 @@ mod captured_pointer;
 mod clipboard;
 mod cursor;
 mod dispatcher;
+pub(crate) mod splash;
 mod display;
 pub mod dns_bridge;
 mod events;

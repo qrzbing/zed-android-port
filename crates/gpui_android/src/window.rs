@@ -144,7 +144,22 @@ impl AndroidWindowStatePtr {
                 DevicePixels(width.max(1) as i32),
                 DevicePixels(height.max(1) as i32),
             ),
-            transparent: false,
+            // Alpha-aware compositor mode so the activity's
+            // `windowBackground` (a static brand-icon-over-indigo
+            // drawable) shows through the SurfaceView buffer during
+            // the brief window between SurfaceView attach and the
+            // first wgpu paint. Without this the buffer renders as
+            // opaque black for ~1–2s on warm boots and ~30s on
+            // first-launch bootstrap extraction — a visible
+            // post-splash black flash. The cursor-tint regression
+            // that originally motivated `transparent: false` is
+            // sidestepped because `set_clear_color` below pins the
+            // wgpu clear to opaque brand indigo, so the swap-chain
+            // buffer is always fully opaque once wgpu has drawn
+            // anything at all; alpha-aware compositing only
+            // matters in the pre-first-paint window where it's
+            // exactly the behavior we want.
+            transparent: true,
             // Mailbox lets the swap chain discard a stale frame at present
             // time when a newer one is ready, which under irregular paint
             // cadence (scroll bursts, typing flurries) feels ~1 frame
@@ -193,7 +208,23 @@ impl AndroidWindowStatePtr {
             log::info!("AndroidWindow::attach_surface: replaced surface ({width}x{height})");
         } else {
             let gpu_context = state.gpu_context.clone();
-            let renderer = WgpuRenderer::new(gpu_context, &raw_window, config, None)?;
+            let mut renderer = WgpuRenderer::new(gpu_context, &raw_window, config, None)?;
+            // Brand-color clear so the very first wgpu frame replaces
+            // the SurfaceView's default-black buffer with brand indigo
+            // instead of a black flash between SurfaceView attach and
+            // the first scene paint. Matches `@color/zdroid_bg` (#1E1E2E
+            // = 30/255 ≈ 0.1176) so the visual handoff is:
+            //   SplashActivity AVD → MainActivity windowBackground
+            //   (static icon over indigo) → SurfaceView indigo → editor
+            // with no black gap anywhere. Desktop wgpu embedders keep
+            // the default transparent clear; this is an Android-only
+            // override because we own the entire surface.
+            renderer.set_clear_color(wgpu::Color {
+                r: 30.0 / 255.0,
+                g: 30.0 / 255.0,
+                b: 46.0 / 255.0,
+                a: 1.0,
+            });
             state.renderer = Some(renderer);
             log::info!("AndroidWindow::attach_surface: created renderer ({width}x{height})");
         }

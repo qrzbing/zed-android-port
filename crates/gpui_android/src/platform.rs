@@ -780,6 +780,10 @@ impl Platform for AndroidPlatform {
                     window_ptr.refresh();
                 }
                 crate::frame_timing::paint_finished();
+                // First successful paint cycle => let the SplashScreen
+                // poller dismiss its window. Idempotent atomic swap on
+                // the inside; safe to call every frame.
+                crate::splash::mark_zed_ready();
             }
         }
 

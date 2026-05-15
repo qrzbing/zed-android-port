@@ -5,10 +5,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Animatable
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.provider.DocumentsContract
 import android.util.Log
@@ -18,6 +21,9 @@ import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.FrameLayout
+import android.widget.ImageView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -41,8 +47,32 @@ import com.google.androidgamesdk.GameActivity
 /// freeform chrome on devices that support it. See `multi_window.rs` and
 /// `ExtraWindowActivity.kt`.
 class MainActivity : GameActivity() {
+    /// Splash overlay shown from `super.onCreate` until the gpui-side
+    /// flips `nativeIsZedReady` after first paint. Sits above the
+    /// GameActivity `SurfaceView` so the animated Zdroid sigil is
+    /// visible the entire time gpui boots, hiding the SurfaceView's
+    /// default-black buffer + the wgpu init latency. Removed after
+    /// the ready fade.
+    private var splashOverlay: FrameLayout? = null
+    private val splashHandler = Handler(Looper.getMainLooper())
+    private var splashRemoved: Boolean = false
+
+    private val splashPoll: Runnable = object : Runnable {
+        override fun run() {
+            if (NativeBridge.nativeIsZedReady()) {
+                onZedReady()
+                return
+            }
+            // 32ms = ~30Hz polling. Splash boot waits 2–30s typically,
+            // so per-frame polling is overkill; 30Hz keeps the
+            // animation smooth and the wake budget low.
+            splashHandler.postDelayed(this, 32L)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installSplashOverlay()
         // Edge-to-edge: tell the OS we want to draw behind status / nav bars
         // and the cutout area, so gpui's surface gets the full display
         // bounds. Without this, GameActivity respects system insets and the
@@ -166,6 +196,76 @@ class MainActivity : GameActivity() {
             }
         }
         return null
+    }
+
+    /// Attach an animated splash overlay above the GameActivity
+    /// SurfaceView. Stays visible until the gpui-Rust side flips
+    /// `nativeIsZedReady` (first paint completed), at which point
+    /// `onZedReady` fades the overlay out and removes it. The
+    /// overlay covers the SurfaceView's default-black buffer + the
+    /// wgpu boot latency, so the user sees a continuous animation
+    /// from cold start through to the editor's first frame instead
+    /// of icon → black → editor.
+    ///
+    /// Why a sibling View overlay rather than a separate
+    /// SplashActivity:
+    ///   - A separate activity must finish before MainActivity is
+    ///     visible, but gpui (and SurfaceView) can only init while
+    ///     MainActivity is visible, so the transition unavoidably
+    ///     drops the animation mid-boot.
+    ///   - The View-overlay path normally triggers SurfaceView's
+    ///     compositor flip to alpha-aware mode (cursor white-tint
+    ///     regression). Sidestepped here because the wgpu surface
+    ///     is already configured with `transparent: true` +
+    ///     `set_clear_color` to opaque brand indigo; the wgpu
+    ///     output is always fully opaque once it draws anything,
+    ///     so alpha-aware compositing has nothing transparent to
+    ///     bleed through.
+    private fun installSplashOverlay() {
+        if (splashOverlay != null) return
+        val container = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            setBackgroundResource(R.color.zdroid_bg)
+        }
+        val displaySizePx = (200 * resources.displayMetrics.density).toInt()
+        val iconParams = FrameLayout.LayoutParams(displaySizePx, displaySizePx).apply {
+            gravity = android.view.Gravity.CENTER
+        }
+        val iconView = ImageView(this).apply {
+            layoutParams = iconParams
+            setImageResource(R.drawable.splash_icon_animated)
+            contentDescription = null
+        }
+        container.addView(iconView)
+        val decor = window.decorView as? ViewGroup
+        decor?.addView(container)
+        splashOverlay = container
+        (iconView.drawable as? Animatable)?.start()
+        splashHandler.post(splashPoll)
+    }
+
+    private fun onZedReady() {
+        if (splashRemoved) return
+        splashRemoved = true
+        splashHandler.removeCallbacks(splashPoll)
+        val overlay = splashOverlay ?: return
+        // Fade alpha + scale up ~10% (the "ripple dissipates" exit
+        // that echoes the launcher icon's brand motif). 350ms feels
+        // intentional without stalling the user's first input.
+        overlay.animate()
+            .alpha(0f)
+            .scaleX(1.10f)
+            .scaleY(1.10f)
+            .setDuration(350L)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .withEndAction {
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+                splashOverlay = null
+            }
+            .start()
     }
 
     // installCapturedPointerListenerOnAll removed: we no longer
@@ -467,6 +567,7 @@ class MainActivity : GameActivity() {
     /// zero stale static state.
     override fun onDestroy() {
         Log.i(TAG, "onDestroy isFinishing=$isFinishing — exiting process for clean restart")
+        splashHandler.removeCallbacksAndMessages(null)
         cursorOverlay?.release()
         cursorOverlay = null
         super.onDestroy()

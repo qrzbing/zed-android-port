@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Counter-clockwise rotation on the mid ring. Opposite direction
+     from the outer rings so the two layers visibly slide past each
+     other; slightly faster (12s) to give the inner band more presence
+     than the outer ambient ring. -->
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:propertyName="rotation"
+    android:valueFrom="0"
+    android:valueTo="-360"
+    android:duration="12000"
+    android:repeatCount="infinite"
+    android:interpolator="@android:anim/linear_interpolator" />
