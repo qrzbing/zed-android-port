@@ -102,6 +102,57 @@ Diagnosing requires instrumenting gpui_android's input layer too, not just the e
 
 Visible workaround for users today: there isn't one — search filter is effectively dead on Android. Settings remain navigable via the sidebar tree.
 
+## Image paste into the agent panel doesn't work on Android
+
+**Repro:** copy an image to the Android clipboard (screenshot share-sheet "Copy to clipboard", or copy from Files / Gallery / a browser). Open the agent panel in Zdroid, focus the message editor, paste. Nothing happens. Text paste works fine.
+
+**Diagnosis:** not a permission or storage gap. The Android clipboard bridge at `crates/gpui_android/src/clipboard.rs` is text-only by design; the module doc calls this out explicitly (`ClipboardItem` can carry images and structured entries, but our editor only round-trips text through it). `read()` calls `getPrimaryClip()` and pulls `getText()` off item 0; any `image/*` MIME entries on the clip are silently discarded before they ever reach gpui.
+
+**Consumer:** the agent panel's message editor at `crates/agent_ui/src/message_editor.rs:278` is the only path that consumes `ClipboardEntry::Image`; `crates/agent_ui/src/mention_set.rs:931` is the same hook from the mention resolver. The editor itself doesn't accept image paste, so the wiring only matters when the agent panel is focused.
+
+**Wiring needed:**
+
+1. Extend `clipboard::read_inner` to inspect `ClipDescription.getMimeType(i)` for each item. If `image/png`, `image/jpeg`, `image/webp`, or `image/gif`, treat it as image instead of falling through to `getText()`.
+2. Pull the `content://` URI from `ClipData.Item.getUri()` and open it via `ContentResolver.openInputStream(uri)`. The clipboard system auto-grants read access to the receiving app for as long as the clip is active, so no `FLAG_GRANT_READ_URI_PERMISSION` plumbing on our side.
+3. Read the full byte stream, map MIME to `gpui::ImageFormat`, return `ClipboardEntry::Image(Image::from_bytes(format, bytes))`. `gpui::Image` is just `format + bytes`, no decode required on the platform side.
+
+**Implementation constraints:**
+
+- The existing `read()` runs on the gpui render thread with a 50ms JNI cache because cx.read_from_clipboard is polled at 60fps for the Paste menu's enabled state. Reading multi-megabyte screenshots through JNI on the render thread risks the same `android_main` stack overflow the doc warns about. Push image reads onto the 2MB-stack worker pattern already used by `write_on_worker` and stash the resolved `Image` in the cache so subsequent polls don't re-read.
+- Cache invalidation: bumping the read cache TTL or attaching a clipboard-change listener (`OnPrimaryClipChangedListener` via JNI) so we know when to drop the cached image without polling MIME types every 50ms.
+- Decoding format mapping: prefer the MIME from `ClipDescription`; fall back to magic-byte sniffing if absent (rare on Android but Termux clipboard managers sometimes paste raw bytes without a description).
+
+**Adjacent (not yet needed):** write path for images. Copy-image-out is much less common in editor flows; only worth wiring once a consumer exists.
+
+**Scope estimate:** ~200 LoC in `crates/gpui_android/src/clipboard.rs` plus ~30 LoC of JNI helpers. `ContentResolver.openInputStream` is one of the fiddlier JNI surfaces; the `InputStream` object needs an `available()` + `read(byte[])` loop or `Channels.newChannel`. Single-file change otherwise. Half a day if the JNI byte-read path lines up first try, full day if we trip ANR-territory issues on big screenshots.
+
+**Why deferred:** core editor flow works without it, and the agent panel feature gating depends on `supports_images` from the LLM provider anyway. Pick up once a user reports a concrete blocked workflow.
+
+## MCP / context-server integration is absent on Android
+
+**Repro:** add a `context_servers` block to Zdroid's `settings.json` (the syntax Zed uses upstream for stdio or HTTP MCP servers). Restart the app. Nothing happens. No server is spawned, no tools surface in any panel, no entry appears under Settings; the editor reads the JSON but no code path consumes the block. Adding the same block on desktop Zed works.
+
+**Diagnosis:** the wiring is missing at three layers, in order:
+
+1. **Boot skip.** `crates/gpui_android/examples/zed_android/src/lib.rs` around line 1003 explicitly lists `agent_ui` / `copilot` / `language_models` as out-of-scope on Android ("Skipped from production"). The agent panel is the entry point that registers MCP-related actions and observes the `context_servers` settings block; without `agent_ui::init` running, none of that fires.
+2. **Cargo dep absent.** The example's `Cargo.toml` doesn't declare `agent_ui` or `context_server` as dependencies, so the upstream MCP transport implementations (`crates/context_server/src/transport/{stdio_transport,http}.rs`) aren't even linked into Zdroid's `.so`. There is no `McpClient`, no `ContextServerStore` instance in the process at any point.
+3. **Subprocess spawn gap.** Even if 1 and 2 land as-is, the upstream stdio transport spawns the configured MCP server with `tokio::process::Command`, which on Android lands as a bionic-spawn from the editor process. That path does not see the active runtime adapter's `$PATH`, `$LD_LIBRARY_PATH`, or chroot scope, so any MCP server that ships as a Bootstrap-userland or chroot binary (`npx @modelcontextprotocol/server-filesystem`, `uvx mcp-server-time`, anything else realistic) fails to exec.
+
+**Wiring needed:**
+
+- Add `agent_ui` + `context_server` (and the transitive `language_models`, `assistant`, etc. that won't compile without it) to `crates/gpui_android/examples/zed_android/Cargo.toml`.
+- Initialize `agent_ui::init` in `boot()` past the "AI skipped" comment band. Confirm the agent-panel + workspace action wiring actually fires on Android; the editor compiles agent surfaces today via cfg-gates to mocks, but full init likely surfaces side effects (LLM provider registration, settings observers, etc.) that we have not exercised.
+- Route the stdio-transport spawn through `zdroid_runtime` so the configured MCP server inherits the active adapter's environment. Easiest path: replace the upstream `tokio::process::Command` invocation with a call that goes through our existing `zd-exec` wrapper (`crates/zdroid_runtime/src/bin/zd-exec.rs`); the wrapper already handles chroot/bootstrap/external Termux selection. Either patch upstream's transport with an Android cfg-gate, or wrap the `MCPCommand` config builder.
+- Decide what to do with the LLM provider gate. MCP servers are useful even without a model talking to them (tool execution, prompt management), so a "BYO key, no provider configured" mode is viable. Alternatively gate MCP UI visibility behind a configured provider so the no-key state is not confusing.
+
+**Why deferred:**
+
+- The README and roadmap already declare AI panels out of scope. The MCP gap is downstream of that declaration; closing it pulls the entire `agent_ui` / `language_models` surface back in scope, which is a meaningfully larger commitment than just the MCP wiring.
+- Daily-driving the editor today does not require MCP. Most of what people want from MCP on Android specifically (filesystem access, shell tools) is already reachable via the integrated terminal + the relevant runtime adapter, so users have a working workaround.
+- The right time to do this is once we either (a) ship a real LLM-panel integration so MCP arrives with a sibling consumer, or (b) deliberately decide to surface MCP tools standalone (slash commands? command palette entries?) without the assistant.
+
+**Scope estimate:** rough 2-3 days end-to-end. Cargo dep additions and `agent_ui::init` are short. The real time sink is debugging the side effects of bringing the agent surface online for the first time on Android (focus / window routing, settings store observers that assume desktop platforms, the LLM provider registration path on a platform that has historically been mock-only). Pair with [[project-zed-android-port]] phase planning when picking this up.
+
 ## Other deferred concerns
 
 (add new sections here as they come up; keep each one self-contained with what / why / what's-needed-to-resolve)
