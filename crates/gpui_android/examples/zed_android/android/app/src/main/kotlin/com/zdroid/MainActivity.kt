@@ -159,6 +159,20 @@ class MainActivity : GameActivity() {
             val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
+            // Release + rebuild the overlay on every capture-regain so
+            // we anchor to the *current* SurfaceView's SurfaceControl.
+            // The OS can tear down and recreate the SurfaceView's
+            // surface when another activity steals focus (SAF picker
+            // when the user clicks "Open Project" from onboarding,
+            // settings dialogs, etc.), and any SurfaceControl we
+            // previously attached as a child of the old surface gets
+            // orphaned by SurfaceFlinger — `setVisible(true)` on the
+            // orphan does nothing and the cursor stays invisible
+            // until the app fully restarts. Rebuilding on regain is
+            // cheap (small bitmap upload + one SurfaceControl
+            // transaction) and bulletproof.
+            cursorOverlay?.release()
+            cursorOverlay = null
             ensureCursorOverlay()
             cursorOverlay?.move(cursorX, cursorY)
             cursorOverlay?.setVisible(true)
