@@ -7809,6 +7809,7 @@ dependencies = [
  "ndk",
  "raw-window-handle",
  "serde_json",
+ "ureq",
  "util",
  "uuid",
  "zip 2.4.2",

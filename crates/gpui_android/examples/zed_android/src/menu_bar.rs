@@ -246,6 +246,10 @@ fn zed_menu_items() -> Vec<MenuEntry> {
         MenuEntry::Submenu("Settings", zed_settings_submenu_items),
         MenuEntry::Separator,
         MenuEntry::Action(
+            "Check for Updates",
+            Box::new(auto_update::Check),
+        ),
+        MenuEntry::Action(
             "Extensions",
             Box::new(zed_actions::Extensions::default()),
         ),

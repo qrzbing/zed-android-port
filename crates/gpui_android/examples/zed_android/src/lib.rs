@@ -329,6 +329,139 @@ fn android_main(app: AndroidApp) {
 /// drops bindings for unknown actions). Re-invoked on every
 /// `SettingsStore` change so toggling `vim_mode` from the command
 /// palette or settings.json takes effect immediately.
+/// Run the in-app updater asynchronously. Used by both the
+/// `auto_update::Check` action handler (menu-triggered, foreground)
+/// and the startup auto-check (`silent_when_up_to_date=true` so a
+/// successful check doesn't pop a "you're on the latest" prompt at
+/// every boot). The flow is:
+///   1. Background-fetch the latest GitHub release tag + compare
+///      against the running app version.
+///   2. If newer is available: prompt the user on the foreground
+///      thread → if they accept, background-download the APK → hand
+///      to Android's installer via `MainActivity.launchPackageInstaller`.
+///   3. If up to date and not silent: prompt informationally.
+///   4. On any error: log + show a prompt with the error text (or
+///      silently swallow if `silent_when_up_to_date` is true).
+fn run_update_check(
+    silent_when_up_to_date: bool,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<Workspace>,
+) {
+    let Some(guard) = gpui_android::updater::UpdateGuard::try_acquire() else {
+        info!("zed_android: update already in progress, skipping new request");
+        return;
+    };
+    cx.spawn_in(window, async move |_workspace, cx| {
+        // Hold the guard for the duration of the task so a second
+        // dispatch (e.g. menu click during the download) is rejected
+        // by `try_acquire`.
+        let _guard = guard;
+        let check = cx
+            .background_executor()
+            .spawn(async { gpui_android::updater::check_for_update() })
+            .await;
+        let result = match check {
+            Ok(r) => r,
+            Err(err) => {
+                error!("zed_android: update check failed: {err:#}");
+                if !silent_when_up_to_date {
+                    let _ = cx.update(|window, cx| {
+                        window.prompt(
+                            gpui::PromptLevel::Warning,
+                            "Update check failed",
+                            Some(&format!("{err:#}")),
+                            &["OK"],
+                            cx,
+                        )
+                    });
+                }
+                return;
+            }
+        };
+        match result {
+            gpui_android::updater::UpdateCheck::UpToDate { current, latest } => {
+                info!(
+                    "zed_android: update check up to date (current={current} latest={latest})"
+                );
+                if !silent_when_up_to_date {
+                    let _ = cx.update(|window, cx| {
+                        window.prompt(
+                            gpui::PromptLevel::Info,
+                            "Zdroid is up to date",
+                            Some(&format!(
+                                "You're running v{current}, which is the latest release."
+                            )),
+                            &["OK"],
+                            cx,
+                        )
+                    });
+                }
+            }
+            gpui_android::updater::UpdateCheck::Available {
+                current,
+                latest,
+                download_url,
+            } => {
+                let answer_rx = cx.update(|window, cx| {
+                    window.prompt(
+                        gpui::PromptLevel::Info,
+                        &format!("Zdroid v{latest} is available"),
+                        Some(&format!(
+                            "You're on v{current}. Download and install the update now?"
+                        )),
+                        &["Install", "Later"],
+                        cx,
+                    )
+                });
+                let answer = match answer_rx {
+                    Ok(rx) => rx.await.ok(),
+                    Err(_) => None,
+                };
+                if answer != Some(0) {
+                    info!("zed_android: update v{latest} declined by user");
+                    return;
+                }
+                let download_tag = latest.clone();
+                let download = cx
+                    .background_executor()
+                    .spawn(async move {
+                        gpui_android::updater::download_apk(&download_tag, &download_url)
+                    })
+                    .await;
+                let apk_path = match download {
+                    Ok(p) => p,
+                    Err(err) => {
+                        error!("zed_android: APK download failed: {err:#}");
+                        let _ = cx.update(|window, cx| {
+                            window.prompt(
+                                gpui::PromptLevel::Warning,
+                                "Update download failed",
+                                Some(&format!("{err:#}")),
+                                &["OK"],
+                                cx,
+                            )
+                        });
+                        return;
+                    }
+                };
+                if let Err(err) = gpui_android::updater::launch_installer(&apk_path) {
+                    error!("zed_android: launch_installer failed: {err:#}");
+                    let _ = cx.update(|window, cx| {
+                        window.prompt(
+                            gpui::PromptLevel::Warning,
+                            "Couldn't launch the installer",
+                            Some(&format!("{err:#}")),
+                            &["OK"],
+                            cx,
+                        )
+                    });
+                }
+            }
+        }
+    })
+    .detach();
+}
+
 fn reload_zdroid_keymaps(cx: &mut App) {
     cx.clear_key_bindings();
     match settings::KeymapFile::load_asset_allow_partial_failure(
@@ -932,6 +1065,16 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
 
         workspace.register_action(editor::open_project_settings_file);
 
+        // auto_update::Check — Zdroid menu "Check for Updates". Registered
+        // on workspace so we have a Window context for the user prompts
+        // (cx.prompt requires a Window; the App-level on_action handler
+        // can't show modal dialogs). Spawns the network/IO work on
+        // background tasks so the UI thread stays responsive while the
+        // GitHub release page is fetched and the APK downloaded.
+        workspace.register_action(|_workspace: &mut Workspace, _: &auto_update::Check, window, cx| {
+            run_update_check(/*silent_when_up_to_date=*/ false, window, cx);
+        });
+
         // CloseProject: action wired in production at
         // `crates/zed/src/zed.rs:1123-1180`. Production binds it inside
         // `initialize_workspace` next to NewFile / NewWindow handlers.
@@ -1196,6 +1339,14 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     cx.on_action(|_: &zed_actions::Quit, cx: &mut App| {
         cx.quit();
     });
+
+    // Check-for-Updates handler is registered per-workspace above so
+    // it has Window access for prompts. The upstream
+    // `auto_update::init` already ran above which set its own App-level
+    // handler that defers to the Zed update server (irrelevant for
+    // Android); our workspace-level handler takes precedence when the
+    // menu fires the action inside a workspace context, which is the
+    // only path users hit it from.
 
     // Production's `prompt_and_open_paths` assumes multi-window: when no
     // existing local workspace passes the `workspace_location` filter, it

@@ -7,6 +7,7 @@ mod clipboard;
 mod cursor;
 mod dispatcher;
 pub(crate) mod splash;
+pub mod updater;
 mod display;
 pub mod dns_bridge;
 mod events;
@@ -40,6 +41,12 @@ where
     A: gpui::AssetSource,
     F: 'static + FnOnce(&mut gpui::App),
 {
+    // Stash a clone for the updater module so action handlers / auto-
+    // check tasks (which run inside the gpui App context with no
+    // direct access to the AndroidApp passed into this function) can
+    // get back to JNI calls. Set once per process — idempotent across
+    // Activity recreations.
+    updater::register_android_app(android_app.clone());
     let platform: Rc<dyn gpui::Platform> = Rc::new(AndroidPlatform::new(android_app, false));
     let app = gpui::Application::with_platform(platform).with_assets(assets);
     app.run(on_finish_launching);

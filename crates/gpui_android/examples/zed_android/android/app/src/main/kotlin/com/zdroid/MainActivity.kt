@@ -26,10 +26,12 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.google.androidgamesdk.GameActivity
+import java.io.File
 
 /// SAF flows go through legacy `startActivityForResult` instead of
 /// `ActivityResultLauncher` because `ActivityResultRegistry` silently
@@ -558,6 +560,58 @@ class MainActivity : GameActivity() {
             .joinToString(",")
     }
 
+    /// Returns the running app's versionName (e.g. "0.2.0"). The in-app
+    /// updater compares this against GitHub's `releases/latest` tag
+    /// (e.g. "v0.2.1" with the `v` stripped) to decide whether to
+    /// download an upgrade.
+    @Suppress("unused") // called from Rust via JNI
+    fun appVersionName(): String {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        } catch (t: Throwable) {
+            Log.w(TAG_UPDATE, "appVersionName: PackageManager threw", t)
+            ""
+        }
+    }
+
+    /// Hand a downloaded APK to Android's package installer. Rust
+    /// calls this after the updater finishes writing the APK to
+    /// `cacheDir/updater/zdroid-<tag>.apk`. We wrap the path in a
+    /// FileProvider content:// URI (per the manifest provider
+    /// declaration at `.updater.fileprovider`) so the installer can
+    /// read across the app-private boundary; FLAG_GRANT_READ_URI_PERMISSION
+    /// is what makes that grant explicit.
+    ///
+    /// Returns true on a successful intent dispatch (the installer UI
+    /// will then take over and prompt the user). Returns false if the
+    /// file is missing or the installer can't be started — Rust logs
+    /// the failure but doesn't retry.
+    @Suppress("unused") // called from Rust via JNI
+    fun launchPackageInstaller(apkPath: String): Boolean {
+        val file = File(apkPath)
+        if (!file.exists()) {
+            Log.e(TAG_UPDATE, "launchPackageInstaller: APK missing at $apkPath")
+            return false
+        }
+        return try {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "com.zdroid.updater.fileprovider",
+                file,
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG_UPDATE, "launchPackageInstaller dispatch failed", t)
+            false
+        }
+    }
+
     /// Force a clean process exit when the Activity is destroyed.
     ///
     /// gpui_android has multiple static-state init paths (event channels,
@@ -633,6 +687,7 @@ class MainActivity : GameActivity() {
     companion object {
         private const val TAG = "zed_android_saf"
         private const val TAG_CAPTURE = "zed_android_capture"
+        private const val TAG_UPDATE = "zed_android_update"
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
         private const val REQ_STORAGE_PERMS = 0xA3
