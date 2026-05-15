@@ -1,20 +1,26 @@
-# Zed on Android
+<table border="0">
+<tr>
+<td width="120" valign="middle">
+<img src="crates/gpui_android/examples/zed_android/docs/screenshots/zdroid-logo.png" width="100" alt="Zdroid logo" />
+</td>
+<td valign="middle">
+<h1>Zdroid</h1>
+<sub><em>Zed on Android.</em></sub>
+</td>
+</tr>
+</table>
 
-<p align="center">
-  <em><strong>Zdroid</strong>. The actual <a href="https://zed.dev">Zed</a> editor workspace, project panel, multi-buffer editor, LSPs, terminal, git graph, extensions, remote SSH running natively on an Android tablet.</em>
+<p>
+  Started as a joke. Rust on aarch64, sounded portable. Laughed about it. Kept going. Couldn't stop. There's an APK.
 </p>
 
-<p align="center">
+<p>
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental" />
   <img src="https://img.shields.io/badge/platform-Android-3DDC84?logo=android" alt="Android" />
   <a href="https://github.com/Dylanmurzello/zed-android-port/releases/latest"><img src="https://img.shields.io/github/downloads/Dylanmurzello/zed-android-port/total?label=downloads" alt="Total downloads" /></a>
 </p>
 
-> **Experimental.** Not affiliated with Zed Industries. Might be highly unstable. See [Caveats](#caveats) for what doesn't work yet.
->
-> Three runtime modes ship: **Bootstrap** (default, no root; ~250 MB Termux-derived userland with `com.zdroid` baked in), **Kali chroot** (needs Magisk + a Kali NetHunter rootfs; real glibc), or **External Termux** (proxy through your existing Termux app). Pick one in onboarding; switch anytime in Settings. See [Userland](#userland) for the tradeoffs.
->
-> _Soft fork of [zed-industries/zed](https://github.com/zed-industries/zed)._
+Zdroid is an independent port of [Zed](https://zed.dev) for Android, not affiliated with Zed Industries. Upstream's `Editor`, `Workspace`, `Project`, `Search`, `GitGraph`, `Extensions`, and `Terminal` crates run unchanged on a custom `gpui_android` platform backend that composites every pixel via the Adreno Vulkan driver, targeting Android 9+ with a hardware keyboard. A bundled Linux userland (Termux-derived, repackaged under `com.zdroid`) lets apt, bash, git, ssh, node, go, and rust-analyzer all run in-process from the app's private data dir; alternative runtime adapters route through a Kali chroot or an existing Termux install.
 
 ---
 
@@ -24,9 +30,84 @@
   <img src="crates/gpui_android/examples/zed_android/docs/screenshots/hero.gif" alt="Zed on Android: workspace, terminal, LSP demo" width="100%" />
 </p>
 
-Zed compiled from source for Android. gpui rendering with Vulkan via wgpu. The upstream `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates running unchanged. Not a webview (no shade at electron). Bypasses termux + SSH to a server (since we have our own bootstrap). The actual Rust `.so` runs as the app process; gpui composites every pixel (yes, you read that right) directly via the Adreno Vulkan driver.
+Vulkan via wgpu. AChoreographer-driven vsync, no JNI hop per frame. Opt-in 120Hz with Mailbox present mode. Glyph fallback into `/system/fonts` so Powerline arrows and CJK render without bundling fonts. The `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates run unchanged. The Rust `.so` is the app process. gpui composites every pixel (yes, you read that right) straight into the Adreno Vulkan driver. Multi-Activity OS-chromed extra windows so DeX freeform renders Settings and secondary editors with real chrome.
 
-The trick was basically a custom `gpui_android` platform backend (Vulkan surface lifecycle, JNI bridges, touch and keyboard event translation) plus a Termux userland rebuilt under our package, `com.zdroid` (hence the unofficial name **Zdroid**, also the launcher label). apt, bash, git, ssh, node, go, openjdk, rust-analyzer all run inside the app's data dir. Everything else is upstream Zed.
+Termux userland rebuilt under `com.zdroid` (applicationId byte-length pinned to 10 because prebuilt RUNPATHs in the .debs don't stretch). Musl loader hex-patched at runtime so Bun-compiled binaries like claude-code and codex resolve `/etc/resolv.conf` to a JNI-populated `/sdcard/.zed/r`. Optional Magisk-flashable `zd-spawnd` daemon with SCM_RIGHTS stdio relay for the chroot runtime. SurfaceControl-composited hardware cursor sprite on a sibling overlay, separate from the wgpu frame. Pointer-capture trackpad that consumes historical motion samples so finger drags don't lose 80% of their travel to event batching. SAF DocumentsProvider exposing `~/` as a system volume. Native Android trust via `rustls-platform-verifier`. In-app updater pulling signed APKs from GitHub Releases. Everything else is upstream.
+
+---
+
+## <img src="https://api.iconify.design/lucide:download.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Install
+
+Grab the latest `Zdroid-X.Y.Z.apk` from the [releases page](https://github.com/Dylanmurzello/zed-android-port/releases/latest) and open it in your file manager. Android prompts for unknown-source installs the first time; grant it. Reinstalls upgrade in place because every release ships from the same signing cert.
+
+> [!NOTE]
+> Android may show a "built for an older version of Android" warning before you tap Install. Proceed anyway. `targetSdk` is pinned at 28 on purpose: the bundled Termux userland depends on the `untrusted_app_27` SELinux domain, which permits `execve` on app-private files. Bumping `targetSdk` to 29+ lands the process in a stricter domain that denies exec, and the entire runtime stops working. See [`docs/workarounds/targetsdk-28-execve.md`](crates/gpui_android/docs/workarounds/targetsdk-28-execve.md) for the receipts.
+
+### First launch
+
+1. **Storage permissions.** The system prompts for read/write to `/sdcard` so the editor can reach anything outside its app-private dir. Grant it. Without it, "Open Project" can't see your files.
+2. **Runtime adapter.** A picker asks where every subprocess (shells, LSPs, terminal, git, ssh) should run. Nothing is pre-selected; you pick one of three. **Bootstrap** is the no-root option: a Termux-derived userland that runs entirely from the app's data dir, the right choice for most people. **Kali chroot** needs Magisk plus a Kali NetHunter rootfs but gives you real glibc and the fastest spawn. **External Termux** routes through your existing Termux app if you already daily-drive Termux.
+3. **Bootstrap download.** If you pick Bootstrap, the adapter pulls the userland zip from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) and extracts it into the app's private data dir. About 30 seconds on a fast connection. Subsequent launches are instant.
+
+### Setting up your shell environment (Bootstrap)
+
+Open the integrated terminal. First, sync the package index:
+
+```sh
+pkg update && pkg upgrade
+```
+
+Pre-baked in the bootstrap: rust-analyzer (the LSP binary; `cargo` and `rustc` are not bundled, install with `pkg install rust` if you want them), go, nodejs, npm (separate packages on Termux but both shipped), bash, openssh, busybox, the bionic-compat patchelf, the hex-patched musl loader. Everything else installs through `pkg`. Claude Code, for example, just needs npm which is already there:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+```
+
+Toolchains and LSPs for other languages live in [LSP install recipes](#lsp-install-recipes) further down.
+
+> [!CAUTION]
+> Do **not** run `apt --fix-broken install` on a fresh bootstrap before you've installed anything else.
+>
+> The pre-baked packages (`go`, `openssh`, `busybox`, the bionic-compat patchelf, the hex-patched musl loader, etc.) live outside dpkg's tracked set, so apt sees them as orphans and helpfully removes them. You're left with a half-broken install and no remediation path other than wiping the userland and re-extracting.
+>
+> If a later `pkg install` or `npm install -g` complains about unmet deps, *then* `apt --fix-broken install` is the right tool. By that point dpkg has enough state to resolve without sweeping the pre-baked tree.
+
+### Setting up Kali chroot
+
+Prerequisites: a rooted device with Magisk installed.
+
+1. Drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. NetHunter's installer is the standard path; any aarch64 Debian-derived rootfs at that location works.
+2. Flash the [`zd-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd/releases) Magisk module. Reboot.
+3. Open Zdroid and pick **Kali chroot** in the runtime picker.
+
+Every subprocess the editor spawns (`bash`, `git`, LSPs, terminal shells) goes over a Unix socket to the `zd-spawnd` daemon, which `fork`s, `chroot`s, drops privileges, and `execve`s on your behalf. Sub-millisecond spawn versus ~200 ms for `su`-mediated alternatives. All the bionic-vs-glibc gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because subprocesses run inside a real distro.
+
+### Setting up External Termux
+
+> [!IMPORTANT]
+> External Termux is partially wired today. The runtime-picker entry exists and persistence works, but the JNI Intent bridge that actually dispatches subprocesses to Termux's `RUN_COMMAND` service hasn't landed yet (`crates/zdroid_runtime/src/adapters/external_termux.rs` is stubbed pending [#36](https://github.com/Dylanmurzello/zed-android-port/issues/36)). Picking this adapter today writes the selection, but subprocess calls don't reach Termux. Use Bootstrap or Kali chroot for actual work in the meantime.
+
+Setup, once the bridge lands:
+
+1. Install Termux from [F-Droid](https://f-droid.org/en/packages/com.termux/). The Play Store version is unmaintained; F-Droid is the active build.
+2. The first time Zdroid attempts an external spawn, Android prompts you to grant `com.termux.permission.RUN_COMMAND` to Zdroid. Allow it.
+3. Open Zdroid and pick **External Termux** in the runtime picker.
+
+After that, every subprocess routes into your existing Termux setup via `com.termux.app.RunCommandService`. Your `~/`, your packages, your shell history are what subprocesses see; Zdroid stays a thin spawner.
+
+### Working with projects
+
+Two storage realms underneath, with different exec rules.
+
+`/data/data/com.zdroid/files/` (surfaced as `~/`) is **exec-mounted**. cargo, go, node, anything you build can `execve` and run. This is where projects should live. `~/projects/<name>` is the default workspace root; `ZedDocumentsProvider` exposes `~/` to other Android apps via the SAF sidebar (look for **Zdroid** in any system file picker).
+
+`/storage/emulated/0/` (a.k.a. `/sdcard/`) is **FUSE-mounted with `noexec`**. Read, edit, and save all work; the kernel refuses to execute binaries written here. `cargo run` against a binary under `/sdcard/...` returns `EACCES` and there's no remount workaround (see [`docs/workarounds/android-noexec-mount.md`](crates/gpui_android/docs/workarounds/android-noexec-mount.md) for why).
+
+Three workflows that work with this constraint:
+
+- **Project root under `~/projects/`** is the happy path. `git clone`, `cargo new`, builds, debugs, terminal subprocesses all run. Browse there from any Android app via the **Zdroid → projects** SAF sidebar entry.
+- **Open a folder anywhere on `/sdcard/`** is fine if you're only reading or editing. The title bar shows a yellow **Builds won't run · Move** chip; one tap pops a confirm dialog that copies the project into `~/projects/<basename>` and reopens it from the exec side.
+- **`~/storage/{shared,downloads,dcim,documents,…}`** are curated symlinks into `/sdcard`. Use them for "open and edit a single file" workflows where you don't want to copy a whole tree.
 
 ---
 
@@ -73,17 +154,6 @@ Out of scope for this proof of concept: collab, AI panels, livekit voice. Cfg-ga
 Samsung Galaxy Tab S9 Ultra (Snapdragon 8 Gen 2 / Adreno 740, Android 16, One UI 8) is the daily driver. Compiles for any aarch64 Android 9+ with Vulkan 1.1, but only Adreno is exercised. Mali / Xclipse will run but may want shader tweaks.
 
 A hardware keyboard is the supported config. Tablet plus Bluetooth keyboard, foldable in tablet mode, or DeX/desktop-mode with monitor and peripherals all work. Phones technically run but are de-prioritized; see [`docs/workarounds/deferred-phone-form-factor-polish.md`](crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md).
-
----
-
-## <img src="https://api.iconify.design/lucide:download.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Install
-
-```sh
-adb install -r zed-android-<version>.apk
-adb shell am start -n com.zdroid/.MainActivity
-```
-
-Or sideload via your file manager. Android prompts for unknown-source installs. On first launch you'll be asked to pick a **runtime adapter** (see [Userland](#userland) below). Picking _Bootstrap_ downloads a ~250 MB Termux userland from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) and extracts it into the app's private data dir; takes about 30 seconds on a fast connection. Subsequent launches are instant.
 
 ---
 
