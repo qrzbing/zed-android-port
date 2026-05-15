@@ -800,6 +800,15 @@ impl Platform for AndroidPlatform {
         if let Some(mut fun) = quit {
             fun();
         }
+        // gpui's quit hook only stops the run loop. On Android the
+        // hosting GameActivity stays alive (its JVM-side thread keeps
+        // running independently of `android_main` returning), so the
+        // user-visible result of a "Quit" menu click would be: editor
+        // stops responding to gestures but the window doesn't dismiss.
+        // Exit the process so `MainActivity.onDestroy` runs (it does
+        // its own `Process.killProcess` fallback + cursor / splash
+        // teardown) and the OS returns the user to the launcher.
+        std::process::exit(0);
     }
 
     fn restart(&self, _binary_path: Option<PathBuf>) {}

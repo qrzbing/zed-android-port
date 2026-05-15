@@ -1185,6 +1185,18 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     })
     .detach();
 
+    // Quit action handler. Upstream `crates/zed/src/zed.rs` wires
+    // `zed_actions::Quit` to `cx.quit()` in several places, but none of
+    // those registration paths run in the Android entry — we don't pull
+    // in `crates/zed`'s init code. Without this handler the Zdroid
+    // menu's "Quit" item dispatches the action and nothing responds, so
+    // the user just sees no effect. `cx.quit()` triggers gpui's
+    // shutdown sequence which eventually reaches
+    // `AndroidPlatform::quit` and exits the process.
+    cx.on_action(|_: &zed_actions::Quit, cx: &mut App| {
+        cx.quit();
+    });
+
     // Production's `prompt_and_open_paths` assumes multi-window: when no
     // existing local workspace passes the `workspace_location` filter, it
     // opens a new window via `Workspace::new_local(.., None, ..)`. Single-
