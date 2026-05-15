@@ -53,9 +53,10 @@ Open the integrated terminal. First, sync the package index:
 pkg update && pkg upgrade
 ```
 
-Pre-baked in the bootstrap: rust-analyzer (the LSP binary; `cargo` and `rustc` are not bundled, install with `pkg install rust` if you want them), go, nodejs, npm (separate packages on Termux but both shipped), bash, openssh, busybox, the bionic-compat patchelf, the hex-patched musl loader. Everything else installs through `pkg`. Claude Code, for example, just needs npm which is already there:
+Pre-baked in the bootstrap: rust-analyzer (the LSP binary; `cargo` and `rustc` are not bundled, install with `pkg install rust` if you want them), nodejs, go, bash, openssh, busybox, the bionic-compat patchelf, the hex-patched musl loader. `npm` is a separate Termux package and needs an install before user-facing `npm` calls work. Claude Code, for example:
 
 ```sh
+pkg install npm
 npm install -g @anthropic-ai/claude-code
 ```
 
@@ -81,7 +82,7 @@ Every subprocess the editor spawns (`bash`, `git`, LSPs, terminal shells) goes o
 ### Setting up External Termux
 
 > [!IMPORTANT]
-> External Termux is partially wired today. The runtime-picker entry exists and persistence works, but the JNI Intent bridge that actually dispatches subprocesses to Termux's `RUN_COMMAND` service hasn't landed yet (`crates/zdroid_runtime/src/adapters/external_termux.rs` is stubbed pending [#36](https://github.com/Dylanmurzello/zed-android-port/issues/36)). Picking this adapter today writes the selection, but subprocess calls don't reach Termux. Use Bootstrap or Kali chroot for actual work in the meantime.
+> External Termux is partially wired today. The runtime-picker entry exists and persistence works, but the JNI Intent bridge that actually dispatches subprocesses to Termux's `RUN_COMMAND` service hasn't landed yet ([`crates/zdroid_runtime/src/adapters/external_termux.rs`](crates/zdroid_runtime/src/adapters/external_termux.rs) is stubbed). Picking this adapter today writes the selection, but subprocess calls don't reach Termux. Use Bootstrap or Kali chroot for actual work in the meantime.
 
 Setup, once the bridge lands:
 
@@ -116,7 +117,7 @@ The editor is bionic-linked and runs as the Android app process. Every subproces
 |---|---|---|
 | **Bootstrap** _(no root)_ | Termux userland rebuilt under `com.zdroid`: apt/dpkg/bash with our package name baked into RUNPATHs and shebangs. Pure bionic, no glibc; same trade-offs as any Termux install. `apt` and `pkg install` work for everything Termux ships. | Auto-downloaded from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) on first selection. |
 | **Kali chroot** _(needs Magisk)_ | Real glibc Linux. Every spawn goes over a Unix socket to `zd-spawnd` (a small privileged daemon) which does `fork` + `chroot` + `setuid` + `execve` on the editor's behalf. ~5 ms per spawn vs ~200 ms for `su`-mediated. All the bionic gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because subprocesses run inside a real distro. | Flash the Magisk module from [`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd), plus drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. |
-| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge in progress (see [#36](https://github.com/Dylanmurzello/zed-android-port/issues/36)). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
+| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge in progress (adapter at [`crates/zdroid_runtime/src/adapters/external_termux.rs`](crates/zdroid_runtime/src/adapters/external_termux.rs) is stubbed). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
 
 Switching is one tap (Settings → Android Runtime). Selection persists in `$PREFIX/etc/zd-runtime.toml`.
 
@@ -154,14 +155,6 @@ Switching is one tap (Settings → Android Runtime). Selection persists in `$PRE
 
 ---
 
-## <img src="https://api.iconify.design/lucide:tablet-smartphone.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Tested on
-
-Samsung Galaxy Tab S9 Ultra (Snapdragon 8 Gen 2 / Adreno 740, Android 16, One UI 8) is the daily driver. Compiles for any aarch64 Android 9+ with Vulkan 1.1, but only Adreno is exercised. Mali / Xclipse will run but may want shader tweaks.
-
-A hardware keyboard is the supported config. Tablet plus Bluetooth keyboard, foldable in tablet mode, or DeX/desktop-mode with monitor and peripherals all work. Phones technically run but are de-prioritized; see [`docs/workarounds/deferred-phone-form-factor-polish.md`](crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md).
-
----
-
 ## <img src="https://api.iconify.design/lucide:hammer.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Build from source
 
 You'll need:
@@ -187,6 +180,14 @@ adb logcat -d | grep -E "zed_android|RustPanic|FATAL"
 ```
 
 First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Gradle re-pack a few seconds.
+
+---
+
+## <img src="https://api.iconify.design/lucide:tablet-smartphone.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Tested on
+
+Samsung Galaxy Tab S9 Ultra (Snapdragon 8 Gen 2 / Adreno 740, Android 16, One UI 8) is the daily driver. Compiles for any aarch64 Android 9+ with Vulkan 1.1, but only Adreno is exercised. Mali / Xclipse will run but may want shader tweaks.
+
+A hardware keyboard is the supported config. Tablet plus Bluetooth keyboard, foldable in tablet mode, or DeX/desktop-mode with monitor and peripherals all work. Phones technically run but are de-prioritized; see [`docs/workarounds/deferred-phone-form-factor-polish.md`](crates/gpui_android/docs/workarounds/deferred-phone-form-factor-polish.md).
 
 ---
 
