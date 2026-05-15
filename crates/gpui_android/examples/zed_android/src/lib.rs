@@ -1019,6 +1019,49 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     json_schema_store::init(cx);
     recent_projects::init(cx);
     which_key::init(cx);
+
+    // OpenSettings interception for the not-yet-configured-runtime case.
+    // Terminal failures (and several other "Edit Settings" affordances
+    // scattered across Zed's UI) dispatch `zed_actions::OpenSettings`,
+    // which normally lands the user at the settings.json editor. Without
+    // a working Android runtime that panel can't solve anything: the user
+    // has to find Android Runtime > Open picker first. Skip the dead-end
+    // by routing OpenSettings straight to the picker when the runtime
+    // toml is missing.
+    //
+    // This observe_new MUST be registered BEFORE `settings_ui::init`
+    // because gpui's bubble-phase action dispatch auto-stops after the
+    // first listener that doesn't explicitly call `cx.propagate()`. To
+    // sit at position 0 on each workspace's dispatch-node listener list
+    // (so our handler runs before `settings_ui`'s) we need to register
+    // our observe_new first; `register_action` appends in observe-fire
+    // order. Reordering this past `settings_ui::init` silently breaks
+    // the deep-link.
+    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+        workspace.register_action(
+            |_workspace: &mut Workspace,
+             _: &zed_actions::OpenSettings,
+             window,
+             cx| {
+                if std::path::Path::new(
+                    "/data/data/com.zdroid/files/usr/etc/zd-runtime.toml",
+                )
+                .exists()
+                {
+                    // Runtime configured: let settings_ui's handler open
+                    // the normal settings editor.
+                    cx.propagate();
+                    return;
+                }
+                log::info!(
+                    "zed_android: OpenSettings routed to runtime picker (no zd-runtime.toml yet)"
+                );
+                runtime_picker::open_runtime_picker_window(window, cx);
+            },
+        );
+    })
+    .detach();
+
     settings_ui::init(cx);
     workspace::init_settings_file_actions(cx);
     editor::init_bundled_file_actions(cx);
