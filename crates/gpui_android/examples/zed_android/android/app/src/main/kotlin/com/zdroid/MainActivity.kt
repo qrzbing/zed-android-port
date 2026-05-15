@@ -5,14 +5,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import android.net.ConnectivityManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.provider.DocumentsContract
@@ -95,30 +90,35 @@ class MainActivity : GameActivity() {
         // regression.
     }
 
-    /// Cursor overlay state. While pointer capture is active the
-    /// system cursor is hidden, so we render our own small View on top
-    /// of the SurfaceView and update its translation per captured
-    /// move event. Position is in physical pixels (the decor view's
-    /// coordinate space); the Rust side divides by the surface's
-    /// scale factor to get logical pixels for the gpui event.
-    private var cursorDrawable: CursorDrawable? = null
+    /// Cursor position tracked in physical pixels (decorView coordinate
+    /// space). Accumulated from each captured-pointer event's
+    /// `AXIS_RELATIVE_X`/`AXIS_RELATIVE_Y` deltas; the same value drives
+    /// `cursorOverlay.move(...)` (visible sprite, hardware-composited
+    /// via SurfaceControl) and is forwarded via JNI as the canonical
+    /// cursor position for the gpui-side editor.
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
+
+    /// Hardware-composited cursor sprite. Lives as a child SurfaceControl
+    /// of the GameActivity SurfaceView (API 29+). Null on older devices
+    /// and during the brief window between Activity create and
+    /// pointer-capture acquire.
+    private var cursorOverlay: CursorSurfaceControl? = null
+
     /// Desktop-classic auto-hide: cursor disappears on the first
-    /// keystroke and reappears on any pointer motion. Tracks whether
-    /// we're currently in the "hidden by keyboard" state so we don't
-    /// thrash visibility on every key.
+    /// keystroke and reappears on any pointer motion. Tracked so we
+    /// only toggle visibility on edges, not on every key.
     private var cursorHiddenByKeyboard: Boolean = false
 
     /// Called from Rust via JNI (`set_pointer_icon_inner` in
     /// `crates/gpui_android/src/cursor.rs`). Dispatches to the UI
-    /// thread because cursorView is a regular Android View and field
-    /// writes / invalidation must happen on the UI thread. No-op when
-    /// pointer capture is inactive (cursorView is null).
+    /// thread because the SurfaceControl transaction has to run on a
+    /// looper thread. No-op when the overlay isn't live (capture not
+    /// active or API < 29).
     @Suppress("unused")
     fun setCapturedCursorStyle(style: Int) {
         runOnUiThread {
-            cursorDrawable?.setStyle(style)
+            cursorOverlay?.setStyle(style)
         }
     }
 
@@ -126,15 +126,28 @@ class MainActivity : GameActivity() {
         super.onPointerCaptureChanged(hasCapture)
         Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
         if (hasCapture) {
-            ensureCursorDrawable()
             val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
-            cursorDrawable?.move(cursorX, cursorY)
-            cursorDrawable?.setVisible(true)
+            ensureCursorOverlay()
+            cursorOverlay?.move(cursorX, cursorY)
+            cursorOverlay?.setVisible(true)
         } else {
-            cursorDrawable?.setVisible(false)
+            cursorOverlay?.setVisible(false)
         }
+    }
+
+    /// Build the SurfaceControl overlay on first capture-gain. API 29+
+    /// gated; older Android leaves the field null and the trackpad
+    /// continues to work without a visible cursor sprite.
+    private fun ensureCursorOverlay() {
+        if (cursorOverlay != null) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val surfaceView = findSurfaceView(window.decorView) ?: return
+        val displaySize = (CURSOR_SIZE_DP * resources.displayMetrics.density)
+            .toInt()
+            .coerceAtLeast(16)
+        cursorOverlay = CursorSurfaceControl(this, surfaceView, displaySize)
     }
 
     private fun visibleBounds(): Pair<Float, Float> {
@@ -144,30 +157,6 @@ class MainActivity : GameActivity() {
         return w to h
     }
 
-    private fun ensureCursorDrawable() {
-        // Cursor sprite rendering disabled: both the sibling-View
-        // approach (CursorOverlayView added to surfaceView's parent)
-        // and the foreground-Drawable approach (surfaceView.foreground)
-        // empirically trigger the SurfaceView compositor-mode flip
-        // that produces a faint whiteish overlay across the editor.
-        // The trackpad gestures still work for clicks, drags, scrolls,
-        // selection — the cursor just isn't visually represented.
-        // Long-term fix is to render the cursor inside gpui's frame
-        // so no Android-side composition is involved.
-    }
-
-    // Old CursorOverlayView-as-sibling-View path removed; the
-    // Drawable-as-foreground approach above avoids the SurfaceView
-    // compositor-mode flip that was the root cause of the
-    // user-reported whiteish overlay (confirmed by removing the
-    // sibling View on device: overlay vanished).
-
-    /// Walk the View hierarchy looking for the GameActivity
-    /// SurfaceView. AGDK adds it as a child of the content frame at
-    /// some depth that depends on the host theme; we don't need to
-    /// know the exact path, just find any SurfaceView. The cursor
-    /// overlay is then added as that SurfaceView's sibling so both
-    /// share coordinate space.
     private fun findSurfaceView(view: View): SurfaceView? {
         if (view is SurfaceView) return view
         if (view is ViewGroup) {
@@ -205,13 +194,13 @@ class MainActivity : GameActivity() {
 
     private fun handleCapturedEvent(event: MotionEvent) {
         // Any pointer activity reawakens the cursor if the keyboard
-        // had hidden it.
+        // hid it.
         if (cursorHiddenByKeyboard) {
-            cursorDrawable?.setVisible(true)
+            cursorOverlay?.setVisible(true)
             cursorHiddenByKeyboard = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
-            // Cursor follows the moving finger in three cases:
+            // Cursor follows the moving finger in two cases:
             //   1. Single-finger motion (n=1): standard cursor drag.
             //   2. Multi-touch while hold-drag is active on the Rust
             //      side (queried via NativeBridge.isHoldDragActive):
@@ -234,32 +223,22 @@ class MainActivity : GameActivity() {
                 val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
-                cursorDrawable?.move(cursorX, cursorY)
+                cursorOverlay?.move(cursorX, cursorY)
             }
         }
         forwardCapturedPointer(event)
     }
 
-    // `sumRelativeAxis` moved to `CursorOverlayView.kt` as a
-    // package-level helper so `ExtraWindowActivity` can use the same
-    // implementation. The batching-confirmation probe lives there too.
-
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // Desktop-classic auto-hide: hide the cursor on first
-        // keystroke. The cursor reappears on any pointer motion via
-        // `handleCapturedEvent`. We hide on KEY_DOWN (not UP) so the
-        // cursor disappears immediately when the user starts typing,
-        // not on the release of a key chord.
         if (event.action == KeyEvent.ACTION_DOWN
             && !cursorHiddenByKeyboard
-            && cursorDrawable != null
+            && cursorOverlay != null
         ) {
-            cursorDrawable?.setVisible(false)
+            cursorOverlay?.setVisible(false)
             cursorHiddenByKeyboard = true
         }
         return super.dispatchKeyEvent(event)
     }
-
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -488,6 +467,8 @@ class MainActivity : GameActivity() {
     /// zero stale static state.
     override fun onDestroy() {
         Log.i(TAG, "onDestroy isFinishing=$isFinishing — exiting process for clean restart")
+        cursorOverlay?.release()
+        cursorOverlay = null
         super.onDestroy()
         Process.killProcess(Process.myPid())
     }
@@ -540,20 +521,14 @@ class MainActivity : GameActivity() {
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2
         private const val REQ_STORAGE_PERMS = 0xA3
-        /// Software cursor side length in dp. 24 dp matches the
-        /// classic desktop arrow size at a 1.0x density baseline and
-        /// scales naturally with the device's density to feel right
-        /// at any DPI without occluding adjacent UI elements.
+        /// Software cursor side length in dp. Scaled by display
+        /// density at instantiation time to give the sprite a
+        /// consistent visual size across devices.
         private const val CURSOR_SIZE_DP = 24
-
-        // PointerIcon.TYPE_* constants — IDs Rust passes from
-        // `cursor.rs` so both code paths use the same enum values.
         /// Matches `captured_pointer::PRIMARY_WINDOW_ID` on the Rust
         /// side. MainActivity always passes this when querying the
         /// per-window hold-drag flag; spawned `ExtraWindowActivity`
-        /// instances pass their own `extraWindowId`. The cursor
-        /// `STYLE_*` constants live on `CursorOverlayView` so both
-        /// Activities share one source of truth.
+        /// instances pass their own `extraWindowId`.
         const val PRIMARY_WINDOW_ID: Long = 0
     }
 }

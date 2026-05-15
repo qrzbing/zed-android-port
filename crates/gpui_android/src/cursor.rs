@@ -94,11 +94,10 @@ fn set_pointer_icon_inner(
     )?;
 
     // While the activity has pointer capture, the system PointerIcon
-    // we just set is hidden (we draw a software cursor in
-    // CursorOverlayView ourselves). Push the same icon-type id to
-    // MainActivity so the overlay can render the matching shape.
-    // setCapturedCursorStyle no-ops when cursorView is null (capture
-    // not active), so this is safe to call unconditionally.
+    // we just set is hidden. Push the icon-type id to MainActivity so
+    // the SurfaceControl-based cursor overlay can render the matching
+    // sprite. The Kotlin method no-ops when the overlay isn't live
+    // (capture not active or API < 29), so this is safe unconditionally.
     let _ = env.call_method(
         &activity,
         "setCapturedCursorStyle",

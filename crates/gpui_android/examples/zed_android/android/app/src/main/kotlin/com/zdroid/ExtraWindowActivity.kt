@@ -1,6 +1,7 @@
 package com.zdroid
 
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.InputDevice
@@ -8,9 +9,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -53,26 +51,16 @@ import androidx.core.view.WindowInsetsControllerCompat
 class ExtraWindowActivity : AppCompatActivity() {
     private var extraWindowId: Long = -1L
     private lateinit var surfaceView: SurfaceView
-    /// Software cursor overlay + capture-mode state. Mirrors
-    /// MainActivity's pipeline so the trackpad behaves identically
-    /// inside spawned windows: requestPointerCapture intercepts raw
-    /// touchpad events, onGenericMotionEvent routes them to the
-    /// per-window Rust state machine via
-    /// `NativeBridge.nativeOnExtraCapturedPointer(extraWindowId, …)`,
-    /// and the overlay paints the bitmap cursor on top of the
-    /// SurfaceView. `cursorX`/`cursorY` are physical pixels in
-    /// decorView coordinate space; Kotlin owns the visible cursor
-    /// position so the on-screen sprite and the gpui-side cursor
-    /// stay synchronized.
-    /// Cursor sprite as SurfaceView foreground drawable instead of
-    /// a sibling View. Adding a sibling View above SurfaceView flips
-    /// the OS compositor to alpha-aware mode and lets gpui's
-    /// transparent clear color tint the whole editor. The Drawable
-    /// is painted by SurfaceView's own draw cycle, so no sibling
-    /// View is introduced.
-    private var cursorDrawable: CursorDrawable? = null
+    /// Cursor position in physical pixels relative to this Activity's
+    /// SurfaceView. Mirrors MainActivity's state machine.
     private var cursorX: Float = 0f
     private var cursorY: Float = 0f
+
+    /// Hardware-composited cursor sprite. Child SurfaceControl of
+    /// `surfaceView` (API 29+). Null on older devices and prior to
+    /// first pointer-capture acquire.
+    private var cursorOverlay: CursorSurfaceControl? = null
+
     private var cursorHiddenByKeyboard: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,6 +169,8 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy windowId=$extraWindowId")
+        cursorOverlay?.release()
+        cursorOverlay = null
         if (extraWindowId >= 0L) {
             NativeBridge.nativeOnExtraActivityDestroyed(extraWindowId)
         }
@@ -220,28 +210,30 @@ class ExtraWindowActivity : AppCompatActivity() {
         super.onPointerCaptureChanged(hasCapture)
         Log.i(TAG, "onPointerCaptureChanged windowId=$extraWindowId hasCapture=$hasCapture")
         if (hasCapture) {
-            ensureCursorDrawable()
             val (w, h) = visibleBounds()
             cursorX = w / 2f
             cursorY = h / 2f
-            cursorDrawable?.move(cursorX, cursorY)
-            cursorDrawable?.setVisible(true)
+            ensureCursorOverlay()
+            cursorOverlay?.move(cursorX, cursorY)
+            cursorOverlay?.setVisible(true)
         } else {
-            cursorDrawable?.setVisible(false)
+            cursorOverlay?.setVisible(false)
         }
+    }
+
+    private fun ensureCursorOverlay() {
+        if (cursorOverlay != null) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val displaySize = (CURSOR_SIZE_DP * resources.displayMetrics.density)
+            .toInt()
+            .coerceAtLeast(16)
+        cursorOverlay = CursorSurfaceControl(this, surfaceView, displaySize)
     }
 
     private fun visibleBounds(): Pair<Float, Float> {
         val w = surfaceView.width.toFloat().coerceAtLeast(1f)
         val h = surfaceView.height.toFloat().coerceAtLeast(1f)
         return w to h
-    }
-
-    private fun ensureCursorDrawable() {
-        // Cursor sprite rendering disabled — see MainActivity.kt
-        // for the rationale. Both sibling-View and foreground-Drawable
-        // approaches trigger the SurfaceView compositor flip that
-        // bleeds a faint whiteish overlay across the editor.
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
@@ -259,7 +251,7 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     private fun handleCapturedEvent(event: MotionEvent) {
         if (cursorHiddenByKeyboard) {
-            cursorDrawable?.setVisible(true)
+            cursorOverlay?.setVisible(true)
             cursorHiddenByKeyboard = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
@@ -276,10 +268,20 @@ class ExtraWindowActivity : AppCompatActivity() {
                 val (maxX, maxY) = visibleBounds()
                 cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
                 cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
-                cursorDrawable?.move(cursorX, cursorY)
+                cursorOverlay?.move(cursorX, cursorY)
             }
         }
         forwardCapturedPointer(event)
+    }
+
+    /// JNI bridge: Rust's `cursor.rs::set_pointer_icon_inner` pushes the
+    /// PointerIcon.TYPE_* id here so the SurfaceControl-based cursor
+    /// sprite matches the gpui-requested style inside this window.
+    @Suppress("unused")
+    fun setCapturedCursorStyle(style: Int) {
+        runOnUiThread {
+            cursorOverlay?.setStyle(style)
+        }
     }
 
     private fun forwardCapturedPointer(event: MotionEvent) {
@@ -313,16 +315,6 @@ class ExtraWindowActivity : AppCompatActivity() {
         )
     }
 
-    /// Called from Rust via JNI (`cursor.rs::set_pointer_icon_inner`)
-    /// to update the cursor sprite shape inside this window. Same
-    /// shape as MainActivity's setCapturedCursorStyle.
-    @Suppress("unused")
-    fun setCapturedCursorStyle(style: Int) {
-        runOnUiThread {
-            cursorDrawable?.setStyle(style)
-        }
-    }
-
     /// Forward hardware key events to the gpui-side window. AppCompatActivity
     /// doesn't have GameActivity's native input queue, so without this
     /// override the OS routes KeyEvents to the focused View's default
@@ -340,14 +332,11 @@ class ExtraWindowActivity : AppCompatActivity() {
     /// mapping for that action, which is the same policy as the primary
     /// window's translate_key_event uses.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // Desktop-classic auto-hide: hide the cursor on first
-        // keystroke. Reappears on any pointer motion via
-        // `handleCapturedEvent`. Mirrors MainActivity behavior.
         if (event.action == KeyEvent.ACTION_DOWN
             && !cursorHiddenByKeyboard
-            && cursorDrawable != null
+            && cursorOverlay != null
         ) {
-            cursorDrawable?.setVisible(false)
+            cursorOverlay?.setVisible(false)
             cursorHiddenByKeyboard = true
         }
         if (extraWindowId >= 0L) {
@@ -421,8 +410,7 @@ class ExtraWindowActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "zed_android_extra"
         const val EXTRA_WINDOW_ID = "com.zdroid.window_id"
-        /// Cursor size matches MainActivity's so the sprite is
-        /// identical across all windows the user can spawn.
+        /// Software cursor side length in dp — matches MainActivity.
         private const val CURSOR_SIZE_DP = 24
     }
 }
