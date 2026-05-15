@@ -398,15 +398,18 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             );
             // Register the env_root with util::command so absolute-path
             // spawns under it get rewritten to route through `zd-exec`.
-            // Without this, Zed exec's binaries that live inside the
-            // adapter's filesystem (e.g. extension-shipped glibc proxies
-            // like `java-lsp-proxy`) directly on bionic and fails with
-            // ENOENT — the binary's PT_INTERP doesn't exist on host.
-            // See `util::command::env_root_program_path` for the full
-            // rationale; tl;dr the bridge is what makes "the env is
-            // truly isolated" actually true for absolute-path spawns,
-            // not just PATH-resolved ones.
-            util::command::register_environment_root(env_root.clone());
+            // Gated on `needs_command_bridge()` so adapters whose
+            // binaries run natively on the host (bootstrap's bionic-
+            // flavored Termux prefix, external Termux's Intent
+            // dispatch) skip the rewrite. Without that gate, every
+            // absolute-path spawn from a bootstrap user (PATH-resolved
+            // rust-analyzer at $PREFIX/bin/rust-analyzer, downloaded
+            // LSPs under <data>/languages/, etc.) would rewrite to
+            // `zd-exec <abs>` and fail with ENOENT — bootstrap mode
+            // doesn't put zd-exec on PATH.
+            if provider.needs_command_bridge() {
+                util::command::register_environment_root(env_root.clone());
+            }
             env_root.to_string_lossy().into_owned()
         } else {
             log::info!(

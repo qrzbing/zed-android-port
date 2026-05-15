@@ -497,6 +497,16 @@ impl RuntimeProvider for ChrootAdapter {
         anyhow::bail!("ChrootAdapter::spawn is android-only")
     }
 
+    fn needs_command_bridge(&self) -> bool {
+        // Chroot crosses a namespace boundary: an absolute host path
+        // under `environment_root()` only resolves correctly when the
+        // spawn lands inside the chroot via `zd-exec` → `zd-spawnd` →
+        // chroot dispatch. PATH for this adapter front-loads the
+        // `zd-runtime/` symlink farm so `zd-exec` is kernel-resolvable
+        // by short name.
+        true
+    }
+
     fn environment_root(&self) -> std::path::PathBuf {
         // Host-side path that becomes Zed's ENTIRE data root when this
         // adapter is active (config, db, logs, extensions, languages,

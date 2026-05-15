@@ -107,6 +107,25 @@ pub trait RuntimeProvider: Send + Sync {
         true
     }
 
+    /// Whether `util::command::new_command` should rewrite absolute-path
+    /// spawns under [`Self::environment_root`] to route through
+    /// `zd-exec`. Adapters that cross a namespace boundary (e.g. chroot)
+    /// return true so the spawn lands inside the right userland;
+    /// adapters whose binaries run natively on the host (bootstrap's
+    /// bionic-flavored Termux prefix, external Termux's Intent
+    /// dispatch) return false so `execve` runs the binary directly.
+    ///
+    /// Default false — opt in. A misregistered true value in an
+    /// adapter without `zd-exec` on PATH fails every absolute-path
+    /// spawn with ENOENT (no `zd-exec` resolvable from kernel PATH
+    /// lookup); a missed true on a real chroot adapter dumps a glibc
+    /// binary into bionic and gets a bad-interpreter error. The
+    /// former is loud and immediate; pick that side of the
+    /// asymmetry.
+    fn needs_command_bridge(&self) -> bool {
+        false
+    }
+
     /// Host-side path that becomes Zed's entire data root when this
     /// adapter is active. The Zdroid Android port calls
     /// `paths::set_custom_data_dir(provider.environment_root())` at
