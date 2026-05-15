@@ -683,6 +683,40 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             "Updates ship via the APK; reinstall to upgrade.",
         );
     }
+
+    // auto_update::Check action interception. Same gpui dispatch trap
+    // as the OpenSettings deep-link: `auto_update::init` (just below)
+    // calls cx.observe_new to register the upstream Check handler at
+    // workspace_actions[0]. Upstream's handler calls `auto_update::check`
+    // which, with ZED_UPDATE_EXPLANATION set, just shows a "Zed was
+    // installed via a package manager" prompt instead of our actual
+    // in-app updater. Bubble-phase action dispatch auto-stops after
+    // the first listener that does not call cx.propagate, so any
+    // Check handler we register later (e.g. inside the big workspace
+    // observe_new further down) never runs.
+    //
+    // Fix: register our handler BEFORE auto_update::init so it sits
+    // at workspace_actions[0] and runs first. The handler routes
+    // straight to gpui_android::updater (GitHub Releases fetch + APK
+    // download + system installer handoff) and intentionally does
+    // not propagate, so upstream's package-manager prompt is bypassed.
+    // Direct calls to `auto_update::check()` (e.g. from the title bar
+    // collab "Please update Zed" button) still hit the prompt; that
+    // is acceptable because those callsites bypass the action system
+    // and our interception cannot reach them without forking the
+    // function.
+    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+        workspace.register_action(
+            |_workspace: &mut Workspace,
+             _: &auto_update::Check,
+             window,
+             cx| {
+                run_update_check(/*silent_when_up_to_date=*/ false, window, cx);
+            },
+        );
+    })
+    .detach();
+
     auto_update::init(client.clone(), cx);
     info!("zed_android: auto_update::init complete (polling suppressed)");
 
@@ -1107,16 +1141,6 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         let Some(window) = window else { return };
 
         workspace.register_action(editor::open_project_settings_file);
-
-        // auto_update::Check — Zdroid menu "Check for Updates". Registered
-        // on workspace so we have a Window context for the user prompts
-        // (cx.prompt requires a Window; the App-level on_action handler
-        // can't show modal dialogs). Spawns the network/IO work on
-        // background tasks so the UI thread stays responsive while the
-        // GitHub release page is fetched and the APK downloaded.
-        workspace.register_action(|_workspace: &mut Workspace, _: &auto_update::Check, window, cx| {
-            run_update_check(/*silent_when_up_to_date=*/ false, window, cx);
-        });
 
         // CloseProject: action wired in production at
         // `crates/zed/src/zed.rs:1123-1180`. Production binds it inside
