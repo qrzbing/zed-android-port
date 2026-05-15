@@ -26,6 +26,53 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000_u32;
 #[cfg(target_os = "android")]
 const ZD_EXEC_PROGRAM: &str = "zd-exec";
 
+/// `chdir(2)` in the forked subprocess fails with ENOENT for paths
+/// rooted at `/storage/emulated/`, `/sdcard/`, or `/mnt/runtime/` even
+/// when the parent process can readdir and open files there. Android's
+/// FUSE-emulated external storage gates entry against the requesting
+/// process's UID + supplementary groups; the parent's media_rw group
+/// membership grants file ops via the FUSE proxy, but the forked
+/// subprocess's chdir() syscall is checked through a separate path
+/// that returns ENOENT for any external-storage prefix. This breaks
+/// every LSP server / build tool spawn whose worktree lives on
+/// `/sdcard/projects/`.
+///
+/// Rewrite the requested CWD to an app-private fallback (Termux home,
+/// then app data dir, then /system/bin) when it falls under an
+/// external-storage prefix. LSP servers receive the actual project
+/// path via the `workspaceFolders` initialize parameter, so
+/// rust-analyzer / pyright / etc. still locate the project root
+/// correctly; only the kernel-level CWD changes.
+#[cfg(target_os = "android")]
+fn android_safe_cwd(dir: &Path) -> PathBuf {
+    const EXTERNAL_PREFIXES: &[&str] = &[
+        "/storage/emulated/",
+        "/storage/self/",
+        "/sdcard/",
+        "/mnt/runtime/",
+        "/mnt/user/",
+        "/mnt/media_rw/",
+    ];
+    let path_str = dir.to_string_lossy();
+    if EXTERNAL_PREFIXES.iter().any(|p| path_str.starts_with(p)) {
+        if let Some(home) = std::env::var_os("TERMUX__HOME")
+            .or_else(|| std::env::var_os("HOME"))
+        {
+            let home_path = PathBuf::from(home);
+            if home_path.is_dir() {
+                log::debug!(
+                    "util::command: rewriting external-storage CWD {:?} -> {:?}",
+                    dir,
+                    home_path,
+                );
+                return home_path;
+            }
+        }
+        return PathBuf::from("/system/bin");
+    }
+    dir.to_path_buf()
+}
+
 /// Active adapter's host-side environment root. Set once at boot from
 /// `lib.rs` (after `RuntimeProvider::environment_root()` is known); any
 /// absolute-path spawn whose program lives under this root is rewritten
@@ -308,7 +355,14 @@ impl Command {
     }
 
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
-        self.0.current_dir(dir);
+        #[cfg(target_os = "android")]
+        {
+            self.0.current_dir(android_safe_cwd(dir.as_ref()));
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.0.current_dir(dir);
+        }
         self
     }
 
