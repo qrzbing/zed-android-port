@@ -104,7 +104,18 @@ class ExtraWindowActivity : AppCompatActivity() {
 
         val id = extraWindowId
         surfaceView = ScrollableSurfaceView(this).apply {
-            holder.setFormat(android.graphics.PixelFormat.RGBA_8888)
+            // OPAQUE pixel format so Android's compositor treats this
+            // SurfaceView's buffer as fully opaque regardless of alpha
+            // bytes in the wgpu output. RGBA_8888 (the previous value)
+            // flipped the compositor into alpha-aware mode, which let
+            // gpui's anti-aliased text edges + transparent shadow/scrim
+            // regions bleed the activity's windowBackground (or any
+            // default light backing) through as a visible whiteish tint
+            // across the settings/secondary-window area. MainActivity
+            // (GameActivity) defaults to an opaque format and never had
+            // the tint; only ExtraWindowActivity needed this explicit
+            // override.
+            holder.setFormat(android.graphics.PixelFormat.OPAQUE)
             holder.addCallback(SurfaceCallback(id))
             // Forward touches to native via JNI. Returning true claims the
             // gesture so it doesn't bubble up to the OS chrome (which would

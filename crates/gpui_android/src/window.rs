@@ -144,21 +144,20 @@ impl AndroidWindowStatePtr {
                 DevicePixels(width.max(1) as i32),
                 DevicePixels(height.max(1) as i32),
             ),
-            // Alpha-aware compositor mode so the activity's
-            // `windowBackground` (a static brand-icon-over-indigo
-            // drawable) shows through the SurfaceView buffer during
-            // the brief window between SurfaceView attach and the
-            // first wgpu paint. Without this the buffer renders as
-            // opaque black for ~1–2s on warm boots and ~30s on
-            // first-launch bootstrap extraction — a visible
-            // post-splash black flash. The cursor-tint regression
-            // that originally motivated `transparent: false` is
-            // sidestepped because `set_clear_color` below pins the
-            // wgpu clear to opaque brand indigo, so the swap-chain
-            // buffer is always fully opaque once wgpu has drawn
-            // anything at all; alpha-aware compositing only
-            // matters in the pre-first-paint window where it's
-            // exactly the behavior we want.
+            // Alpha-aware compositor mode (PreMultiplied with
+            // Inherit fallback). The SurfaceView's pixel format is
+            // what actually decides the compositor's alpha-awareness
+            // on Adreno+Samsung: MainActivity (GameActivity) ends up
+            // OPAQUE and ExtraWindowActivity's holder is explicitly
+            // OPAQUE too, so the wgpu surface's alpha_mode falls back
+            // to Inherit and behaves opaque regardless of this flag.
+            // Leaving `true` keeps wgpu happy on the rare path where
+            // a future window does want alpha blending (e.g. the
+            // splash overlay's pre-first-paint window-background
+            // bridge), without affecting the post-first-paint editor
+            // rendering. The visible-tint regression had nothing to
+            // do with this flag — see ExtraWindowActivity.kt for the
+            // real fix.
             transparent: true,
             // Mailbox lets the swap chain discard a stale frame at present
             // time when a newer one is ready, which under irregular paint
