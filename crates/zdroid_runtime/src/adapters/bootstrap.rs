@@ -338,8 +338,26 @@ impl RuntimeProvider for BootstrapAdapter {
         new_path.push(":");
         new_path.push(&existing_path);
 
+        // HOME points at the Termux home dir, NOT data_path. Two
+        // reasons:
+        //   1. Subprocess parity. Every shell, LSP, git, etc. Zed
+        //      spawns inherits this env. With HOME=data_path,
+        //      `git config --global user.name` reads
+        //      `<data>/files/.gitconfig` which doesn't exist — the
+        //      user's actual .gitconfig is at `<termux_home>/
+        //      .gitconfig` because Termux's profile.d/zed-init.sh
+        //      rewrites HOME to termux_home on bash startup. The
+        //      integrated terminal sees it; Zed-spawned subprocess
+        //      git didn't.
+        //   2. Zed's own data dirs are pinned by `paths::set_custom_
+        //      data_dir(env_root)` in `gpui_android::lib`, so
+        //      config / db / extensions / logs land at
+        //      `<env_root>/{config,db,extensions,logs,…}` regardless
+        //      of HOME. The few `paths::home_dir()` consumers
+        //      (`.ssh/config` in particular) align correctly with
+        //      what shells see when both use termux_home.
         vec![
-            ("HOME".into(), EnvOp::Set(data_path.as_os_str().to_owned())),
+            ("HOME".into(), EnvOp::Set(termux_home.as_os_str().to_owned())),
             ("PREFIX".into(), EnvOp::Set(prefix.as_os_str().to_owned())),
             ("TERMUX__ROOTFS".into(), EnvOp::Set(data_path.as_os_str().to_owned())),
             ("TERMUX__PREFIX".into(), EnvOp::Set(prefix.as_os_str().to_owned())),
