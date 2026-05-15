@@ -190,21 +190,6 @@ First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Grad
 
 ---
 
-<a id="caveats"></a>
-## <img src="https://api.iconify.design/lucide:triangle-alert.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Caveats
-
-What doesn't work yet, by area:
-
-- **Soft keyboard.** Not bridged. Hardware keyboard required for text input.
-- **Touch scroll and drag** on bare touchscreens (no trackpad) are the roughest input mode. Hardware keyboard, mouse, and trackpad (including pointer-capture mode) are reliable; touch-only flows occasionally drop or batch events.
-- **glibc-only LSPs.** Some extension-shipped language servers are dynamically linked against glibc and won't run on bionic. JVM/Node/Python LSPs work because they route through Termux's bionic-compatible runtimes.
-- **Collab and livekit voice.** Cfg-gated to mocks; the binary compiles but those panels can't connect to backend services this fork doesn't speak to.
-- **Sandboxed storage.** `/sdcard/` is FUSE-mounted `noexec`. Build inside `~/projects/`, or let the title-bar Move chip copy a `/sdcard` project into the exec realm.
-- **MIUI / HyperOS battery management** aggressively kills backgrounded Zdroid on Xiaomi / Redmi / Poco devices. Settings → Apps → Zdroid → Battery → "No restrictions" if you want long-running terminals to survive task switches.
-- **Daily-driven on Tab S9 Ultra only.** Compiles for any aarch64 Android 9+ with Vulkan 1.1, but only Adreno 740 (Snapdragon 8 Gen 2 family) is exercised. Mali / Xclipse devices will run but may want shader tweaks.
-
----
-
 ## <img src="https://api.iconify.design/lucide:file-text.svg?color=%23999999&height=22" valign="middle" /> &nbsp;License
 
 GPL-3.0-or-later, same as upstream Zed. The Bootstrap-adapter zip (distributed from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap), not bundled in the APK) contains Termux-rebuilt packages each under its own license (mostly BSD/MIT/Apache; gnupg/bash/coreutils are GPL). The Alpine-derived `ld-musl-aarch64.so.1` inside it is MIT. The `zd-spawnd` daemon ([`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd)) is GPL-3.0-or-later.
@@ -219,12 +204,6 @@ GPL-3.0-or-later, same as upstream Zed. The Bootstrap-adapter zip (distributed f
 - The [`wgpu`](https://github.com/gfx-rs/wgpu) and [`blade-graphics`](https://github.com/kvark/blade) maintainers for a Vulkan abstraction that just works on Adreno.
 - [The Termux project](https://termux.dev/) for [a decade of Linux-on-Android](https://github.com/termux/termux-app). Most of our `apt install` machinery is their patches with the package name swapped.
 - [Alpine Linux](https://alpinelinux.org/) for [musl libc](https://musl.libc.org/), which lets Bun-compiled musl binaries (claude-code, codex) execve cleanly on bionic.
-
----
-
-## <img src="https://api.iconify.design/lucide:git-pull-request.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Contributing
-
-Issues, screenshots, hardware reports, and PRs welcome. Read [`crates/gpui_android/docs/workarounds/README.md`](crates/gpui_android/docs/workarounds/README.md) before adding a platform shim. Good chance the issue you're hitting has a documented workaround already, with the constraint that ruled out the obvious fix.
 
 ---
 
