@@ -59,7 +59,7 @@ Pre-baked in the bootstrap: rust-analyzer (the LSP binary; `cargo` and `rustc` a
 npm install -g @anthropic-ai/claude-code
 ```
 
-Toolchains and LSPs for other languages live in [LSP install recipes](#lsp-install-recipes) further down.
+Toolchains and LSPs for other languages have install recipes in the bootstrap repo: [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap).
 
 > [!CAUTION]
 > Do **not** run `apt --fix-broken install` on a fresh bootstrap before you've installed anything else.
@@ -214,52 +214,6 @@ Switching is one tap (Settings → Android Runtime). Selection persists in `$PRE
 
 - **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked packages (go, openssh, etc.) as "unowned" and remove them.
 - **DNS via `/sdcard/.zed/r`.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. The bootstrap ships with a musl loader + Bun-binary patcher that rewrites the literal to point at `/sdcard/.zed/r`. The file is populated by JNI from Android's `ConnectivityManager.getActiveDnsServers()` at every boot. Full writeup in [`zdroid-bootstrap/docs/hex-patch-resolv-conf.md`](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md).
-
----
-
-## <img src="https://api.iconify.design/lucide:folder-tree.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Storage workflow
-
-**Click "Open Project" from the welcome screen.** Android's storage picker opens at the device's shared storage. Two ways through:
-
-- **Stay in the picker, open the side menu, navigate to Zdroid → projects.** Zdroid's `DocumentsProvider` exposes `~/` as a SAF root. Anything you open from under there is in exec-mounted storage and builds run normally.
-- **Pick anywhere on `/sdcard/`** (an existing project on internal storage). It opens in **restricted mode** — Android's shared storage is FUSE-mounted `noexec`, so `cargo build`'s output binary can't `execve()`. Read / edit / save still work. Zdroid shows a yellow **Builds won't run · Move** chip at the top; one tap copies the folder into `~/projects/<name>` once and reopens it from the exec-mounted side.
-
-The two storage realms underneath:
-
-1. `/data/data/com.zdroid/files/` (app-private, exposed as `~/`) is **exec-mounted**. Same place Termux runs everything from. `~/projects/<name>` is the default workspace root; `cargo new`, `git clone`, builds, debugs, integrated terminal subprocesses all run.
-2. `/storage/emulated/0/` (Android's shared storage, also surfaced at `~/storage/`) is **FUSE-mounted `noexec`**. Read / write / edit fine; the kernel refuses `execve()`. `cargo run` against a binary on `/sdcard/...` returns `EACCES`.
-
-| Where | What for |
-| --- | --- |
-| `~/projects/<name>` | Default workspace root. Builds, debugs, terminal subprocesses all run. |
-| `~/storage/{shared,downloads,...}` | Curated symlinks into shared storage. For "open / edit / save a single file" workflows. Don't workspace-root these. |
-| File → Open (any `/sdcard/` path) | Restricted mode. Use the yellow Move chip to promote into `~/projects/`. |
-| File → Import from sdcard… | SAF folder picker. Recursively copies the chosen folder into `~/projects/<basename>`. |
-
----
-
-## <img src="https://api.iconify.design/lucide:terminal.svg?color=%23999999&height=22" valign="middle" /> &nbsp;LSP install recipes
-
-```sh
-# Rust: baked into the bootstrap.
-rust-analyzer --version
-
-# Go.
-go install golang.org/x/tools/gopls@latest
-
-# TypeScript / JavaScript.
-npm install -g typescript typescript-language-server
-
-# Python (Pyright).
-pkg install python && npm install -g pyright
-
-# Java (jdtls). JVM-based, no native proxy needed.
-pkg install openjdk-17 maven
-# Then download jdtls from https://download.eclipse.org/jdtls/milestones/
-# and add an `lsp.jdtls.binary.path` override in settings.json.
-```
-
-Themes, grammars, and language configs from the Extensions pane always work. Some extension-shipped binaries are glibc-only and won't run on Android (see [Caveats](#caveats)).
 
 ---
 
