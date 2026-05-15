@@ -1,20 +1,16 @@
-<table border="0">
-<tr>
-<td width="120" valign="middle">
-<img src="crates/gpui_android/examples/zed_android/docs/screenshots/zdroid-logo.png" width="100" alt="Zdroid logo" />
-</td>
-<td valign="middle">
-<h1>Zdroid</h1>
-<sub><em>Zed on Android.</em></sub>
-</td>
-</tr>
-</table>
+<p align="center">
+  <img src="crates/gpui_android/examples/zed_android/docs/screenshots/zdroid-logo.png" width="120" alt="Zdroid logo" />
+</p>
 
-<p>
+<h1 align="center">Zdroid</h1>
+
+<p align="center"><sub><em>Zed on Android.</em></sub></p>
+
+<p align="center">
   Started as a joke. Rust on aarch64, sounded portable. Laughed about it. Kept going. Couldn't stop. There's an APK.
 </p>
 
-<p>
+<p align="center">
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental" />
   <img src="https://img.shields.io/badge/platform-Android-3DDC84?logo=android" alt="Android" />
   <a href="https://github.com/Dylanmurzello/zed-android-port/releases/latest"><img src="https://img.shields.io/github/downloads/Dylanmurzello/zed-android-port/total?label=downloads" alt="Total downloads" /></a>
