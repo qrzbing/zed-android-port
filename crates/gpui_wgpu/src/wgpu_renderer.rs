@@ -164,6 +164,14 @@ pub struct WgpuRenderer {
     device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     surface_configured: bool,
     needs_redraw: bool,
+    /// Color the main pass clears to before drawing the scene. Defaults
+    /// to fully transparent so the desktop compositor can blend the
+    /// gpui frame with whatever is behind it (window decorations,
+    /// transparent shadows, etc.). Embedders that own the entire
+    /// surface and want to avoid the brief black flash between
+    /// `SurfaceView` attach and the first scene paint can set this
+    /// to an opaque brand color via `set_clear_color`.
+    clear_color: wgpu::Color,
 }
 
 impl WgpuRenderer {
@@ -502,6 +510,7 @@ impl WgpuRenderer {
             device_lost: context.device_lost_flag(),
             surface_configured: true,
             needs_redraw: false,
+            clear_color: wgpu::Color::TRANSPARENT,
         })
     }
 
@@ -1093,6 +1102,17 @@ impl WgpuRenderer {
         self.max_texture_size
     }
 
+    /// Override the per-frame clear color. Embedders that own the
+    /// entire surface (Android via SurfaceView, embedded apps, etc.)
+    /// should set this to an opaque brand color so the first wgpu
+    /// frame replaces the SurfaceView's default-black buffer with
+    /// the right hue instead of a black flash. Default
+    /// `wgpu::Color::TRANSPARENT` is correct for desktop compositors
+    /// that blend the gpui frame with system chrome behind it.
+    pub fn set_clear_color(&mut self, color: wgpu::Color) {
+        self.clear_color = color;
+    }
+
     pub fn draw(&mut self, scene: &Scene) -> bool {
         // Bail out early if the surface has been unconfigured (e.g. during
         // Android background/rotation transitions).  Attempting to acquire
@@ -1230,7 +1250,7 @@ impl WgpuRenderer {
                         view: &frame_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load: wgpu::LoadOp::Clear(self.clear_color),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
