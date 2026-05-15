@@ -28,7 +28,7 @@ Zdroid is an independent port of [Zed](https://zed.dev) for Android, not affilia
 
 Vulkan via wgpu. AChoreographer-driven vsync, no JNI hop per frame. Opt-in 120Hz with Mailbox present mode. Glyph fallback into `/system/fonts` so Powerline arrows and CJK render without bundling fonts. The `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates run unchanged. The Rust `.so` is the app process. gpui composites every pixel (yes, you read that right) straight into the Adreno Vulkan driver. Multi-Activity OS-chromed extra windows so DeX freeform renders Settings and secondary editors with real chrome.
 
-Termux userland rebuilt under `com.zdroid` (applicationId byte-length pinned to 10 because prebuilt RUNPATHs in the .debs don't stretch). Musl loader hex-patched at runtime so Bun-compiled binaries like claude-code and codex resolve `/etc/resolv.conf` to a JNI-populated `/sdcard/.zed/r`. Optional Magisk-flashable `zd-spawnd` daemon with SCM_RIGHTS stdio relay for the chroot runtime. SurfaceControl-composited hardware cursor sprite on a sibling overlay, separate from the wgpu frame. Pointer-capture trackpad that consumes historical motion samples so finger drags don't lose 80% of their travel to event batching. SAF DocumentsProvider exposing `~/` as a system volume. Native Android trust via `rustls-platform-verifier`. In-app updater pulling signed APKs from GitHub Releases. Everything else is upstream.
+Termux userland rebuilt under `com.zdroid` (applicationId byte-length pinned to 10 because prebuilt RUNPATHs in the .debs don't stretch). Musl loader hex-patched at runtime so Bun-compiled binaries like claude-code and codex resolve `/etc/resolv.conf` to a JNI-populated `/sdcard/.zed/r`. Optional Magisk-flashable `zd-spawnd` daemon with SCM_RIGHTS stdio relay for the chroot runtime. SurfaceControl-composited hardware cursor sprite on a sibling overlay, separate from the wgpu frame. Pointer-capture trackpad that consumes historical motion samples so finger drags don't lose 80% of their travel to event batching. SAF DocumentsProvider exposing `~/` as a system volume. Native Android trust via `rustls-platform-verifier`. In-app updater pulling signed APKs from GitHub Releases. Everything else is upstream. Deep-dives for the platform layer live in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/).
 
 ---
 
@@ -107,6 +107,27 @@ Three workflows that work with this constraint:
 
 ---
 
+<a id="userland"></a>
+## <img src="https://api.iconify.design/lucide:server.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Userland
+
+The editor is bionic-linked and runs as the Android app process. Every subprocess it spawns (`bash`, `apt`, language servers, formatters, terminal shells, `git`, `ssh`) routes through whichever runtime adapter the user picked. Three adapters ship; they version independently of the editor APK.
+
+| Adapter | What it is | Where it comes from |
+|---|---|---|
+| **Bootstrap** _(no root)_ | Termux userland rebuilt under `com.zdroid`: apt/dpkg/bash with our package name baked into RUNPATHs and shebangs. Pure bionic, no glibc; same trade-offs as any Termux install. `apt` and `pkg install` work for everything Termux ships. | Auto-downloaded from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) on first selection. |
+| **Kali chroot** _(needs Magisk)_ | Real glibc Linux. Every spawn goes over a Unix socket to `zd-spawnd` (a small privileged daemon) which does `fork` + `chroot` + `setuid` + `execve` on the editor's behalf. ~5 ms per spawn vs ~200 ms for `su`-mediated. All the bionic gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because subprocesses run inside a real distro. | Flash the Magisk module from [`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd), plus drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. |
+| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge in progress (see [#36](https://github.com/Dylanmurzello/zed-android-port/issues/36)). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
+
+Switching is one tap (Settings → Android Runtime). Selection persists in `$PREFIX/etc/zd-runtime.toml`.
+
+### When to pick which
+
+- **No root, just want it to work:** Bootstrap. apt, npm, `go install`, rust-analyzer all work. Rough edges: precompiled Bun CLIs (claude-code, codex) rely on a runtime hex-patch of `/etc/resolv.conf` to a `/sdcard/.zed/r` file that JNI populates each boot from `ConnectivityManager.getActiveDnsServers()`. Full writeup in [`zdroid-bootstrap/docs/hex-patch-resolv-conf.md`](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md). Some glibc-only extension binaries don't run.
+- **Have Magisk, want real Linux:** Kali chroot. Everything you'd expect on Debian/Kali works as-is, no shimming needed. The chroot is shared with whatever else uses that NetHunter rootfs.
+- **Already on Termux:** External adapter once the bridge lands. Your `~/`, your packages, your shell history; Zdroid just spawns subprocesses there.
+
+---
+
 ## <img src="https://api.iconify.design/lucide:layers.svg?color=%23999999&height=22" valign="middle" /> &nbsp;What works
 
 <p align="center">
@@ -130,18 +151,6 @@ Three workflows that work with this constraint:
 - **App menu bar** with nested submenus (Settings, Keymap, Themes, Extensions).
 - **Theme follow** for system light/dark.
 - **`ZedDocumentsProvider`** exposes the project root as a SAF volume, so other Android apps can browse Zed's worktrees.
-
----
-
-## <img src="https://api.iconify.design/lucide:map.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Roadmap
-
-Documented in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/). PRs welcome.
-
-- Soft keyboard / touch IME bridge.
-- 120Hz on 120Hz panels (currently 60Hz).
-- Mailbox present mode, FrameMetrics, ALooper spurious-wake hunt, touch-event chain shortening.
-
-Out of scope for this proof of concept: collab, AI panels, livekit voice. Cfg-gated to mocks so the binary still compiles. Cloud-account features that need backend integration anyway.
 
 ---
 
@@ -181,55 +190,18 @@ First build is around 10 minutes. Incremental Rust rebuilds are 20 seconds, Grad
 
 ---
 
-## <img src="https://api.iconify.design/lucide:cog.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Architecture
-
-Deep-dives in [`crates/gpui_android/docs/workarounds/`](crates/gpui_android/docs/workarounds/). Highlights:
-
-- **AChoreographer-driven vsync** via NDK FFI. No JNI hop per frame.
-- **SAF integration** for picker → POSIX-path translation.
-- **Multi-activity OS-chromed extra windows.** DeX freeform shows extra windows with Android's own task chrome.
-
----
-
-<a id="userland"></a>
-## <img src="https://api.iconify.design/lucide:server.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Userland
-
-The editor is bionic-linked and runs as the Android app process. Every subprocess it spawns (`bash`, `apt`, language servers, formatters, terminal shells, git, ssh) is routed through whichever **runtime adapter** the user picked in onboarding. Three adapters ship; they version independently of the editor APK.
-
-| Adapter | What it is | Where it comes from |
-|---|---|---|
-| **Bootstrap** _(default, no root)_ | A Termux userland rebuilt under `com.zdroid` — apt/dpkg/bash with our package name baked into RUNPATHs and shebangs. ~250 MB extracted into the app's private data dir. Pure bionic, no glibc; same trade-offs as any Termux install. Apt + `pkg install` work for everything Termux ships. | Auto-downloaded from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) on first selection. |
-| **Kali chroot** _(needs Magisk)_ | Real glibc Linux. Every spawn goes over a Unix socket to `zd-spawnd` (a small privileged daemon) which does `fork` + `chroot` + `setuid` + `execve` on the editor's behalf. ~5 ms per spawn vs ~200 ms for `su`-mediated. All the Termux gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because you're inside a real distro. | Flash the Magisk module from [`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd) + drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. |
-| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge is in progress (see [#36](https://github.com/Dylanmurzello/zed-android-port/issues)). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
-
-Switching is one tap (Settings → Android Runtime). Selection persists in `$PREFIX/etc/zd-runtime.toml`.
-
-### When to pick which
-
-- **Just want it to work, no root**: Bootstrap. Apt, npm, go install, rust-analyzer all work. The user-facing rough edges are: precompiled Bun CLIs (claude-code, codex) need `/etc/resolv.conf` hex-patches we ship; some glibc-only extension binaries don't run.
-- **Have Magisk, want a real Linux**: Kali chroot. Everything you'd expect on Debian/Kali works as-is, no shimming needed. The chroot is shared with whatever else uses that NetHunter rootfs.
-- **Already on Termux**: External adapter once it lands. Your `~/`, your packages, your shell history; Zdroid just spawns subprocesses there.
-
-### Bootstrap adapter notes (the ones with the funny path stuff)
-
-- **Claude Code.** `npm install -g @anthropic-ai/claude-code`, then `claude`. If npm or any later `pkg install` complains about unmet deps, run `apt --fix-broken install` *afterwards* to settle them. Don't run fix-broken on a fresh bootstrap before you've installed anything: apt will treat the pre-baked packages (go, openssh, etc.) as "unowned" and remove them.
-- **DNS via `/sdcard/.zed/r`.** Bun-compiled CLIs statically link c-ares with `/etc/resolv.conf` baked into rodata. The bootstrap ships with a musl loader + Bun-binary patcher that rewrites the literal to point at `/sdcard/.zed/r`. The file is populated by JNI from Android's `ConnectivityManager.getActiveDnsServers()` at every boot. Full writeup in [`zdroid-bootstrap/docs/hex-patch-resolv-conf.md`](https://github.com/Dylanmurzello/zdroid-bootstrap/blob/main/docs/hex-patch-resolv-conf.md).
-
----
-
 <a id="caveats"></a>
 ## <img src="https://api.iconify.design/lucide:triangle-alert.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Caveats
 
-This is just a proof of concept. No promises, might be highly unstable. The list isn't comprehensive.
+What doesn't work yet, by area:
 
-- Soft keyboard not bridged. Hardware keyboard required for text input.
-- Input has rough edges. Hardware keyboard, mouse, trackpad, and touch all work for most flows, but some keystrokes / pointer events may not register or behave consistently. Touch scroll and drag are the most fragile; keyboard is the most reliable.
-- 60Hz on 120Hz panels. Haven't opted into 120Hz via `ANativeWindow_setFrameRate` yet.
-- Some extension-shipped LSPs are glibc-only and won't run. JVM/Node/Python LSPs work via Termux's bionic runtimes.
-- No collab / AI / livekit panels. Cfg-gated to mocks.
-- Sandboxed storage. `/sdcard/` is FUSE-noexec; build inside `~/projects/`.
-- MIUI / HyperOS aggressive battery management kills backgrounded Zed. Settings → Apps → Zed → Battery → "No restrictions".
-- Tested on Tab S9 Ultra only. Mali / Xclipse not tried.
+- **Soft keyboard.** Not bridged. Hardware keyboard required for text input.
+- **Touch scroll and drag** on bare touchscreens (no trackpad) are the roughest input mode. Hardware keyboard, mouse, and trackpad (including pointer-capture mode) are reliable; touch-only flows occasionally drop or batch events.
+- **glibc-only LSPs.** Some extension-shipped language servers are dynamically linked against glibc and won't run on bionic. JVM/Node/Python LSPs work because they route through Termux's bionic-compatible runtimes.
+- **Collab and livekit voice.** Cfg-gated to mocks; the binary compiles but those panels can't connect to backend services this fork doesn't speak to.
+- **Sandboxed storage.** `/sdcard/` is FUSE-mounted `noexec`. Build inside `~/projects/`, or let the title-bar Move chip copy a `/sdcard` project into the exec realm.
+- **MIUI / HyperOS battery management** aggressively kills backgrounded Zdroid on Xiaomi / Redmi / Poco devices. Settings → Apps → Zdroid → Battery → "No restrictions" if you want long-running terminals to survive task switches.
+- **Daily-driven on Tab S9 Ultra only.** Compiles for any aarch64 Android 9+ with Vulkan 1.1, but only Adreno 740 (Snapdragon 8 Gen 2 family) is exercised. Mali / Xclipse devices will run but may want shader tweaks.
 
 ---
 
