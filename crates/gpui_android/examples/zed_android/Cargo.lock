@@ -17762,6 +17762,7 @@ dependencies = [
  "util",
  "uuid",
  "vim",
+ "vim_mode_setting",
  "watch",
  "which_key",
  "workspace",

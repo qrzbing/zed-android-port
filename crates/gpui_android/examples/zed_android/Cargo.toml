@@ -88,6 +88,7 @@ semver = "1"
 session = { path = "../../../session" }
 uuid = { version = "1.10", features = ["v4"] }
 vim = { path = "../../../vim" }
+vim_mode_setting = { path = "../../../vim_mode_setting" }
 zed_actions = { path = "../../../zed_actions" }
 # Force RustEmbed to bake assets into the binary even in debug builds —
 # without this, settings/theme assets are looked up from the host filesystem

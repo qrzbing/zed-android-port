@@ -318,6 +318,51 @@ fn android_main(app: AndroidApp) {
     });
 }
 
+/// Bind the default keymap plus the vim keymap when vim/helix mode is
+/// enabled. Mirrors `crates/zed/src/zed.rs::load_default_keymap` /
+/// `reload_keymaps`: clears all bindings and re-binds from scratch so
+/// disabling vim mode actually removes the vim keybindings instead of
+/// leaving them stacked on top of the defaults.
+///
+/// Called once during boot AFTER all `_init(cx)` calls have registered
+/// their actions (otherwise `load_asset_allow_partial_failure` silently
+/// drops bindings for unknown actions). Re-invoked on every
+/// `SettingsStore` change so toggling `vim_mode` from the command
+/// palette or settings.json takes effect immediately.
+fn reload_zdroid_keymaps(cx: &mut App) {
+    cx.clear_key_bindings();
+    match settings::KeymapFile::load_asset_allow_partial_failure(
+        settings::DEFAULT_KEYMAP_PATH,
+        cx,
+    ) {
+        Ok(bindings) => {
+            info!(
+                "zed_android: loaded {} key bindings from default keymap",
+                bindings.len(),
+            );
+            cx.bind_keys(bindings);
+        }
+        Err(err) => error!("zed_android: default keymap load failed: {err:#}"),
+    }
+    let vim_enabled = vim_mode_setting::VimModeSetting::is_enabled(cx)
+        || vim_mode_setting::HelixModeSetting::is_enabled(cx);
+    if vim_enabled {
+        match settings::KeymapFile::load_asset_allow_partial_failure(
+            settings::VIM_KEYMAP_PATH,
+            cx,
+        ) {
+            Ok(bindings) => {
+                info!(
+                    "zed_android: loaded {} vim/helix key bindings",
+                    bindings.len(),
+                );
+                cx.bind_keys(bindings);
+            }
+            Err(err) => error!("zed_android: vim keymap load failed: {err:#}"),
+        }
+    }
+}
+
 fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // android_main can run multiple times for one process when the activity
     // is recreated; paths' OnceLocks survive across invocations. The second
@@ -859,16 +904,16 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // `init` would silently drop every workspace::*, project_panel::*,
     // command_palette::*, vim::*, etc. binding. By the time we reach this
     // point everything has registered.
-    match settings::KeymapFile::load_asset_allow_partial_failure(
-        settings::DEFAULT_KEYMAP_PATH,
-        cx,
-    ) {
-        Ok(bindings) => {
-            info!("zed_android: loaded {} key bindings from default keymap", bindings.len());
-            cx.bind_keys(bindings);
-        }
-        Err(err) => error!("zed_android: keymap load failed: {err:#}"),
-    }
+    reload_zdroid_keymaps(cx);
+    // Mirror production's `reload_keymaps` flow on `VimModeSetting`
+    // change: without this, toggling vim mode (via `ToggleVimMode`
+    // action or settings.json edit) flips the setting and updates
+    // the mode indicator, but no vim keybindings are bound to the
+    // action dispatcher — `hjkl`/`i`/`:w` etc. fire nothing.
+    cx.observe_global::<settings::SettingsStore>(|cx| {
+        reload_zdroid_keymaps(cx);
+    })
+    .detach();
 
     // Mirror production's zed/src/zed.rs `initialize_panels`: every
     // newly-constructed workspace asynchronously loads each panel and
