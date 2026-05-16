@@ -21,7 +21,7 @@ Zdroid is an independent port of [Zed](https://zed.dev) for Android, not affilia
 ---
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/64c41c4d-2910-4560-935b-3d29170fad57" alt="Zdroid demo" width="100%" />
+  <img src="https://github.com/user-attachments/assets/68f763ba-e051-4217-8779-7bb9327f4a13" alt="Zdroid demo" width="100%" />
 </p>
 
 Vulkan via wgpu. AChoreographer-driven vsync, no JNI hop per frame. Opt-in 120Hz with Mailbox present mode. Glyph fallback into `/system/fonts` so Powerline arrows and CJK render without bundling fonts. The `Editor`, `Workspace`, `Project`, `MultiWorkspace`, `Search`, `GitPanel`, `GitGraph`, `Extensions`, and `Terminal` crates run unchanged. The Rust `.so` is the app process. gpui composites every pixel (yes, you read that right) straight into the Adreno Vulkan driver. Multi-Activity OS-chromed extra windows so DeX freeform renders Settings and secondary editors with real chrome.
