@@ -62,12 +62,8 @@ npm install -g @anthropic-ai/claude-code
 
 Toolchains and LSPs for other languages have install recipes in the bootstrap repo: [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap).
 
-> [!CAUTION]
-> Do **not** run `apt --fix-broken install` on a fresh bootstrap before you've installed anything else.
->
-> The pre-baked packages (`go`, `openssh`, `busybox`, the bionic-compat patchelf, the hex-patched musl loader, etc.) live outside dpkg's tracked set, so apt sees them as orphans and helpfully removes them. You're left with a half-broken install and no remediation path other than wiping the userland and re-extracting.
->
-> If a later `pkg install` or `npm install -g` complains about unmet deps, *then* `apt --fix-broken install` is the right tool. By that point dpkg has enough state to resolve without sweeping the pre-baked tree.
+> [!NOTE]
+> The first `pkg install` after extracting a fresh bootstrap will surface "broken dependencies" from apt and prompt you to run `apt --fix-broken install`. Run it. The pre-baked packages (`go`, `openssh`, busybox, etc.) declare dpkg dependencies that aren't formally registered in the database on a fresh extract, so apt flags the inconsistency the first time it has to resolve anything. fix-broken reconciles the state; `pkg` works normally afterward.
 
 ### Setting up Kali chroot
 
@@ -86,7 +82,7 @@ Every subprocess the editor spawns (`bash`, `git`, LSPs, terminal shells) goes o
 
 Setup, once the bridge lands:
 
-1. Install Termux from [F-Droid](https://f-droid.org/en/packages/com.termux/). The Play Store version is unmaintained; F-Droid is the active build.
+1. Install Termux from [GitHub releases](https://github.com/termux/termux-app/releases).
 2. The first time Zdroid attempts an external spawn, Android prompts you to grant `com.termux.permission.RUN_COMMAND` to Zdroid. Allow it.
 3. Open Zdroid and pick **External Termux** in the runtime picker.
 
@@ -117,7 +113,7 @@ The editor is bionic-linked and runs as the Android app process. Every subproces
 |---|---|---|
 | **Bootstrap** _(no root)_ | Termux userland rebuilt under `com.zdroid`: apt/dpkg/bash with our package name baked into RUNPATHs and shebangs. Pure bionic, no glibc; same trade-offs as any Termux install. `apt` and `pkg install` work for everything Termux ships. | Downloaded from [`Dylanmurzello/zdroid-bootstrap`](https://github.com/Dylanmurzello/zdroid-bootstrap) after you pick Bootstrap in the runtime picker. |
 | **Kali chroot** _(needs Magisk)_ | Real glibc Linux. Every spawn goes over a Unix socket to `zd-spawnd` (a small privileged daemon) which does `fork` + `chroot` + `setuid` + `execve` on the editor's behalf. ~5 ms per spawn vs ~200 ms for `su`-mediated. All the bionic gotchas (`/usr/bin/env`, `/tmp`, `dlopen libfoo.so`) disappear because subprocesses run inside a real distro. | Flash the Magisk module from [`Dylanmurzello/zdroid-spawnd`](https://github.com/Dylanmurzello/zdroid-spawnd), plus drop a Kali NetHunter aarch64 rootfs at `/data/local/nhsystem/kali-arm64`. |
-| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge in progress (adapter at [`crates/zdroid_runtime/src/adapters/external_termux.rs`](crates/zdroid_runtime/src/adapters/external_termux.rs) is stubbed). | Install Termux from F-Droid; grant `RUN_COMMAND` to Zdroid. |
+| **External Termux** _(if you already use Termux)_ | Talks to your existing Termux app via `com.termux.permission.RUN_COMMAND` intents. Lighter footprint; your existing userland stays untouched. JNI Intent bridge in progress (adapter at [`crates/zdroid_runtime/src/adapters/external_termux.rs`](crates/zdroid_runtime/src/adapters/external_termux.rs) is stubbed). | Install Termux from [GitHub releases](https://github.com/termux/termux-app/releases); grant `RUN_COMMAND` to Zdroid. |
 
 Switching is one tap (Settings → Android Runtime). Selection persists in `$PREFIX/etc/zd-runtime.toml`. **Restart Zdroid after switching adapters.** The editor caches environment state (PATH, HOME, library search paths, spawn-router config) from whichever adapter was active at boot; without a restart, subprocesses spawned post-switch can land with stale env and fail in cryptic ways (LSPs not found, `git` claiming HOME doesn't exist, `pkg install` writing to the wrong rootfs, etc.).
 
