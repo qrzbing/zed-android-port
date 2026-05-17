@@ -7133,6 +7133,11 @@ impl EditorElement {
                         }
                         cx.stop_propagation();
                     });
+                    // Pairs with set_drag_active(true) in the
+                    // MouseDown branch below. Cleared unconditionally:
+                    // a stray MouseUp when no scrollbar drag is active
+                    // just no-ops the flag.
+                    window.set_drag_active(false);
                 }
             });
         } else {
@@ -7143,7 +7148,23 @@ impl EditorElement {
                     if phase == DispatchPhase::Capture {
                         return;
                     }
-                    let Some((scrollbar_layout, axis)) = scrollbars_layout.get_hovered_axis(window)
+                    // Hover-based detection covers mouse / trackpad
+                    // (which fire MouseMove(pressed_button=None) before
+                    // every click and set hover state). Touch has no
+                    // hover concept — finger DOWN is the first event —
+                    // so fall back to a position-based hit-test against
+                    // each scrollbar's bounds. Without this fallback,
+                    // touch on the editor's scrollbar gets dropped here
+                    // and falls through to the touch SM's scroll
+                    // synthesis, which is exactly the "whole column
+                    // acts like one big drag" bug.
+                    let Some((scrollbar_layout, axis)) = scrollbars_layout
+                        .get_hovered_axis(window)
+                        .or_else(|| {
+                            scrollbars_layout
+                                .iter_scrollbars()
+                                .find(|(layout, _)| layout.hitbox.bounds.contains(&event.position))
+                        })
                     else {
                         return;
                     };
@@ -7188,6 +7209,14 @@ impl EditorElement {
 
                         cx.stop_propagation();
                     });
+                    // Tell the platform we're driving a direct-
+                    // manipulation drag. On touch backends this gates
+                    // the gesture-recognizer's scroll-synthesis so the
+                    // thumb actually tracks the finger through
+                    // subsequent MouseMove(Left held) events. The
+                    // MouseUp handler at element.rs around line 7119
+                    // clears the flag on release.
+                    window.set_drag_active(true);
                 }
             });
         }

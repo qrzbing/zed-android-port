@@ -496,17 +496,22 @@ impl AndroidPlatform {
                         );
                         continue;
                     };
-                    let scale = state.state.borrow().scale_factor;
-                    let inputs = crate::events::translate_extra_motion_event(
-                        action_masked,
-                        action_index,
-                        meta_state,
-                        button_state,
-                        vscroll,
-                        hscroll,
-                        &positions,
-                        scale,
-                    );
+                    let inputs = {
+                        let mut window_state = state.state.borrow_mut();
+                        let scale = window_state.scale_factor;
+                        crate::events::translate_extra_motion_event(
+                            window_id,
+                            action_masked,
+                            action_index,
+                            meta_state,
+                            button_state,
+                            vscroll,
+                            hscroll,
+                            &positions,
+                            scale,
+                            &mut window_state,
+                        )
+                    };
                     for input in inputs {
                         state.handle_input(input);
                     }
@@ -568,8 +573,16 @@ impl AndroidPlatform {
                     .cloned()
             };
             let Some(window_ptr) = target else { continue };
-            let scale_factor = window_ptr.state.borrow().scale_factor;
-            for input in crate::captured_pointer::translate(event, scale_factor) {
+            let inputs = {
+                let mut window_state = window_ptr.state.borrow_mut();
+                let scale_factor = window_state.scale_factor;
+                crate::captured_pointer::translate(
+                    &mut window_state.captured,
+                    event,
+                    scale_factor,
+                )
+            };
+            for input in inputs {
                 window_ptr.handle_input(input);
             }
         }
@@ -607,7 +620,10 @@ impl AndroidPlatform {
                     None => InputStatus::Unhandled,
                 },
                 InputEvent::MotionEvent(motion) => {
-                    let inputs = crate::events::translate_motion_event(motion, scale_factor);
+                    let inputs = {
+                        let mut state = window_ptr.state.borrow_mut();
+                        crate::events::translate_motion_event(motion, scale_factor, &mut state)
+                    };
                     if inputs.is_empty() {
                         InputStatus::Unhandled
                     } else {

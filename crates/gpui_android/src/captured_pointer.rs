@@ -62,7 +62,6 @@
 //!   `events/trackpad.rs` so behavior is consistent with the
 //!   non-captured trackpad path.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -249,12 +248,14 @@ pub(crate) fn init_event_channel() -> mpsc::UnboundedReceiver<CapturedEvent> {
     rx
 }
 
-/// Synthesizer state. Lives in a thread-local on the game thread (the
-/// only consumer of captured events) so we avoid the cost of a mutex
-/// on the hot translation path. Cursor position is owned by Kotlin
-/// and threaded through every event so the on-screen cursor View
-/// and the gpui-side cursor never drift.
-struct SynthState {
+/// Captured-pointer gesture state. Lives as a field on
+/// `AndroidWindowState` so each window's gesture (drag-lock timers,
+/// hold-drag cursors, tap-pending flags) is fully isolated from
+/// gestures in other windows. Cursor position is owned by Kotlin and
+/// threaded through every event so the on-screen cursor View and the
+/// gpui-side cursor never drift.
+#[derive(Default)]
+pub(crate) struct CapturedPointerState {
     /// Set when `ACTION_BUTTON_PRESS` fired; we hold the button until
     /// `ACTION_BUTTON_RELEASE`. Used to populate `pressed_button` on
     /// subsequent move events.
@@ -352,39 +353,6 @@ struct TapAnchor {
     cursor: Point<Pixels>,
 }
 
-impl SynthState {
-    fn new() -> Self {
-        Self {
-            button_held: None,
-            primary_down: None,
-            first_finger_at: None,
-            last_motion_at: None,
-            motion_accum: 0.0,
-            in_multi_touch: false,
-            right_click_armed: false,
-            last_tap_at: None,
-            last_tap_position: Point::default(),
-            tap_drag_pending: false,
-            drag_active: false,
-            hold_drag_cursor: None,
-            drag_lock_pending_at: None,
-            drag_lock_resume_at: None,
-            last_cursor: Point::default(),
-        }
-    }
-}
-
-thread_local! {
-    /// Per-window gesture state. A gesture in one window is fully
-    /// isolated from gestures in other windows — drag-lock timers,
-    /// hold-drag cursors, tap pending state are all per-`window_id`.
-    /// Indexed by `CapturedEvent::window_id` (`PRIMARY_WINDOW_ID` for
-    /// MainActivity, the extra window's id for spawned windows).
-    /// `RefCell<HashMap>` because we mutate from a single thread (the
-    /// game thread inside `translate`).
-    static STATES: RefCell<HashMap<u64, SynthState>> = RefCell::new(HashMap::new());
-}
-
 /// Push a captured event from the JVM listener thread onto the channel.
 /// The game thread drains and synthesizes.
 fn dispatch(event: CapturedEvent) {
@@ -404,6 +372,7 @@ fn dispatch(event: CapturedEvent) {
 /// physical-to-logical multiplier; we divide Kotlin's physical-pixel
 /// cursor position by it to get logical pixels for gpui events.
 pub(crate) fn translate(
+    state: &mut CapturedPointerState,
     event: CapturedEvent,
     scale_factor: f32,
 ) -> Vec<PlatformInput> {
@@ -416,11 +385,8 @@ pub(crate) fn translate(
     );
 
     let window_id = event.window_id;
-    STATES.with(|cell| {
-        let mut states = cell.borrow_mut();
-        let state = states.entry(window_id).or_insert_with(SynthState::new);
-        state.last_cursor = cursor;
-        let mut out = Vec::new();
+    state.last_cursor = cursor;
+    let mut out = Vec::new();
 
         match event.action_masked {
             JAVA_ACTION_DOWN => {
@@ -955,10 +921,9 @@ pub(crate) fn translate(
                 state.drag_lock_resume_at = None;
                 set_hold_drag_active(window_id, false);
             }
-            _ => {}
-        }
-        out
-    })
+        _ => {}
+    }
+    out
 }
 
 fn button_from_state(state: i32) -> Option<MouseButton> {

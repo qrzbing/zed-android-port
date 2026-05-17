@@ -103,6 +103,31 @@ pub(crate) struct AndroidWindowState {
     /// at construction time (both primary and extras carry it; primary just
     /// never reaches the Drop branch that uses it).
     pub(crate) android_app: AndroidApp,
+    /// Per-window click + button-state tracker (shared by mouse and
+    /// touch dispatchers). See `events/click_track.rs`. Lives here as
+    /// a field so each window has its own click run + non-primary
+    /// held-button latch — a click in window A doesn't bleed into
+    /// window B's double-click run.
+    pub(crate) clicks: crate::events::click_track::ClickTrackState,
+    /// Per-window captured-pointer (trackpad) SM state. See
+    /// `captured_pointer.rs`. Hold-drag timers, drag-lock state,
+    /// tap-tap-drag pending flags, etc. all live here so a gesture in
+    /// one window doesn't leak into another's.
+    pub(crate) captured: crate::captured_pointer::CapturedPointerState,
+    /// Per-window native-touch SM state. See `crate::touch`. Per-pointer-
+    /// ID tracking, multi-finger gesture classification, tap vs scroll
+    /// discrimination. Each window's touchscreen events are isolated.
+    pub(crate) touch: crate::touch::TouchState,
+    /// Set by elements (scrollbar thumb, splitter, resize handle) while
+    /// they're actively driving a direct-manipulation drag. Flips via
+    /// `PlatformWindow::set_drag_active` on this window's
+    /// `AndroidWindow`. The touch SM checks this in its `Move` handler:
+    /// while set, single-finger drag emits `MouseMove(Left held)` so
+    /// the dragging element receives motion instead of having the SM
+    /// auto-convert to `ScrollWheel`. Without this gate, a touch-drag
+    /// on a scrollbar thumb gets clobbered by the threshold-cross
+    /// `MouseUp(0)` cancel.
+    pub(crate) drag_active: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -427,6 +452,10 @@ impl AndroidWindow {
             force_render_after_recovery: false,
             os_closed: AtomicBool::new(false),
             android_app,
+            clicks: crate::events::click_track::ClickTrackState::default(),
+            captured: crate::captured_pointer::CapturedPointerState::default(),
+            touch: crate::touch::TouchState::default(),
+            drag_active: AtomicBool::new(false),
         };
 
         Self {
@@ -628,6 +657,14 @@ impl PlatformWindow for AndroidWindow {
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
         self.ptr.callbacks.borrow_mut().appearance_changed = Some(callback);
+    }
+
+    fn set_drag_active(&self, active: bool) {
+        self.ptr
+            .state
+            .borrow()
+            .drag_active
+            .store(active, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn draw(&self, scene: &Scene) {

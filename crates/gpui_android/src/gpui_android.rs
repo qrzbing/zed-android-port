@@ -18,6 +18,7 @@ mod platform;
 mod saf;
 pub mod storage;
 pub mod termux_bootstrap;
+mod touch;
 mod window;
 pub mod zd_exec_install;
 
