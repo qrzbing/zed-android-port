@@ -80,6 +80,13 @@ pub(crate) fn translate_motion_event(
     let pressed_mouse_button = mouse::button_from_state(button_state);
     let input_source = source::classify(event);
 
+    // Track the most recent input modality so UI components can widen
+    // hit zones for touch without affecting mouse precision.
+    state.last_input_was_touch.store(
+        input_source == source::InputSource::Finger,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     // Finger input routes through the first-class touch state machine.
     // Mouse / stylus / captured-trackpad continue through the match
     // arms below.
@@ -210,6 +217,10 @@ pub(crate) fn translate_extra_motion_event(
             | JAVA_ACTION_CANCEL
             | JAVA_ACTION_POINTER_DOWN
             | JAVA_ACTION_POINTER_UP
+    );
+    state.last_input_was_touch.store(
+        is_touch_action,
+        std::sync::atomic::Ordering::Relaxed,
     );
     if is_touch_action {
         return crate::touch::dispatch_extra(

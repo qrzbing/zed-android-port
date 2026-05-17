@@ -657,6 +657,17 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// don't synthesize scroll, so the default empty impl is correct.
     fn set_drag_active(&self, _active: bool) {}
 
+    /// Returns true when the most recent pointer input on this window
+    /// came from touch (finger). Used by UI components that want to
+    /// widen hit zones for touch without affecting mouse precision —
+    /// e.g. a pane splitter handler can fall back to a dilated
+    /// position check when this is true, while the mouse path stays
+    /// on the precise hover-based check. Mouse / desktop platforms
+    /// return false (default impl).
+    fn last_input_was_touch(&self) -> bool {
+        false
+    }
+
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;

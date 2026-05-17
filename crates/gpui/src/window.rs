@@ -2997,6 +2997,15 @@ impl Window {
         self.platform_window.set_drag_active(active);
     }
 
+    /// Returns true when the most recent pointer input on this window
+    /// came from touch (finger). UI components can use this to widen
+    /// hit zones / show grabber affordances when touch is the active
+    /// input mode, without affecting mouse precision. Default impl
+    /// (non-Android platforms) returns false.
+    pub fn last_input_was_touch(&self) -> bool {
+        self.platform_window.last_input_was_touch()
+    }
+
     /// Updates the cursor style for the entire window at the platform level. A cursor
     /// style using this method will have precedence over any cursor style set using
     /// `set_cursor_style`. This method should only be called during the paint

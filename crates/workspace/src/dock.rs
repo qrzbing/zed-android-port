@@ -1095,26 +1095,66 @@ impl Dock {
 }
 
 impl Render for Dock {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let position = self.position;
+            // Touch-mode widens the resize-handle hit zone and shows
+            // a visible pill in the middle so fingers can find +
+            // grab the edge. Mouse mode stays at the precise 6px
+            // hitbox to avoid intercepting clicks near panel content.
+            let touch_mode = window.last_input_was_touch();
+            let handle_size = if touch_mode { px(20.) } else { RESIZE_HANDLE_SIZE };
+            let pill_thickness = px(4.);
+            let pill_length = px(32.);
+            // Only THIS dock's resize lights up. We type-check the
+            // active drag and require its position to match self — any
+            // other drag (a tab, a different dock, a scrollbar) leaves
+            // this pill in its rest color.
+            let is_this_dragging = cx
+                .active_drag_value::<DraggedDock>()
+                .is_some_and(|d| d.0 == position);
+            let pill_color = if is_this_dragging {
+                cx.theme().colors().border_focused
+            } else {
+                cx.theme().colors().border_variant
+            };
             let create_resize_handle = || {
+                // Visible affordance pill at the center of the
+                // handle, perpendicular to the resize axis (Material 3
+                // pattern). Pill stays visible at all sizes so mouse
+                // users get the same affordance as touch.
+                let pill = match position {
+                    DockPosition::Bottom => div().w(pill_length).h(pill_thickness),
+                    _ => div().w(pill_thickness).h(pill_length),
+                };
+                let pill = pill.bg(pill_color).rounded_full();
                 let handle = div()
                     .id("resize-handle")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(pill)
                     .on_drag(DraggedDock(position), |dock, _, _, cx| {
                         cx.stop_propagation();
                         cx.new(|_| dock.clone())
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|_, _: &MouseDownEvent, _, cx| {
+                        cx.listener(|_, _: &MouseDownEvent, window, cx| {
+                            // Direct-manipulation drag claim. On touch
+                            // this gates the gesture-recognizer's
+                            // scroll-synthesis so gpui's on_drag system
+                            // actually receives the MouseMove(Left held)
+                            // events it needs to detect the drag.
+                            window.set_drag_active(true);
                             cx.stop_propagation();
                         }),
                     )
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|dock, e: &MouseUpEvent, window, cx| {
+                            window.set_drag_active(false);
                             if e.click_count == 2 {
                                 dock.resize_active_panel(None, None, window, cx);
                                 dock.workspace
@@ -1131,33 +1171,41 @@ impl Render for Dock {
                     DockPosition::Left => deferred(
                         handle
                             .absolute()
-                            .right(-RESIZE_HANDLE_SIZE / 2.)
+                            .right(-handle_size / 2.)
                             .top(px(0.))
                             .h_full()
-                            .w(RESIZE_HANDLE_SIZE)
+                            .w(handle_size)
                             .cursor_col_resize(),
                     ),
                     DockPosition::Bottom => deferred(
                         handle
                             .absolute()
-                            .top(-RESIZE_HANDLE_SIZE / 2.)
+                            .top(-handle_size / 2.)
                             .left(px(0.))
                             .w_full()
-                            .h(RESIZE_HANDLE_SIZE)
+                            .h(handle_size)
                             .cursor_row_resize(),
                     ),
                     DockPosition::Right => deferred(
                         handle
                             .absolute()
                             .top(px(0.))
-                            .left(-RESIZE_HANDLE_SIZE / 2.)
+                            .left(-handle_size / 2.)
                             .h_full()
-                            .w(RESIZE_HANDLE_SIZE)
+                            .w(handle_size)
                             .cursor_col_resize(),
                     ),
                 }
             };
 
+            // Border between dock and adjacent content. Brighten only
+            // when *this* dock is being dragged so a terminal resize
+            // doesn't make the project-panel border light up too.
+            let dock_border_color = if is_this_dragging {
+                cx.theme().colors().border_focused
+            } else {
+                cx.theme().colors().border
+            };
             div()
                 .id("dock-panel")
                 .key_context(dispatch_context)
@@ -1165,7 +1213,7 @@ impl Render for Dock {
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
                 .bg(cx.theme().colors().panel_background)
-                .border_color(cx.theme().colors().border)
+                .border_color(dock_border_color)
                 .overflow_hidden()
                 .map(|this| match self.position().axis() {
                     // Width and height are always set on the workspace wrapper in

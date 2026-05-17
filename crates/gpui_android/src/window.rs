@@ -128,6 +128,13 @@ pub(crate) struct AndroidWindowState {
     /// on a scrollbar thumb gets clobbered by the threshold-cross
     /// `MouseUp(0)` cancel.
     pub(crate) drag_active: AtomicBool,
+    /// True when the most recent pointer event on this window was
+    /// touch (Finger). Set in `events.rs` and `touch.rs` for Finger
+    /// dispatch; cleared for mouse / stylus / captured-trackpad. UI
+    /// components query via `Window::last_input_was_touch` and use it
+    /// to widen hit zones for touch without affecting mouse
+    /// precision (e.g. the pane splitter MouseDown handler).
+    pub(crate) last_input_was_touch: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -456,6 +463,7 @@ impl AndroidWindow {
             captured: crate::captured_pointer::CapturedPointerState::default(),
             touch: crate::touch::TouchState::default(),
             drag_active: AtomicBool::new(false),
+            last_input_was_touch: AtomicBool::new(false),
         };
 
         Self {
@@ -665,6 +673,14 @@ impl PlatformWindow for AndroidWindow {
             .borrow()
             .drag_active
             .store(active, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn last_input_was_touch(&self) -> bool {
+        self.ptr
+            .state
+            .borrow()
+            .last_input_was_touch
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn draw(&self, scene: &Scene) {

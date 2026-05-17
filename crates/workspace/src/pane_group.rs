@@ -1466,20 +1466,60 @@ mod element {
                         Axis::Horizontal => CursorStyle::ResizeColumn,
                     };
 
-                    if layout
+                    let is_dragging = layout
                         .dragged_handle
                         .borrow()
-                        .is_some_and(|dragged_ix| dragged_ix == ix)
-                    {
+                        .is_some_and(|dragged_ix| dragged_ix == ix);
+                    if is_dragging {
                         window.set_window_cursor_style(cursor_style);
                     } else {
                         window.set_cursor_style(cursor_style, &handle.hitbox);
                     }
 
-                    window.paint_quad(gpui::fill(
-                        handle.divider_bounds,
-                        cx.theme().colors().pane_group_border,
-                    ));
+                    // Divider line. Highlight color while dragging so
+                    // the user gets visual feedback that they've
+                    // grabbed it.
+                    let divider_color = if is_dragging {
+                        cx.theme().colors().border_focused
+                    } else {
+                        cx.theme().colors().pane_group_border
+                    };
+                    window.paint_quad(gpui::fill(handle.divider_bounds, divider_color));
+
+                    // Visible grabber pill at the center of the
+                    // divider so touch users can see where to grab.
+                    // Material 3 pattern: small pill perpendicular to
+                    // the divider axis. 32 logical pixels long on the
+                    // perpendicular, 4 thick. The divider itself is
+                    // 1px, so the pill extrudes ~1.5px from the
+                    // divider visually.
+                    let pill_long = px(32.0);
+                    let pill_short = px(4.0);
+                    let divider_bounds = handle.divider_bounds;
+                    let pill_origin = match self.axis {
+                        // Horizontal axis = vertical divider line.
+                        // Pill extrudes horizontally from the line.
+                        Axis::Horizontal => Point::new(
+                            divider_bounds.center().x - pill_short / 2.,
+                            divider_bounds.center().y - pill_long / 2.,
+                        ),
+                        // Vertical axis = horizontal divider line.
+                        Axis::Vertical => Point::new(
+                            divider_bounds.center().x - pill_long / 2.,
+                            divider_bounds.center().y - pill_short / 2.,
+                        ),
+                    };
+                    let pill_size = match self.axis {
+                        Axis::Horizontal => Size::new(pill_short, pill_long),
+                        Axis::Vertical => Size::new(pill_long, pill_short),
+                    };
+                    let pill_bounds = Bounds::new(pill_origin, pill_size);
+                    let pill_color = if is_dragging {
+                        cx.theme().colors().border_focused
+                    } else {
+                        cx.theme().colors().border_variant
+                    };
+                    window.paint_quad(gpui::fill(pill_bounds, pill_color));
 
                     window.on_mouse_event({
                         let dragged_handle = layout.dragged_handle.clone();
@@ -1487,7 +1527,23 @@ mod element {
                         let workspace = self.workspace.clone();
                         let handle_hitbox = handle.hitbox.clone();
                         move |e: &MouseDownEvent, phase, window, cx| {
-                            if phase.bubble() && handle_hitbox.is_hovered(window) {
+                            if !phase.bubble() {
+                                return;
+                            }
+                            // Mouse uses the precise 4px hitbox via
+                            // is_hovered (no false positives near tab
+                            // close buttons etc.). Touch has no hover
+                            // state, so when the last input on this
+                            // window was touch, fall back to a dilated
+                            // position check so a fingertip lands on
+                            // the splitter without pixel precision.
+                            let hit = handle_hitbox.is_hovered(window)
+                                || (window.last_input_was_touch()
+                                    && handle_hitbox
+                                        .bounds
+                                        .dilate(px(16.0))
+                                        .contains(&e.position));
+                            if hit {
                                 dragged_handle.replace(Some(ix));
                                 if e.click_count >= 2 {
                                     let mut borrow = flexes.lock();
@@ -1498,6 +1554,7 @@ mod element {
 
                                     window.refresh();
                                 }
+                                window.set_drag_active(true);
                                 cx.stop_propagation();
                             }
                         }
@@ -1530,9 +1587,14 @@ mod element {
 
             window.on_mouse_event({
                 let dragged_handle = layout.dragged_handle.clone();
-                move |_: &MouseUpEvent, phase, _window, _cx| {
+                move |_: &MouseUpEvent, phase, window, _cx| {
                     if phase.bubble() {
                         dragged_handle.replace(None);
+                        // Pairs with set_drag_active(true) in the
+                        // matching MouseDown. Unconditional clear is
+                        // safe — a stray MouseUp when no resize was
+                        // active just no-ops the flag.
+                        window.set_drag_active(false);
                     }
                 }
             });

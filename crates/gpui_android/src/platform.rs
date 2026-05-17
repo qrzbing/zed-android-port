@@ -575,6 +575,12 @@ impl AndroidPlatform {
             let Some(window_ptr) = target else { continue };
             let inputs = {
                 let mut window_state = window_ptr.state.borrow_mut();
+                // Captured-trackpad is mouse-like; clear the
+                // last-input-was-touch flag so any subsequent UI
+                // hit-test falls back to the precise mouse path.
+                window_state
+                    .last_input_was_touch
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let scale_factor = window_state.scale_factor;
                 crate::captured_pointer::translate(
                     &mut window_state.captured,

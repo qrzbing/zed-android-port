@@ -2268,6 +2268,18 @@ impl App {
         self.active_drag.is_some()
     }
 
+    /// Returns the active drag's value downcast to `T`, if any drag is
+    /// in flight and its value is of that type. Used by elements that
+    /// want to highlight only when *their own* drag (not someone
+    /// else's) is in progress — e.g. the dock resize handle's pill
+    /// brightening only when this specific dock is being dragged, not
+    /// when any drag is happening anywhere in the window.
+    pub fn active_drag_value<T: 'static>(&self) -> Option<&T> {
+        self.active_drag
+            .as_ref()
+            .and_then(|drag| drag.value.downcast_ref::<T>())
+    }
+
     /// Gets the cursor style of the currently active drag operation.
     pub fn active_drag_cursor_style(&self) -> Option<CursorStyle> {
         self.active_drag.as_ref().and_then(|drag| drag.cursor_style)
