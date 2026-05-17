@@ -164,4 +164,36 @@ object NativeBridge {
         cursorPhysicalX: Float,
         cursorPhysicalY: Float,
     )
+
+    /// IME `commitText` from `ZdroidInputConnection`. Final text the
+    /// IME wants inserted at the current cursor (or replacing any
+    /// active composition). gpui's `PlatformInputHandler::
+    /// replace_text_in_range` is the canonical commit primitive.
+    external fun nativeImeCommitText(text: String, newCursorPosition: Int)
+
+    /// IME `setComposingText`. In-progress composition (CJK, gesture
+    /// typing, prediction). Routes to `replace_and_mark_text_in_range`
+    /// so the editor can render the composition with the underline /
+    /// styled span.
+    external fun nativeImeSetComposingText(text: String, newCursorPosition: Int)
+
+    /// IME `finishComposingText`. End of composition without further
+    /// edits. Routes to `unmark_text`.
+    external fun nativeImeFinishComposingText()
+
+    /// IME `deleteSurroundingText(before, after)`. Backspace / delete
+    /// spans a range around the cursor. We compute the range from the
+    /// current selection and call `replace_text_in_range(range, "")`.
+    external fun nativeImeDeleteSurroundingText(beforeLength: Int, afterLength: Int)
+
+    /// IME `sendKeyEvent` fallback for hardware-style key events the
+    /// IME wants to deliver (Enter, Backspace, arrows). Routes through
+    /// the existing `events/keyboard.rs` translator so the gpui side
+    /// sees `PlatformInput::KeyDown` / `KeyUp` exactly as for hardware
+    /// keys.
+    external fun nativeImeSendKeyEvent(action: Int, keyCode: Int, metaState: Int, repeatCount: Int)
+
+    /// IME `performEditorAction(actionId)` — Enter / Done / Next /
+    /// Search etc. Emits a gpui action on the focused element.
+    external fun nativeImePerformEditorAction(actionId: Int)
 }

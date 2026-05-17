@@ -59,6 +59,39 @@ class MainActivity : GameActivity() {
     private val splashHandler = Handler(Looper.getMainLooper())
     private var splashRemoved: Boolean = false
 
+    /// Focusable invisible view that owns the IME `InputConnection`.
+    /// Installed in `onCreate`. Rust signals show/hide via JNI calls
+    /// to `showIme()` / `hideIme()` on this Activity; those methods
+    /// requestFocus on the host and invoke `InputMethodManager`.
+    private var imeHostView: ImeHostView? = null
+
+    /// Bring up the soft keyboard. Called from Rust via JNI when an
+    /// editor element gains text-input focus (`set_input_handler`).
+    /// Idempotent — calling repeatedly when the IME is already up is a
+    /// no-op as far as the OS is concerned.
+    @Suppress("unused")
+    fun showIme() {
+        runOnUiThread {
+            val host = imeHostView ?: return@runOnUiThread
+            host.requestFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.showSoftInput(host, 0)
+        }
+    }
+
+    /// Dismiss the soft keyboard. Called from Rust when input focus
+    /// leaves an editor element (`take_input_handler`).
+    @Suppress("unused")
+    fun hideIme() {
+        runOnUiThread {
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.hideSoftInputFromWindow(host.windowToken, 0)
+        }
+    }
+
     private val splashPoll: Runnable = object : Runnable {
         override fun run() {
             if (NativeBridge.nativeIsZedReady()) {
@@ -93,6 +126,17 @@ class MainActivity : GameActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat
                 .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+
+        // IME host. Invisible 1x1 view that owns the InputConnection so
+        // gpui's text input flows through `ZdroidInputConnection`. Lives
+        // alongside GameActivity's SurfaceView; touch dispatch is
+        // unaffected (touch goes through the NDK input queue, focus is
+        // independent). MainActivity calls `showIme()` / `hideIme()` to
+        // bring up / dismiss the keyboard when gpui signals
+        // `set_input_handler` / `take_input_handler`.
+        val host = ImeHostView(this)
+        addContentView(host, android.view.ViewGroup.LayoutParams(1, 1))
+        imeHostView = host
 
         // Pointer-capture probe. When the decor view gains focus we ask
         // Android for raw pointer events. The captured listener

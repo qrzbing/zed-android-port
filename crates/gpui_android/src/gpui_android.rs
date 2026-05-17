@@ -12,6 +12,7 @@ mod display;
 pub mod dns_bridge;
 mod events;
 mod frame_timing;
+mod ime;
 mod keyboard;
 mod multi_window;
 mod platform;

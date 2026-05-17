@@ -49,7 +49,8 @@
             android:exported="true"
             android:theme="@style/Theme.Zdroid.Splash"
             android:windowLayoutInDisplayCutoutMode="always"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="zed_android"/>
@@ -74,7 +75,8 @@
             android:documentLaunchMode="always"
             android:taskAffinity="com.zdroid.extra"
             android:windowLayoutInDisplayCutoutMode="always"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen"/>
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|colorMode|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|mnc|touchscreen"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"/>
 
         <!--
           Exposes Zed's home dir as a SAF root so other apps can browse
