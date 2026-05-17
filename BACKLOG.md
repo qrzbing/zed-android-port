@@ -153,6 +153,48 @@ Visible workaround for users today: there isn't one — search filter is effecti
 
 **Scope estimate:** rough 2-3 days end-to-end. Cargo dep additions and `agent_ui::init` are short. The real time sink is debugging the side effects of bringing the agent surface online for the first time on Android (focus / window routing, settings store observers that assume desktop platforms, the LLM provider registration path on a platform that has historically been mock-only). Pair with [[project-zed-android-port]] phase planning when picking this up.
 
+## Soft keyboard / IME bridge (touch-only users blocked)
+
+**Repro:** open Zdroid on a device without a hardware keyboard. Open a project, tap into an editor. Nothing happens. No keyboard appears, no way to type. Hardware-keyboard flow works fully; touch-only flow is blocked at "I cannot enter text." First organic external feature request was about this.
+
+**Diagnosis:** hardware key path is wired end-to-end in `crates/gpui_android/src/events/keyboard.rs` (translates Android `KeyEvent` to gpui `PlatformInput::KeyDown`). The hook for IME exists on the gpui side: `crates/gpui_android/src/window.rs` already implements `set_input_handler` / `take_input_handler` (lines 524-530) and a route at line 376-382 inserts text into the active `PlatformInputHandler` for any `PlatformInput::KeyDown` with `key_char` set. Missing is the Android side: nothing calls `InputMethodManager.showSoftInput()`, nothing provides an `InputConnection`, nothing routes IME callbacks back to gpui.
+
+**Failed approach (2026-05-16, reverted at commit-level, captured here so the next attempt does not repeat):**
+
+Tried wiring a `BaseInputConnection` on a 1×1 invisible `View` subclass (`ZdroidInputView`) attached as a sibling to GameActivity's SurfaceView under `decorView`. The view overrode `onCheckIsTextEditor()` to return true and `onCreateInputConnection(EditorInfo)` to return a custom `BaseInputConnection` with `IME_FLAG_NO_EXTRACT_UI | IME_FLAG_NO_FULLSCREEN | TYPE_CLASS_TEXT | TYPE_TEXT_FLAG_MULTI_LINE | TYPE_TEXT_FLAG_NO_SUGGESTIONS`. JNI bridge in a `crates/gpui_android/src/ime.rs` module called `MainActivity.showSoftKeyboard()` / `hideSoftKeyboard()` from `set_input_handler` / `take_input_handler`. Manifest got `android:windowSoftInputMode="adjustNothing"` to stop resize-on-IME.
+
+Failure modes observed on device:
+
+1. **Launcher dock visibly flashed through the SurfaceView during IME slide-in.** Still happened with `adjustNothing`. Suggests the SurfaceView is being detached or its visibility briefly compromised by the IME's window-level effects, not by manifest resize behavior. Root cause was not the resize.
+2. **Wild glitching in DeX freeform / windowed mode.** The IME window placement conflicts with the app's freeform window placement; layout shifts incoherently. The IME wants the bottom edge of the screen, the app wants the bottom edge of its freeform window, and the system arbitrates badly.
+3. **Samsung Keyboard's floating-keyboard option crashed or closed when activated.** The IME's floating-window anchor became unstable, suggesting the InputConnection view was being attached / re-attached during the IME show cycle.
+4. **Critical: `commitText` / `sendKeyEvent` callbacks never fired** even though the keyboard was visible and the IME's predictive bar showed the typed characters (so the IME was registering keystrokes internally). This means the IME was not routing to our `BaseInputConnection` at all. Possible cause: GameActivity's SurfaceView is the actual focus target the IME picks, and our 1×1 sibling view's `requestFocus` is overridden / lost by the time the IME negotiates `InputConnection`.
+
+The architectural mistake was treating GameActivity's SurfaceView as opaque and adding a sibling view in parallel. GameActivity owns the focus and input model end-to-end; bolting on a parallel `InputConnection` provider does not compose. The IME ends up targeting either GameActivity's default fallback connection or no connection at all.
+
+**Recommended path forward: use AGDK's `GameTextInput`.**
+
+The `androidx.games:games-activity:3.0.5` dependency we already declare ships `GameTextInput`, an official Google-supported native IME bridge specifically designed for GameActivity. It manages the `InputConnection` internally against GameActivity's actual focused view, exposes a native callback API (no Kotlin `BaseInputConnection` subclass needed), and coordinates with GameActivity's surface lifecycle correctly so the symptoms above go away by construction.
+
+Key APIs:
+- `GameActivity_setInputConnection()`: install the IME connection against GameActivity's real focus target
+- `GameTextInputState`: struct populated by IME callbacks (commit, composing, selection)
+- `GameActivity_setTextInputState()`: push current cursor / surrounding text to the IME for predictive accuracy
+- `GameActivity_setSoftKeyboardVisibility(bool)`: show / hide
+
+The `android-activity` crate (which we use) wraps a subset of GameActivity APIs. Verify whether it exposes these IME-related symbols; if not, either upstream a wrapper or call via JNI to the GameActivity `getJavaInstance()` object. Avoid building anything that adds a second focusable view to the hierarchy.
+
+**Phasing once the right primitive is picked:**
+
+1. **Phase 1: `GameActivity_setSoftKeyboardVisibility(true)` works.** Editor focus → keyboard appears reliably, no glitch, no dock flash, no freeform incoherence. The InputConnection is managed by AGDK against GameActivity's real SurfaceView focus target. Tests on phone + tablet + DeX.
+2. **Phase 2: GameTextInputState → gpui's PlatformInputHandler.** Subscribe to text-state-change callbacks; on every committed character, call `state.input_handler.replace_text_in_range(None, text)` on the active window. Typing works end-to-end.
+3. **Phase 3: Composing text** for Pinyin / Japanese / Korean IMEs. Wire `GameTextInputState`'s composing region into gpui's marked-text APIs (`replace_and_mark_text_in_range`).
+4. **Phase 4: Selection sync.** Push current Editor cursor / surrounding-text via `GameActivity_setTextInputState` so soft-keyboard predictive suggestions are accurate. Requires gpui Editor to expose surrounding-text-at-cursor.
+
+**Scope estimate:** 3-5 days end-to-end for phases 1+2 (the user-visible v1: "soft keyboard appears, typing works"). Phases 3-4 are polish, can ship in a follow-up.
+
+**Why deferred:** unblocks the touch-only demographic but hardware-keyboard users (the daily-driver case so far) are unaffected. First external feature request named this. Adjacent: see [README's "What doesn't work yet"](README.md) which already lists this as a known gap; the README + this entry need to stay in sync.
+
 ## Other deferred concerns
 
 (add new sections here as they come up; keep each one self-contained with what / why / what's-needed-to-resolve)
