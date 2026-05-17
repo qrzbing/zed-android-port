@@ -187,6 +187,13 @@ pub(crate) struct AndroidCommon {
     /// and lands here for `translate` + dispatch.
     pub(crate) captured_pointer_rx:
         Option<futures::channel::mpsc::UnboundedReceiver<crate::captured_pointer::CapturedEvent>>,
+    /// Receiver side of the JNI → game-thread channel for IME events.
+    /// Drained each iteration of the platform run loop; each event
+    /// dispatches into the primary window's `PlatformInputHandler`
+    /// (commit text, composition, deletion) or `handle_input` (key
+    /// events delivered by the IME's `sendKeyEvent` fallback).
+    pub(crate) ime_event_rx:
+        Option<futures::channel::mpsc::UnboundedReceiver<crate::ime::ImeEvent>>,
     pub(crate) running: bool,
 }
 
@@ -224,6 +231,7 @@ impl AndroidCommon {
             extra_windows: std::collections::HashMap::new(),
             extra_event_rx: Some(crate::multi_window::init_event_channel()),
             captured_pointer_rx: Some(crate::captured_pointer::init_event_channel()),
+            ime_event_rx: Some(crate::ime::init_event_channel()),
             running: true,
         }
     }
@@ -595,6 +603,24 @@ impl AndroidPlatform {
         self.common.borrow_mut().captured_pointer_rx = Some(rx);
     }
 
+    /// Drain queued IME events posted from `ZdroidInputConnection` on
+    /// Android's UI thread. Each event dispatches into the primary
+    /// window's `PlatformInputHandler` (commit / composition /
+    /// deletion) or `handle_input` (the IME's `sendKeyEvent`
+    /// fallback). Currently routes only the primary window; multi-
+    /// window IME (per-extra-window InputConnection) is Phase 4.
+    fn drain_ime_events(&self) {
+        let mut rx = match self.common.borrow_mut().ime_event_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
+        let window_ptr = self.common.borrow().window.clone();
+        if let Some(window_ptr) = window_ptr {
+            crate::ime::drain_ime_events(&window_ptr, &mut rx);
+        }
+        self.common.borrow_mut().ime_event_rx = Some(rx);
+    }
+
     /// Pull every queued `InputEvent` off android-activity's iterator and
     /// route translatable ones into the primary gpui window. Returning
     /// `InputStatus::Handled` for our own events lets android-activity stop
@@ -779,6 +805,12 @@ impl Platform for AndroidPlatform {
             // only while `MainActivity` has pointer capture; otherwise
             // the channel sits idle.
             self.drain_captured_pointer_events();
+
+            // Drain JNI-side IME events (commit/composition/key/delete
+            // delivered by `ZdroidInputConnection` on Android's UI
+            // thread). Dispatches into the primary window's
+            // `PlatformInputHandler` / `handle_input`.
+            self.drain_ime_events();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have

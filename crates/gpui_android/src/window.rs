@@ -559,11 +559,32 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.ptr.state.borrow_mut().input_handler = Some(input_handler);
+        // Was the handler unset before this call? If so, this is the
+        // edge transition that means "show the IME". Track-and-edge
+        // so repeated set_input_handler calls per paint don't spam
+        // the OS with showSoftInput requests.
+        let android_app = {
+            let mut state = self.ptr.state.borrow_mut();
+            let was_none = state.input_handler.is_none();
+            state.input_handler = Some(input_handler);
+            was_none.then(|| state.android_app.clone())
+        };
+        if let Some(app) = android_app {
+            crate::ime::show_keyboard(&app);
+        }
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.ptr.state.borrow_mut().input_handler.take()
+        let (handler, android_app) = {
+            let mut state = self.ptr.state.borrow_mut();
+            let handler = state.input_handler.take();
+            let app = handler.is_some().then(|| state.android_app.clone());
+            (handler, app)
+        };
+        if let Some(app) = android_app {
+            crate::ime::hide_keyboard(&app);
+        }
+        handler
     }
 
     fn prompt(
