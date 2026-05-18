@@ -135,6 +135,21 @@ pub(crate) struct AndroidWindowState {
     /// to widen hit zones for touch without affecting mouse
     /// precision (e.g. the pane splitter MouseDown handler).
     pub(crate) last_input_was_touch: AtomicBool,
+    /// IME composition state we maintain ourselves rather than asking
+    /// `handler.marked_text_range()` for it. The handler's marked-text
+    /// support varies by input view (the editor implements it
+    /// correctly, the terminal effectively doesn't), so trusting it
+    /// produced duplicate-letter and lost-on-enter bugs. We track the
+    /// composition's start (UTF-16 index when first setComposingText
+    /// fired) and the last text we set; on each new setComposingText
+    /// we replace `start..start + last_text.utf16_len()` with the new
+    /// text. Cleared on commit / finish / cancel. Phase 2 will add
+    /// proper marked-text composition for the editor; this Phase 1
+    /// behavior is "live commit" — composition immediately visible
+    /// (no underline preview), which is correct for terminal and
+    /// adequate for editor ASCII typing.
+    pub(crate) ime_composition_start: Option<usize>,
+    pub(crate) ime_composition_text: Option<String>,
 }
 
 #[derive(Clone)]
@@ -464,6 +479,8 @@ impl AndroidWindow {
             touch: crate::touch::TouchState::default(),
             drag_active: AtomicBool::new(false),
             last_input_was_touch: AtomicBool::new(false),
+            ime_composition_start: None,
+            ime_composition_text: None,
         };
 
         Self {
@@ -559,32 +576,17 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        // Was the handler unset before this call? If so, this is the
-        // edge transition that means "show the IME". Track-and-edge
-        // so repeated set_input_handler calls per paint don't spam
-        // the OS with showSoftInput requests.
-        let android_app = {
-            let mut state = self.ptr.state.borrow_mut();
-            let was_none = state.input_handler.is_none();
-            state.input_handler = Some(input_handler);
-            was_none.then(|| state.android_app.clone())
-        };
-        if let Some(app) = android_app {
-            crate::ime::show_keyboard(&app);
-        }
+        // No show_keyboard call here — gpui's paint cycle calls
+        // take_input_handler/set_input_handler every frame for state
+        // shuffling (window.rs line 2497-2509), which would oscillate
+        // the IME visibly. Show/hide is driven by a frame-boundary
+        // diff in `AndroidPlatform::reconcile_ime_visibility` instead.
+        self.ptr.state.borrow_mut().input_handler = Some(input_handler);
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        let (handler, android_app) = {
-            let mut state = self.ptr.state.borrow_mut();
-            let handler = state.input_handler.take();
-            let app = handler.is_some().then(|| state.android_app.clone());
-            (handler, app)
-        };
-        if let Some(app) = android_app {
-            crate::ime::hide_keyboard(&app);
-        }
-        handler
+        // Same reasoning as `set_input_handler`: no hide_keyboard here.
+        self.ptr.state.borrow_mut().input_handler.take()
     }
 
     fn prompt(

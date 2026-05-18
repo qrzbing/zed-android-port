@@ -27,6 +27,88 @@ use jni::objects::{JObject, JString};
 
 use crate::window::AndroidWindowStatePtr;
 
+/// Coarse classification of the focused input target. Drives the
+/// `EditorInfo` returned by `ImeHostView.onCreateInputConnection` so
+/// the IME (Gboard / Swiftkey / Samsung) configures itself for the
+/// right input style:
+///
+/// - `Terminal`: each keystroke commits directly to the PTY; no
+///   composition, no autocorrect, no prediction. Matches Termux's
+///   `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | NO_SUGGESTIONS`
+///   pattern (TerminalView.java line 280).
+/// - `CodeEditor`: composition is useful (CJK input) but
+///   suggestions / autocorrect are wrong for code. Use
+///   `TYPE_CLASS_TEXT | NO_SUGGESTIONS | IME_MULTI_LINE`.
+///   Crucially, do NOT use `VISIBLE_PASSWORD` here — that kills
+///   CJK composition entirely.
+///
+/// Detected by probing `text_for_range`: terminals stub it to
+/// `None`, editors return real content (even empty buffers return
+/// `Some("")`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ImeTargetKind {
+    Terminal,
+    CodeEditor,
+}
+
+impl ImeTargetKind {
+    /// Marshalled int that crosses the JNI boundary into Kotlin's
+    /// `ImeInputMode`. Keep in sync with `ImeInputMode.kt`.
+    fn to_jni_int(self) -> i32 {
+        match self {
+            ImeTargetKind::Terminal => 0,
+            ImeTargetKind::CodeEditor => 1,
+        }
+    }
+}
+
+/// Probe what kind of input target a handler represents. Caller
+/// supplies the handler mutably (`text_for_range` takes &mut self).
+/// Side-effect-free for both editor and terminal — just queries
+/// existing state, doesn't write anything.
+pub(crate) fn probe_target_kind(handler: &mut gpui::PlatformInputHandler) -> ImeTargetKind {
+    let mut adjusted = None;
+    match handler.text_for_range(0..1, &mut adjusted) {
+        Some(_) => ImeTargetKind::CodeEditor,
+        None => ImeTargetKind::Terminal,
+    }
+}
+
+/// Tell Kotlin to switch IME modes and restart the input connection.
+/// This causes `ImeHostView.onCreateInputConnection` to fire again
+/// with a fresh `EditorInfo` derived from `kind`, and forces the IME
+/// service to send `onFinishInput` + `onStartInput(restarting=true)`
+/// — dropping any in-flight composition that was anchored to the
+/// outgoing target. See research summary: Android docs explicitly
+/// endorse this pattern for "single host view, multiple logical
+/// editors" architectures (developer.android.com custom-text-editors
+/// guide).
+pub(crate) fn restart_input_for_kind(android_app: &AndroidApp, kind: ImeTargetKind) {
+    log::info!("ime::restart_input_for_kind kind={:?}", kind);
+    if let Err(err) = call_activity_restart_ime(android_app, kind.to_jni_int()) {
+        log::warn!("ime::restart_input_for_kind failed: {err:#}");
+    }
+}
+
+fn call_activity_restart_ime(android_app: &AndroidApp, mode_id: i32) -> anyhow::Result<()> {
+    let vm_ptr = android_app.vm_as_ptr();
+    let activity_ptr = android_app.activity_as_ptr();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        anyhow::bail!("AndroidApp vm/activity pointer is null");
+    }
+    let vm = unsafe { JavaVM::from_raw(vm_ptr as _) }.context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let activity = unsafe { JObject::from_raw(activity_ptr as _) };
+    env.call_method(
+        &activity,
+        "restartImeForTarget",
+        "(I)V",
+        &[mode_id.into()],
+    )
+    .context("call MainActivity.restartImeForTarget")?;
+    Ok(())
+}
+
 /// Input events the IME wants the gpui side to apply. Each variant
 /// corresponds to one `InputConnection` method and translates to one
 /// `PlatformInputHandler` call (or hardware-key path for sendKeyEvent).
@@ -69,6 +151,7 @@ pub(crate) fn init_event_channel() -> mpsc::UnboundedReceiver<ImeEvent> {
 }
 
 fn dispatch_event(event: ImeEvent) {
+    log::info!("ime::dispatch_event {}", debug_event(&event));
     let guard = EVENT_TX.lock().unwrap();
     let Some(tx) = guard.as_ref() else {
         log::warn!("ime: event arrived before init_event_channel");
@@ -76,6 +159,25 @@ fn dispatch_event(event: ImeEvent) {
     };
     if let Err(err) = tx.unbounded_send(event) {
         log::warn!("ime: dispatch_event failed: {err:#}");
+    }
+}
+
+fn debug_event(event: &ImeEvent) -> String {
+    match event {
+        ImeEvent::CommitText { text, new_cursor_position } => {
+            format!("CommitText text={text:?} cursor={new_cursor_position}")
+        }
+        ImeEvent::SetComposingText { text, new_cursor_position } => {
+            format!("SetComposingText text={text:?} cursor={new_cursor_position}")
+        }
+        ImeEvent::FinishComposingText => "FinishComposingText".to_string(),
+        ImeEvent::DeleteSurroundingText { before_length, after_length } => {
+            format!("DeleteSurroundingText before={before_length} after={after_length}")
+        }
+        ImeEvent::KeyEvent { action, keycode, meta_state, repeat_count } => {
+            format!("KeyEvent action={action} keycode={keycode} meta={meta_state:#x} repeat={repeat_count}")
+        }
+        ImeEvent::EditorAction { action_id } => format!("EditorAction id={action_id}"),
     }
 }
 
@@ -90,27 +192,276 @@ pub(crate) fn drain_ime_events(
     }
 }
 
-fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
-    match event {
-        ImeEvent::CommitText { text, .. } => {
-            let mut state = window_ptr.state.borrow_mut();
-            if let Some(handler) = state.input_handler.as_mut() {
-                handler.replace_text_in_range(None, &text);
-            } else {
-                log::debug!("ime::commit_text dropped (no input handler): {text:?}");
+/// Replace the currently-active composition span with `new_text` as
+/// MARKED (composition) text. Mirrors the macOS `setMarkedText` flow:
+/// the editor stores the text + a marked range, doesn't commit it,
+/// and shows it with composition underline. A subsequent
+/// `setComposingText` extends the SAME marked range (so `m` → `mo`
+/// → `mor` replaces the prior composition, not appends). A final
+/// `commitText` calls [`commit_composition`] which finalizes.
+///
+/// For terminals, this routes to `set_marked_text` — the text is
+/// shown in the composition overlay but NOT sent to the PTY. Only
+/// `commit_composition` sends to the PTY.
+fn set_composition(window_ptr: &AndroidWindowStatePtr, new_text: &str) {
+    let mut state = window_ptr.state.borrow_mut();
+    if state.input_handler.is_none() {
+        log::debug!("ime: set_composition dropped (no input handler)");
+        return;
+    }
+    let new_len = new_text.encode_utf16().count();
+
+    // Snapshot composition anchor & current selection BEFORE the
+    // mutating handler call so we can record where the new marked
+    // span lives (for our local tracking + later commit/unmark).
+    // `marked_text_range()` would be the authoritative source but
+    // terminals don't implement it, so we fall back to the cursor
+    // position when no prior composition exists.
+    let prev_start = state.ime_composition_start;
+    let start = match prev_start {
+        Some(start) => start,
+        None => {
+            let handler = state.input_handler.as_mut().expect("checked is_some above");
+            handler
+                .selected_text_range(false)
+                .map(|s| s.range.start)
+                .unwrap_or(0)
+        }
+    };
+
+    // Pass `range_utf16 = None`. Editor's
+    // `replace_and_mark_text_in_range` interprets a Some(range) as
+    // RELATIVE to the existing marked range (macOS NSTextInputClient
+    // convention: setMarkedText's replacement_range is offset within
+    // marked region). Passing absolute coords here adds those
+    // offsets to the marked start, blowing the insertion point far
+    // past the cursor (the +67 char editor-buffer bug). None means
+    // "replace the entire active marked region with new_text" for
+    // editor, and "set composition overlay to new_text" for terminal.
+    let selected_range = Some(new_len..new_len);
+    {
+        let handler = state.input_handler.as_mut().expect("checked is_some above");
+        handler.replace_and_mark_text_in_range(None, new_text, selected_range);
+    }
+
+    state.ime_composition_start = Some(start);
+    state.ime_composition_text = Some(new_text.to_string());
+}
+
+/// Finalize the active composition. Behavior diverges based on what
+/// kind of `InputHandler` is on the other side:
+///
+/// - **Editor-style** (`Editor`): the composing text is already
+///   inserted into the buffer (with a marked range / underline).
+///   Finalizing means `unmark_text` — drop the underline, leave the
+///   characters. A `commitText` with different text replaces the
+///   marked range; with the same text it's a text-level no-op that
+///   only clears the mark.
+///
+/// - **Terminal-style** (`TerminalInputHandler`): the composing text
+///   lives only in `terminal_view`'s composition overlay, NOT in the
+///   PTY. `unmark_text` clears the overlay without sending to the
+///   PTY. So we must explicitly call `replace_text_in_range(None,
+///   text)` to deliver the finalized text. Skipping this leaves the
+///   user with a phantom composition that never reaches the shell.
+///
+/// We distinguish via a probe before any mutating call:
+/// `text_for_range(marked_range)` returns the marked content for
+/// editors (because the text is in the buffer) and `None` for
+/// terminals (whose handler stubs `text_for_range`). That signal
+/// drives whether the finalization path needs an explicit commit.
+fn commit_composition(window_ptr: &AndroidWindowStatePtr, replacement_text: Option<&str>) {
+    let mut state = window_ptr.state.borrow_mut();
+    if state.input_handler.is_none() {
+        log::debug!("ime: commit_composition dropped (no input handler)");
+        return;
+    }
+
+    let prev_start = state.ime_composition_start;
+    let prev_text = state.ime_composition_text.clone();
+    let prev_len = prev_text.as_ref().map(|s| s.encode_utf16().count());
+
+    // Distinguish editor-style (marked text lives in the buffer; we
+    // only need to drop the underline on finish) from terminal-style
+    // (marked text lives in a composition overlay only; we need an
+    // explicit commit to deliver it to the PTY). Probe by querying
+    // text over the marked range: editor returns the marked content,
+    // terminal returns None. Run this before any mutating call so
+    // the probe reflects the post-composition state.
+    let marked_is_in_buffer = match (prev_start, prev_text.as_ref(), prev_len) {
+        (Some(start), Some(text), Some(len)) => {
+            let handler = state.input_handler.as_mut().expect("checked is_some above");
+            let mut adjusted = None;
+            let slice = handler.text_for_range(start..start + len, &mut adjusted);
+            slice.as_deref() == Some(text.as_str())
+        }
+        _ => false,
+    };
+
+    match replacement_text {
+        Some(text) => {
+            // commitText. Pass `range_utf16 = None`: editor's
+            // `replace_text_in_range` will (a) use its own
+            // marked_text_ranges as the replacement target if any,
+            // and (b) call `unmark_text` itself at the end (see
+            // editor.rs:23674). Terminal's replace_text_in_range
+            // clears marked + commits to PTY in one call. Calling
+            // `unmark_text` BEFORE here is harmful for editor
+            // because it clears marked_ranges so the replace
+            // can't use them.
+            let handler = state.input_handler.as_mut().expect("checked is_some above");
+            handler.replace_text_in_range(None, text);
+        }
+        None => {
+            let handler = state.input_handler.as_mut().expect("checked is_some above");
+            if marked_is_in_buffer {
+                // Editor: text already in buffer, just drop the
+                // composition highlight.
+                handler.unmark_text();
+            } else if let Some(text) = prev_text.as_deref() {
+                // Terminal: marked text lives only in the overlay.
+                // Replace_text_in_range delivers it to the PTY
+                // (terminal's impl: clear_marked_text + commit_text).
+                handler.replace_text_in_range(None, text);
             }
+        }
+    }
+
+    state.ime_composition_start = None;
+    state.ime_composition_text = None;
+}
+
+/// Push the current editor text + selection state across to Kotlin
+/// so the IME's `getTextBeforeCursor` / `getTextAfterCursor` /
+/// `getSelectedText` / `getExtractedText` queries can return real
+/// values, and so `InputMethodManager.updateSelection` fires.
+///
+/// Without this, the IME's internal state-model drifts from the
+/// editor's actual state. Gboard reacts to drift by re-confirming —
+/// it re-sends `setComposingText` 100-200ms after the first call
+/// with the same text, defensively trying to force its model back
+/// into sync. We see this as duplicate letters (`hh`, `ee`) in the
+/// editor. With the mirror in place Gboard's queries return what it
+/// expects and the duplicates stop.
+///
+/// Window size: we mirror up to ~256 chars on each side of the
+/// cursor. IMEs never request more (Gboard typically asks for 50,
+/// Swiftkey for 100). Sending the whole document on every keystroke
+/// would be wasteful for large Zed buffers.
+const IME_MIRROR_WINDOW: usize = 256;
+
+pub(crate) fn notify_text_state(window_ptr: &AndroidWindowStatePtr) {
+    let android_app: AndroidApp;
+    let comp_start_i32: i32;
+    let comp_end_i32: i32;
+    let sel_start: usize;
+    let sel_end: usize;
+    let text: String;
+    let actual_window_start: usize;
+    {
+        let mut state = window_ptr.state.borrow_mut();
+        android_app = state.android_app.clone();
+        let comp_start_opt = state.ime_composition_start;
+        let comp_text_len = state
+            .ime_composition_text
+            .as_ref()
+            .map(|s| s.encode_utf16().count());
+        comp_start_i32 = comp_start_opt.map(|s| s as i32).unwrap_or(-1);
+        comp_end_i32 = match (comp_start_opt, comp_text_len) {
+            (Some(s), Some(len)) => (s + len) as i32,
+            _ => -1,
+        };
+        let Some(handler) = state.input_handler.as_mut() else {
+            return;
+        };
+        let Some(selection) = handler.selected_text_range(false) else {
+            return;
+        };
+        sel_start = selection.range.start;
+        sel_end = selection.range.end;
+        let window_start = sel_start.saturating_sub(IME_MIRROR_WINDOW);
+        let window_end = sel_end.saturating_add(IME_MIRROR_WINDOW);
+        let mut adjusted = None;
+        text = handler
+            .text_for_range(window_start..window_end, &mut adjusted)
+            .unwrap_or_default();
+        actual_window_start = adjusted.as_ref().map(|r| r.start).unwrap_or(window_start);
+    }
+
+    if let Err(err) = call_activity_update_text_state(
+        &android_app,
+        &text,
+        actual_window_start as i32,
+        sel_start as i32,
+        sel_end as i32,
+        comp_start_i32,
+        comp_end_i32,
+    ) {
+        log::warn!("ime::notify_text_state failed: {err:#}");
+    }
+}
+
+fn call_activity_update_text_state(
+    android_app: &AndroidApp,
+    text: &str,
+    window_start: i32,
+    sel_start: i32,
+    sel_end: i32,
+    comp_start: i32,
+    comp_end: i32,
+) -> anyhow::Result<()> {
+    let vm_ptr = android_app.vm_as_ptr();
+    let activity_ptr = android_app.activity_as_ptr();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        anyhow::bail!("AndroidApp vm/activity pointer is null");
+    }
+    let vm = unsafe { JavaVM::from_raw(vm_ptr as _) }.context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let activity = unsafe { JObject::from_raw(activity_ptr as _) };
+    let text_jstring = env.new_string(text).context("new_string for IME text")?;
+    env.call_method(
+        &activity,
+        "updateImeTextState",
+        "(Ljava/lang/String;IIIII)V",
+        &[
+            (&text_jstring).into(),
+            window_start.into(),
+            sel_start.into(),
+            sel_end.into(),
+            comp_start.into(),
+            comp_end.into(),
+        ],
+    )
+    .context("call MainActivity.updateImeTextState")?;
+    Ok(())
+}
+
+fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
+    log::info!("ime::apply_event {:?}", debug_event(&event));
+    let needs_mirror_push = match event {
+        ImeEvent::CommitText { text, .. } => {
+            commit_composition(window_ptr, Some(&text));
+            true
         }
         ImeEvent::SetComposingText { text, .. } => {
-            let mut state = window_ptr.state.borrow_mut();
-            if let Some(handler) = state.input_handler.as_mut() {
-                handler.replace_and_mark_text_in_range(None, &text, None);
-            }
+            set_composition(window_ptr, &text);
+            true
         }
         ImeEvent::FinishComposingText => {
-            let mut state = window_ptr.state.borrow_mut();
-            if let Some(handler) = state.input_handler.as_mut() {
-                handler.unmark_text();
-            }
+            // Only push mirror state if there was an active composition
+            // to clear. Without this guard, Gboard fires
+            // `finishComposingText` defensively after each
+            // `IMM.updateSelection` push, and our unconditional
+            // mirror-push echoes another updateSelection right back —
+            // forming a feedback loop that floods the wire at ~16Hz
+            // even when the user is idle.
+            let had_composition = window_ptr
+                .state
+                .borrow()
+                .ime_composition_text
+                .is_some();
+            commit_composition(window_ptr, None);
+            had_composition
         }
         ImeEvent::DeleteSurroundingText {
             before_length,
@@ -129,6 +480,7 @@ fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
             let start = cursor - before;
             let end = selection.range.end + after;
             handler.replace_text_in_range(Some(start..end), "");
+            true
         }
         ImeEvent::KeyEvent {
             action,
@@ -136,19 +488,25 @@ fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
             meta_state,
             repeat_count,
         } => {
-            // Route through the same translator the extra-window key
-            // path uses (`translate_extra_key_event`) so the gpui side
-            // receives the same `PlatformInput::KeyDown` / `KeyUp` it
-            // would from a hardware keyboard.
             if let Some(input) =
                 crate::events::translate_extra_key_event(action, keycode, meta_state, repeat_count)
             {
                 window_ptr.handle_input(input);
             }
+            // KeyEvent may have moved the cursor (arrows) or changed
+            // text (Enter, Backspace through the hardware path);
+            // refresh the mirror unconditionally so the IME sees the
+            // post-key state.
+            true
         }
         ImeEvent::EditorAction { action_id } => {
             log::info!("ime::editor_action {action_id} (not yet routed)");
+            false
         }
+    };
+
+    if needs_mirror_push {
+        notify_text_state(window_ptr);
     }
 }
 
@@ -159,6 +517,7 @@ fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
 /// side. Logs but does not panic on failure (Activity recreation
 /// in flight, etc.).
 pub(crate) fn show_keyboard(android_app: &AndroidApp) {
+    log::info!("ime::show_keyboard (calling MainActivity.showIme)");
     if let Err(err) = call_activity_void(android_app, "showIme") {
         log::warn!("ime::show_keyboard failed: {err:#}");
     }
@@ -166,6 +525,7 @@ pub(crate) fn show_keyboard(android_app: &AndroidApp) {
 
 /// Hide the soft keyboard. Pairs with `show_keyboard`.
 pub(crate) fn hide_keyboard(android_app: &AndroidApp) {
+    log::info!("ime::hide_keyboard (calling MainActivity.hideIme)");
     if let Err(err) = call_activity_void(android_app, "hideIme") {
         log::warn!("ime::hide_keyboard failed: {err:#}");
     }

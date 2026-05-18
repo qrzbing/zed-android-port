@@ -194,6 +194,28 @@ pub(crate) struct AndroidCommon {
     /// events delivered by the IME's `sendKeyEvent` fallback).
     pub(crate) ime_event_rx:
         Option<futures::channel::mpsc::UnboundedReceiver<crate::ime::ImeEvent>>,
+    /// Last frame-boundary view of whether the primary window's
+    /// `input_handler` was set. The main-loop tick reconciles by
+    /// comparing the current state to this; on a diff it fires
+    /// show/hide IME. Sampling at frame boundaries (between paints)
+    /// avoids the take→set oscillation gpui does within each paint.
+    pub(crate) ime_currently_visible: bool,
+    /// Cache of the last-classified IME target so we can detect when
+    /// focus has moved between editor panes / a terminal pane and
+    /// trigger `InputMethodManager.restartInput` with new
+    /// `EditorInfo`. Without restart, Gboard treats the underlying
+    /// input as the same field across the swap — its in-flight
+    /// composition then dumps into whatever pane the user lands on.
+    /// See ime::probe_target_kind.
+    pub(crate) last_ime_target_kind: Option<crate::ime::ImeTargetKind>,
+    /// Last selection (start, end) we pushed to Kotlin via
+    /// `updateImeTextState`. Compared each tick against the
+    /// editor's current selection; on diff we re-push so Gboard
+    /// learns about touch-driven cursor moves (the "sticky cursor"
+    /// bug where typing after a tap-move kept inserting at the
+    /// old position because Gboard's composition state hadn't
+    /// observed the move).
+    pub(crate) last_pushed_selection: Option<(usize, usize)>,
     pub(crate) running: bool,
 }
 
@@ -232,6 +254,9 @@ impl AndroidCommon {
             extra_event_rx: Some(crate::multi_window::init_event_channel()),
             captured_pointer_rx: Some(crate::captured_pointer::init_event_channel()),
             ime_event_rx: Some(crate::ime::init_event_channel()),
+            ime_currently_visible: false,
+            last_ime_target_kind: None,
+            last_pushed_selection: None,
             running: true,
         }
     }
@@ -621,6 +646,164 @@ impl AndroidPlatform {
         self.common.borrow_mut().ime_event_rx = Some(rx);
     }
 
+    /// Sample the primary window's text-input focus at frame boundary
+    /// and drive show / hide IME when it changes. The check runs once
+    /// per main-loop tick, between gpui paint cycles, so the in-paint
+    /// `take_input_handler` / `set_input_handler` shuffle (which would
+    /// otherwise oscillate IME visibility 60 times per second) is
+    /// invisible to us — by the time we look, the frame has settled
+    /// into its post-set state.
+    fn reconcile_ime_visibility(&self) {
+        let (currently_visible, app, window_ptr) = {
+            let common = self.common.borrow();
+            let Some(window_ptr) = common.window.clone() else {
+                return;
+            };
+            let state = window_ptr.state.borrow();
+            (
+                state.input_handler.is_some(),
+                state.android_app.clone(),
+                window_ptr.clone(),
+            )
+        };
+        let was_visible = self.common.borrow().ime_currently_visible;
+        let visibility_changed = currently_visible != was_visible;
+        if visibility_changed {
+            self.common.borrow_mut().ime_currently_visible = currently_visible;
+            if currently_visible {
+                crate::ime::show_keyboard(&app);
+                // Seed the Kotlin-side mirror with the editor's
+                // current text + selection BEFORE the IME's first
+                // `getTextBeforeCursor` query lands.
+                crate::ime::notify_text_state(&window_ptr);
+            } else {
+                // IME going hidden — clear cached selection so the
+                // next show-transition re-seeds cleanly.
+                self.common.borrow_mut().last_pushed_selection = None;
+                crate::ime::hide_keyboard(&app);
+            }
+        }
+
+        if !currently_visible {
+            return;
+        }
+
+        // Probe handler kind + push updateSelection for touch-driven
+        // cursor moves. Both are cheap: text_for_range(0..1) is a
+        // single buffer lookup, selected_text_range is also O(1).
+        // Only runs while IME is visible so background frames don't
+        // pay this cost.
+        self.tick_ime_target_and_selection(&window_ptr, &app);
+    }
+
+    /// Once per main-loop tick (while IME is visible): detect target
+    /// kind changes (terminal ↔ code editor pane swap) and push
+    /// `updateSelection` whenever the editor's selection moved
+    /// outside an IME-driven path. Solves two bugs:
+    ///
+    /// 1. Cross-pane composition contamination — Gboard's
+    ///    composition state was sticky across pane swaps because
+    ///    the InputConnection is shared. `restartInput` resets it.
+    /// 2. Sticky cursor — after the user tap-moves the cursor
+    ///    (which doesn't fire any IME event), Gboard didn't observe
+    ///    the move; subsequent setComposingText extended the old
+    ///    composition at the old position. updateSelection here
+    ///    feeds Gboard the move so its next compose lands correctly.
+    ///
+    /// Also clears our composition tracking when the cursor leaves
+    /// the marked range — a tap outside composition logically
+    /// abandons it, even though the IME doesn't send finishComposing.
+    fn tick_ime_target_and_selection(
+        &self,
+        window_ptr: &crate::window::AndroidWindowStatePtr,
+        android_app: &android_activity::AndroidApp,
+    ) {
+        let current_kind: Option<crate::ime::ImeTargetKind>;
+        let current_selection: Option<(usize, usize)>;
+        let composition_anchor: Option<(usize, usize)>;
+        let our_composition_active: bool;
+        let handler_has_stale_mark: bool;
+        {
+            let mut state = window_ptr.state.borrow_mut();
+            let Some(handler) = state.input_handler.as_mut() else {
+                return;
+            };
+            current_kind = Some(crate::ime::probe_target_kind(handler));
+            current_selection = handler
+                .selected_text_range(false)
+                .map(|s| (s.range.start, s.range.end));
+            // If the editor still has a marked range from a prior
+            // composition session (user typed in editor, switched
+            // away without committing, came back), the editor's
+            // marked_text_ranges will still be set. Our next
+            // setComposingText with range_utf16=None would then
+            // accidentally replace those stale marks (editor.rs:
+            // 23690 — "use marked_ranges if present"). Detect and
+            // clean up while we have the handler at hand.
+            our_composition_active = state.ime_composition_text.is_some();
+            handler_has_stale_mark = !our_composition_active && handler.marked_text_range().is_some();
+            if handler_has_stale_mark {
+                handler.unmark_text();
+            }
+            composition_anchor = state.ime_composition_start.and_then(|start| {
+                state
+                    .ime_composition_text
+                    .as_ref()
+                    .map(|t| (start, start + t.encode_utf16().count()))
+            });
+        }
+        if handler_has_stale_mark {
+            log::info!("ime::tick cleared stale editor marked range");
+        }
+
+        let (last_kind, last_selection) = {
+            let common = self.common.borrow();
+            (common.last_ime_target_kind, common.last_pushed_selection)
+        };
+
+        let mut should_notify = false;
+
+        // Detect target swap → restartInput with new EditorInfo.
+        if current_kind != last_kind
+            && let Some(kind) = current_kind
+        {
+            {
+                let mut state = window_ptr.state.borrow_mut();
+                state.ime_composition_start = None;
+                state.ime_composition_text = None;
+            }
+            crate::ime::restart_input_for_kind(android_app, kind);
+            self.common.borrow_mut().last_ime_target_kind = Some(kind);
+            should_notify = true;
+        }
+
+        // Detect selection move (touch-driven cursor click) →
+        // updateSelection so the IME sees it.
+        if current_selection != last_selection {
+            self.common.borrow_mut().last_pushed_selection = current_selection;
+            should_notify = true;
+
+            // If cursor moved outside the active composition
+            // (genuinely, not just the +N advance from typing in
+            // composition), clear our tracking so the next
+            // setComposingText starts a fresh composition at the
+            // new cursor instead of trying to extend the old one
+            // at the now-abandoned position.
+            if let (Some((sel_start, sel_end)), Some((anchor_start, anchor_end))) =
+                (current_selection, composition_anchor)
+                && (sel_end < anchor_start || sel_start > anchor_end)
+            {
+                let mut state = window_ptr.state.borrow_mut();
+                state.ime_composition_start = None;
+                state.ime_composition_text = None;
+            }
+        }
+
+        if should_notify {
+            crate::ime::notify_text_state(window_ptr);
+        }
+    }
+
     /// Pull every queued `InputEvent` off android-activity's iterator and
     /// route translatable ones into the primary gpui window. Returning
     /// `InputStatus::Handled` for our own events lets android-activity stop
@@ -811,6 +994,13 @@ impl Platform for AndroidPlatform {
             // thread). Dispatches into the primary window's
             // `PlatformInputHandler` / `handle_input`.
             self.drain_ime_events();
+
+            // Reconcile IME visibility against the primary window's
+            // `input_handler` presence. Edge-triggered at frame
+            // boundaries — gpui's take/set oscillation within each
+            // paint can't leak through because we're sampling between
+            // ticks, not inside set/take callbacks.
+            self.reconcile_ime_visibility();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have

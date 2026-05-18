@@ -24,16 +24,64 @@ class ImeHostView(context: Context) : View(context) {
         isFocusableInTouchMode = true
     }
 
-    override fun onCheckIsTextEditor(): Boolean = true
+    override fun onCheckIsTextEditor(): Boolean {
+        android.util.Log.i("zdroid_ime", "ImeHostView.onCheckIsTextEditor() -> true")
+        return true
+    }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // Multi-line text input (editor) with no fullscreen / extract
-        // UI (we render the editor ourselves; the IME shouldn't
-        // overlay a fullscreen text view).
-        outAttrs.inputType =
-            EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+        val mode = (context as? MainActivity)?.currentImeMode ?: ImeInputMode.CODE_EDITOR
+        android.util.Log.i("zdroid_ime", "ImeHostView.onCreateInputConnection mode=$mode")
+        // EditorInfo per target kind (see ImeInputMode + ImeTargetKind):
+        //
+        // - TERMINAL: Termux's TerminalView.java line 280 pattern.
+        //   TYPE_TEXT_VARIATION_VISIBLE_PASSWORD disables composition
+        //   AND prediction in Gboard / Swiftkey. Means each keystroke
+        //   commits directly to the PTY (no setComposingText
+        //   accumulation, no autocorrect dump-and-retry).
+        //
+        // - CODE_EDITOR: NO_SUGGESTIONS kills the autocorrect strip
+        //   over code tokens, but we deliberately DON'T set
+        //   VISIBLE_PASSWORD — that would also disable CJK
+        //   composition, which we want to keep working for users
+        //   writing comments / strings in their native script.
+        //   IME_MULTI_LINE so Enter inserts a newline instead of
+        //   triggering "Done".
+        // Both modes use VISIBLE_PASSWORD: Samsung's Gboard ignores
+        // NO_SUGGESTIONS alone (documented behavior — its prediction
+        // strip + glide-typing still fire on code tokens, producing
+        // the "lililimeline" autocompletion regression where Gboard
+        // turns a sequence of "lili" typings into a long suggested
+        // word and commits the whole thing). VISIBLE_PASSWORD is the
+        // only flag that reliably refuses composition + prediction
+        // across Gboard / Swiftkey / Samsung IME. Trade-off: CJK
+        // composition is also disabled in CODE_EDITOR — we add a
+        // separate RICH_TEXT mode later if a user needs CJK input
+        // (rare in code; common in comments / docs).
+        outAttrs.inputType = when (mode) {
+            ImeInputMode.TERMINAL ->
+                EditorInfo.TYPE_CLASS_TEXT or
+                    EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                    EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            else /* CODE_EDITOR */ ->
+                EditorInfo.TYPE_CLASS_TEXT or
+                    EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                    EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                    EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+        }
         outAttrs.imeOptions =
-            EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            EditorInfo.IME_FLAG_NO_FULLSCREEN or
+                EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
         return ZdroidInputConnection(this)
+    }
+
+    override fun onFocusChanged(
+        gainFocus: Boolean,
+        direction: Int,
+        previouslyFocusedRect: android.graphics.Rect?,
+    ) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        android.util.Log.i("zdroid_ime", "ImeHostView.onFocusChanged gain=$gainFocus")
     }
 }

@@ -65,30 +65,161 @@ class MainActivity : GameActivity() {
     /// requestFocus on the host and invoke `InputMethodManager`.
     private var imeHostView: ImeHostView? = null
 
-    /// Bring up the soft keyboard. Called from Rust via JNI when an
-    /// editor element gains text-input focus (`set_input_handler`).
-    /// Idempotent — calling repeatedly when the IME is already up is a
-    /// no-op as far as the OS is concerned.
+    /// Mirrors the IME's visibility from our perspective so repeated
+    /// `showIme()` calls within a single visible-IME session don't
+    /// re-trigger requestFocus / showSoftInput. gpui's paint logic
+    /// fires `set_input_handler` every frame while the editor holds
+    /// text focus (take then set per frame, see
+    /// `crates/gpui/src/window.rs` paint flow), so without this
+    /// flag the IME would receive show / focus events 60+ times per
+    /// second and flicker visibly. Diverges from the OS state only if
+    /// the user dismisses the IME via Back (Phase 4 will sync via
+    /// `WindowInsetsListener`); for now a subsequent gpui focus
+    /// transition will resync it.
+    private var imeShown: Boolean = false
+
+    /// Bring up the soft keyboard. Called from Rust via JNI on the
+    /// edge transition into text-input focus. The first call within
+    /// a focus session does the real work; repeats are filtered.
     @Suppress("unused")
     fun showIme() {
         runOnUiThread {
-            val host = imeHostView ?: return@runOnUiThread
-            host.requestFocus()
+            val host = imeHostView ?: run {
+                Log.w("zdroid_ime", "showIme: imeHostView is null, skipping")
+                return@runOnUiThread
+            }
+            Log.i(
+                "zdroid_ime",
+                "showIme called imeShown=$imeShown hostFocused=${host.isFocused}"
+            )
+            if (imeShown) return@runOnUiThread
+            if (!host.isFocused) {
+                val gotFocus = host.requestFocus()
+                Log.i("zdroid_ime", "showIme: requestFocus -> $gotFocus")
+            }
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
                 as android.view.inputmethod.InputMethodManager
-            imm.showSoftInput(host, 0)
+            val shown = imm.showSoftInput(host, 0)
+            Log.i("zdroid_ime", "showIme: showSoftInput -> $shown")
+            imeShown = true
         }
     }
 
-    /// Dismiss the soft keyboard. Called from Rust when input focus
-    /// leaves an editor element (`take_input_handler`).
+    /// Dismiss the soft keyboard. Called from Rust on the edge
+    /// transition out of text-input focus.
     @Suppress("unused")
     fun hideIme() {
+        runOnUiThread {
+            Log.i("zdroid_ime", "hideIme called imeShown=$imeShown")
+            if (!imeShown) return@runOnUiThread
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            val hidden = imm.hideSoftInputFromWindow(host.windowToken, 0)
+            Log.i("zdroid_ime", "hideIme: hideSoftInputFromWindow -> $hidden")
+            imeShown = false
+        }
+    }
+
+    /// IME state mirror — written by Rust after every commit /
+    /// compose / delete via [updateImeTextState], read by
+    /// [ZdroidInputConnection]'s `getTextBeforeCursor` /
+    /// `getTextAfterCursor` / `getSelectedText` /
+    /// `getExtractedText` overrides. `@Volatile` because Rust pushes
+    /// from a JNI thread while the IME may query on the UI thread.
+    @Volatile
+    private var imeTextState: ImeTextState? = null
+
+    /// Currently-focused input target kind. Drives the `EditorInfo`
+    /// returned by [ImeHostView.onCreateInputConnection]:
+    ///
+    /// - `ImeInputMode.TERMINAL`: Termux-style raw key stream
+    ///   (`TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | NO_SUGGESTIONS`).
+    ///   Disables composition + autocorrect; each keystroke commits
+    ///   directly so the PTY sees normal hardware-keyboard semantics.
+    /// - `ImeInputMode.CODE_EDITOR`: NO_SUGGESTIONS + IME_MULTI_LINE
+    ///   without VISIBLE_PASSWORD — kills autocorrect for code
+    ///   tokens but preserves composition for CJK input.
+    ///
+    /// `@Volatile`: Rust JNI thread writes via [restartImeForTarget]
+    /// while the UI thread reads in `onCreateInputConnection`.
+    @Volatile
+    var currentImeMode: Int = ImeInputMode.CODE_EDITOR
+        private set
+
+    fun getImeTextState(): ImeTextState? = imeTextState
+
+    /// Switch input modes and force the IME to re-read EditorInfo.
+    /// Called from Rust via JNI when the focused input target's kind
+    /// changes (e.g. user tapped from an editor pane into a terminal
+    /// pane).
+    ///
+    /// Effect: `InputMethodManager.restartInput(imeHostView)` causes
+    /// the framework to invoke `imeHostView.onCreateInputConnection`
+    /// again with a fresh `EditorInfo`, and the IME service receives
+    /// `onFinishInput` + `onStartInput(restarting=true)` — dropping
+    /// any in-flight composition state that was anchored to the
+    /// outgoing target. This is the canonical pattern the Android
+    /// developer guide endorses for "one host view, multiple logical
+    /// editors" architectures.
+    @Suppress("unused")
+    fun restartImeForTarget(modeId: Int) {
+        runOnUiThread {
+            if (modeId != ImeInputMode.TERMINAL && modeId != ImeInputMode.CODE_EDITOR) {
+                Log.w("zdroid_ime", "restartImeForTarget: unknown modeId=$modeId, ignoring")
+                return@runOnUiThread
+            }
+            if (currentImeMode == modeId) {
+                Log.i("zdroid_ime", "restartImeForTarget: already in mode=$modeId, skipping restart")
+                return@runOnUiThread
+            }
+            Log.i(
+                "zdroid_ime",
+                "restartImeForTarget: switching mode ${currentImeMode} -> $modeId"
+            )
+            currentImeMode = modeId
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.restartInput(host)
+        }
+    }
+
+    /// Push the current editor text + selection across to Kotlin so
+    /// the IME's queries return real values. Rust calls this after
+    /// every text change. We also fire `InputMethodManager.updateSelection`
+    /// so Gboard / Swiftkey / etc. know the cursor moved — without
+    /// this, they re-confirm by sending the same composition twice
+    /// (the duplicate-letter bug). All offsets are UTF-16 code-unit
+    /// positions in the full document; `windowStart` is where `text`
+    /// begins in document coordinates.
+    @Suppress("unused")
+    fun updateImeTextState(
+        text: String,
+        windowStart: Int,
+        selectionStart: Int,
+        selectionEnd: Int,
+        composingStart: Int,
+        composingEnd: Int,
+    ) {
+        imeTextState = ImeTextState(
+            text = text,
+            windowStart = windowStart,
+            selectionStart = selectionStart,
+            selectionEnd = selectionEnd,
+            composingStart = composingStart,
+            composingEnd = composingEnd,
+        )
         runOnUiThread {
             val host = imeHostView ?: return@runOnUiThread
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
                 as android.view.inputmethod.InputMethodManager
-            imm.hideSoftInputFromWindow(host.windowToken, 0)
+            imm.updateSelection(host, selectionStart, selectionEnd, composingStart, composingEnd)
+            Log.i(
+                "zdroid_ime",
+                "updateImeTextState: textLen=${text.length} winStart=$windowStart " +
+                    "sel=$selectionStart..$selectionEnd comp=$composingStart..$composingEnd"
+            )
         }
     }
 
