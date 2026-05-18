@@ -65,12 +65,14 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     /// and invoke `InputMethodManager`.
     private var imeHostView: ImeHostView? = null
 
-    private var extraKeysView: ExtraKeysView? = null
-    private var programmingExtrasRowEnabled: Boolean = true
-    @Volatile
-    private var extraKeysPendingMeta: Int = 0
-    @Volatile
-    private var extraKeysLockedMeta: Int = 0
+    // No `ExtraKeysView` for extra windows: the row is editor-
+    // focused (arrows, Esc, Tab, Ctrl, Alt) and renders only
+    // alongside the main pane. Settings / picker windows that
+    // focus a text input get the soft keyboard but no row, since
+    // the relevant inputs there (search field, etc.) don't need
+    // code-navigation keys. Locked at no-op modifier state so
+    // `ImeHost.extraKeysModifierState` always returns 0 here and
+    // `ZdroidInputConnection.commitText` never intercepts.
 
     /// Mirror of the OS IME's visibility from our perspective. Same
     /// rationale as MainActivity: gpui's `set_input_handler` /
@@ -92,12 +94,10 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
 
     override fun getImeTextState(): ImeTextState? = imeTextState
 
-    override val extraKeysModifierState: Int
-        get() = extraKeysPendingMeta or extraKeysLockedMeta
-
-    override fun clearExtrasPendingModifier() {
-        extraKeysView?.consumePendingModifier()
-    }
+    // No extras row in extra windows; `commitText` never needs to
+    // intercept for a modifier here.
+    override val extraKeysModifierState: Int = 0
+    override fun clearExtrasPendingModifier() {}
 
     /// Cursor position in physical pixels relative to this Activity's
     /// SurfaceView. Mirrors MainActivity's state machine.
@@ -110,6 +110,7 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     private var cursorOverlay: CursorSurfaceControl? = null
 
     private var cursorHiddenByKeyboard: Boolean = false
+    private var cursorHiddenByTouch: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -264,11 +265,6 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
                 }
                 setImeShown(false)
             }
-            // Edge-to-edge: IME draws over content. Translate the
-            // ExtraKeysView up by the IME inset so it floats above
-            // the keyboard. See [MainActivity] for the longer note.
-            extraKeysView?.translationY = -imeBottom.toFloat()
-
             lastImeInsetBottom = imeBottom
             insets
         }
@@ -284,49 +280,16 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
         if (imeShown != shown) {
             imeShown = shown
             NativeBridge.nativeSetSoftKeyboardVisible(shown)
-            updateExtrasRowVisibility()
         }
     }
 
-    /// Mirror of [MainActivity.updateExtrasRowVisibility]: gate the
-    /// `ExtraKeysView` on (user setting AND IME currently shown).
-    /// Lazy-inflated on first enable, removed entirely when the
-    /// setting flips off so we don't carry the layout overhead.
-    private fun updateExtrasRowVisibility() {
-        val shouldShow = programmingExtrasRowEnabled && imeShown
-        if (shouldShow) {
-            if (extraKeysView == null) {
-                val view = ExtraKeysView(this) { pending, locked ->
-                    extraKeysPendingMeta = pending
-                    extraKeysLockedMeta = locked
-                }
-                val params = android.widget.FrameLayout.LayoutParams(
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                    android.view.Gravity.BOTTOM,
-                )
-                addContentView(view, params)
-                view.translationY = -lastImeInsetBottom.toFloat()
-                extraKeysView = view
-            }
-            extraKeysView?.visibility = View.VISIBLE
-        } else {
-            extraKeysView?.visibility = View.GONE
-        }
-    }
-
-    @Suppress("unused")
-    fun setProgrammingExtrasRowEnabled(enabled: Boolean) {
-        runOnUiThread {
-            if (programmingExtrasRowEnabled == enabled) return@runOnUiThread
-            programmingExtrasRowEnabled = enabled
-            if (!enabled) {
-                extraKeysView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
-                extraKeysView = null
-            }
-            updateExtrasRowVisibility()
-        }
-    }
+    /// JNI hook from
+    /// `gpui_android::platform::tick_extras_row_enabled`. Kept as a
+    /// no-op for extra windows so the Rust-side broadcast that
+    /// fans out to every registered Activity has a valid receiver
+    /// here. Extras rows render only on the primary editor pane.
+    @Suppress("unused", "UNUSED_PARAMETER")
+    fun setProgrammingExtrasRowEnabled(enabled: Boolean) {}
 
     private fun setImeManuallyDismissed(dismissed: Boolean) {
         if (imeManuallyDismissed != dismissed) {
@@ -636,9 +599,10 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     }
 
     private fun handleCapturedEvent(event: MotionEvent) {
-        if (cursorHiddenByKeyboard) {
+        if (cursorHiddenByKeyboard || cursorHiddenByTouch) {
             cursorOverlay?.setVisible(true)
             cursorHiddenByKeyboard = false
+            cursorHiddenByTouch = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
             val isHoldDragMultiTouch = event.pointerCount >= 2 &&
@@ -717,6 +681,23 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     /// too; the Rust side drops them since gpui has no PlatformInput
     /// mapping for that action, which is the same policy as the primary
     /// window's translate_key_event uses.
+    /// Hide the hardware-pointer cursor on direct-touch input,
+    /// same as `MainActivity`. Re-shown by `handleCapturedEvent`
+    /// on the next pointer activity. No-op while trackpad mode is
+    /// active because touch IS the cursor input there.
+    override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+        if (event != null
+            && !trackpadModeActive
+            && !cursorHiddenByTouch
+            && cursorOverlay != null
+            && event.source and InputDevice.SOURCE_TOUCHSCREEN != 0
+        ) {
+            cursorOverlay?.setVisible(false)
+            cursorHiddenByTouch = true
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN
             && !cursorHiddenByKeyboard

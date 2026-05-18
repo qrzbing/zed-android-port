@@ -560,6 +560,15 @@ class MainActivity : GameActivity(), ImeHost {
     /// keystroke and reappears on any pointer motion. Tracked so we
     /// only toggle visibility on edges, not on every key.
     private var cursorHiddenByKeyboard: Boolean = false
+    /// Mirror flag for direct-touch input. Desktop convention: when
+    /// the user shifts modality (finger on the touchscreen), the
+    /// hardware-pointer cursor sprite hides so it doesn't clutter
+    /// the touch surface. Reappears on the next pointer activity
+    /// (trackpad swipe / mouse move). NO-op while
+    /// `trackpadModeActive` is true, because in that mode the
+    /// touch IS the cursor input and hiding the sprite would
+    /// blind the user.
+    private var cursorHiddenByTouch: Boolean = false
 
     /// Called from Rust via JNI (`set_pointer_icon_inner` in
     /// `crates/gpui_android/src/cursor.rs`). Dispatches to the UI
@@ -781,10 +790,11 @@ class MainActivity : GameActivity(), ImeHost {
 
     private fun handleCapturedEvent(event: MotionEvent) {
         // Any pointer activity reawakens the cursor if the keyboard
-        // hid it.
-        if (cursorHiddenByKeyboard) {
+        // or a direct-touch event hid it.
+        if (cursorHiddenByKeyboard || cursorHiddenByTouch) {
             cursorOverlay?.setVisible(true)
             cursorHiddenByKeyboard = false
+            cursorHiddenByTouch = false
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
             // Cursor follows the moving finger in two cases:
@@ -814,6 +824,27 @@ class MainActivity : GameActivity(), ImeHost {
             }
         }
         forwardCapturedPointer(event)
+    }
+
+    /// Hide the hardware-pointer cursor sprite when the user shifts
+    /// to direct-touch input. Mirrors `dispatchKeyEvent`'s
+    /// hide-on-keyboard logic so the cursor only sits on screen
+    /// while the user is actually using a hardware pointer. NO-op
+    /// when trackpad mode is active (touch IS the cursor input
+    /// there) or when there's no cursor overlay to hide.
+    /// Reappears on the next pointer activity via
+    /// `handleCapturedEvent`.
+    override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+        if (event != null
+            && !trackpadModeActive
+            && !cursorHiddenByTouch
+            && cursorOverlay != null
+            && event.source and InputDevice.SOURCE_TOUCHSCREEN != 0
+        ) {
+            cursorOverlay?.setVisible(false)
+            cursorHiddenByTouch = true
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
