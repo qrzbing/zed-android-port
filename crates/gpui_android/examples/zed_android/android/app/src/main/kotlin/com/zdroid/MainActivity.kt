@@ -485,6 +485,56 @@ class MainActivity : GameActivity() {
         }
     }
 
+    /// True while Rust's `TRACKPAD_MODE_ENABLED` atomic is set —
+    /// touch-screen virtual trackpad mode is on. Drives the
+    /// SurfaceControl cursor overlay's visibility independently
+    /// from the hardware-pointer-capture path (the two are OR'd:
+    /// either one keeps the sprite on).
+    private var trackpadModeActive: Boolean = false
+
+    /// Called from Rust via JNI when the user toggles trackpad
+    /// mode. Shows / hides the SurfaceControl cursor overlay and
+    /// builds it lazily if this is the first time it's needed
+    /// (the existing build path is gated on
+    /// `onPointerCaptureChanged`; trackpad mode runs without
+    /// hardware capture so it needs its own bootstrap).
+    @Suppress("unused")
+    fun setTrackpadModeActive(active: Boolean) {
+        runOnUiThread {
+            Log.i(TAG_CAPTURE, "setTrackpadModeActive($active)")
+            trackpadModeActive = active
+            if (active) {
+                ensureCursorOverlay()
+                if (cursorOverlay != null) {
+                    val (w, h) = visibleBounds()
+                    if (cursorX == 0f && cursorY == 0f) {
+                        cursorX = w / 2f
+                        cursorY = h / 2f
+                    }
+                    cursorOverlay?.move(cursorX, cursorY)
+                    cursorOverlay?.setVisible(true)
+                }
+            } else if (!window.decorView.hasPointerCapture()) {
+                // Only hide if hardware capture isn't also keeping the
+                // sprite on.
+                cursorOverlay?.setVisible(false)
+            }
+        }
+    }
+
+    /// Position the cursor sprite at (x, y) physical pixels. Called
+    /// by the Rust touch trackpad state machine after every
+    /// single-finger drag delta. Clamps to the visible surface.
+    @Suppress("unused")
+    fun setTrackpadCursorPosition(x: Float, y: Float) {
+        runOnUiThread {
+            val (w, h) = visibleBounds()
+            cursorX = x.coerceIn(0f, w - 1f)
+            cursorY = y.coerceIn(0f, h - 1f)
+            cursorOverlay?.move(cursorX, cursorY)
+        }
+    }
+
     override fun onPointerCaptureChanged(hasCapture: Boolean) {
         super.onPointerCaptureChanged(hasCapture)
         Log.i(TAG_CAPTURE, "onPointerCaptureChanged hasCapture=$hasCapture")
@@ -509,7 +559,9 @@ class MainActivity : GameActivity() {
             ensureCursorOverlay()
             cursorOverlay?.move(cursorX, cursorY)
             cursorOverlay?.setVisible(true)
-        } else {
+        } else if (!trackpadModeActive) {
+            // Only hide if touch-trackpad mode isn't also keeping the
+            // sprite on. The two visibility signals OR.
             cursorOverlay?.setVisible(false)
         }
     }

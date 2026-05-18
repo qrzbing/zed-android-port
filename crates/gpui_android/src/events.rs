@@ -81,9 +81,16 @@ pub(crate) fn translate_motion_event(
     let input_source = source::classify(event);
 
     // Track the most recent input modality so UI components can widen
-    // hit zones for touch without affecting mouse precision.
+    // hit zones for touch without affecting mouse precision. In
+    // trackpad mode, finger input is synthesized into mouse events
+    // and the user controls a precise virtual cursor — touch-friendly
+    // widening would actively hurt (splitters / scrollbars capture
+    // clicks meant for adjacent buttons like tab-close). Treat
+    // finger-driven trackpad mode as mouse for hit-test purposes.
+    let is_touch_input =
+        input_source == source::InputSource::Finger && !crate::ime::trackpad_mode_enabled();
     state.last_input_was_touch.store(
-        input_source == source::InputSource::Finger,
+        is_touch_input,
         std::sync::atomic::Ordering::Relaxed,
     );
 
@@ -218,8 +225,11 @@ pub(crate) fn translate_extra_motion_event(
             | JAVA_ACTION_POINTER_DOWN
             | JAVA_ACTION_POINTER_UP
     );
+    // Same trackpad-mode override as the primary surface path:
+    // virtual trackpad treats finger as mouse, no touch-friendly
+    // hit-zone widening.
     state.last_input_was_touch.store(
-        is_touch_action,
+        is_touch_action && !crate::ime::trackpad_mode_enabled(),
         std::sync::atomic::Ordering::Relaxed,
     );
     if is_touch_action {

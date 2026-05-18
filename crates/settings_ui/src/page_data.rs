@@ -182,6 +182,36 @@ fn android_input_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SectionHeader("Touch Behavior"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Virtual Trackpad Mode",
+                description: "VNC-style: the screen becomes a virtual \
+                    trackpad. One-finger drag moves the on-screen cursor; \
+                    tap clicks at the cursor position; two-finger tap \
+                    right-clicks; two-finger drag scrolls. Direct touch \
+                    is fully disabled while this is on — taps no longer \
+                    place the cursor where you tap. Useful when paired \
+                    with a hardware keyboard for fine-grained mouse-like \
+                    interaction.",
+                field: Box::new(SettingField {
+                    json_path: Some("android_input.trackpad_mode"),
+                    pick: |settings_content| {
+                        settings_content
+                            .android_input
+                            .as_ref()?
+                            .trackpad_mode
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .android_input
+                            .get_or_insert_default()
+                            .trackpad_mode = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]),
     }
 }

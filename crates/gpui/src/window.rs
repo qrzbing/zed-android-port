@@ -3031,6 +3031,18 @@ impl Window {
         self.platform_window.set_on_screen_keyboard_enabled(enabled);
     }
 
+    /// Push the user's `android_input.trackpad_mode` setting. Same
+    /// per-frame pattern as `set_on_screen_keyboard_enabled`.
+    pub fn set_trackpad_mode_enabled(&self, enabled: bool) {
+        self.platform_window.set_trackpad_mode_enabled(enabled);
+    }
+
+    /// True when touch trackpad mode is active. Drives the pane
+    /// tab-bar toggle button's lit-up state.
+    pub fn trackpad_mode_enabled(&self) -> bool {
+        self.platform_window.trackpad_mode_enabled()
+    }
+
     /// Updates the cursor style for the entire window at the platform level. A cursor
     /// style using this method will have precedence over any cursor style set using
     /// `set_cursor_style`. This method should only be called during the paint

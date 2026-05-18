@@ -225,6 +225,11 @@ pub(crate) struct AndroidCommon {
     /// other event triggers a paint — the user-visible bug where
     /// the button needs two taps to "respond".
     pub(crate) last_soft_keyboard_visible: bool,
+    /// Tracks the last-observed `TRACKPAD_MODE_ENABLED` value so we
+    /// can JNI-push the show/hide of the SurfaceControl cursor
+    /// overlay on the Kotlin side only when the mode actually flips.
+    /// Avoids burning a JNI call every tick.
+    pub(crate) last_trackpad_mode_enabled: bool,
     pub(crate) running: bool,
 }
 
@@ -267,6 +272,7 @@ impl AndroidCommon {
             last_ime_target_kind: None,
             last_pushed_selection: None,
             last_soft_keyboard_visible: false,
+            last_trackpad_mode_enabled: false,
             running: true,
         }
     }
@@ -835,6 +841,20 @@ impl AndroidPlatform {
     /// input handler is None, e.g. a terminal pane without active
     /// text-input), so gating this on `currently_visible` like
     /// `tick_ime_target_and_selection` would miss those cases.
+    /// Detect `TRACKPAD_MODE_ENABLED` flips and tell Kotlin to show
+    /// or hide the SurfaceControl cursor sprite. The sprite's
+    /// position is updated separately from the touch SM whenever
+    /// the user drags; this only handles the visibility edge.
+    fn tick_trackpad_mode_active(&self) {
+        let current = crate::ime::trackpad_mode_enabled();
+        let last = self.common.borrow().last_trackpad_mode_enabled;
+        if current == last {
+            return;
+        }
+        self.common.borrow_mut().last_trackpad_mode_enabled = current;
+        crate::cursor::set_trackpad_mode_active(&self.android_app, current);
+    }
+
     fn tick_soft_keyboard_visibility(&self) {
         let current = crate::ime::soft_keyboard_visible();
         let last = self.common.borrow().last_soft_keyboard_visible;
@@ -1049,6 +1069,7 @@ impl Platform for AndroidPlatform {
             // ticks, not inside set/take callbacks.
             self.reconcile_ime_visibility();
             self.tick_soft_keyboard_visibility();
+            self.tick_trackpad_mode_active();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have

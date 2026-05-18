@@ -8,6 +8,7 @@
 use std::cell::Cell;
 
 use android_activity::AndroidApp;
+use anyhow::Context as _;
 use gpui::CursorStyle;
 use jni::{JavaVM, objects::JObject, sys::jint};
 
@@ -104,5 +105,61 @@ fn set_pointer_icon_inner(
         "(I)V",
         &[icon_type.into()],
     );
+    Ok(())
+}
+
+/// Move the SurfaceControl cursor overlay to a touch-trackpad cursor
+/// position. Called from the touch state machine while VNC-style
+/// trackpad mode is on. Coordinates are physical pixels in the
+/// decorView's space — same convention `MainActivity.cursorX/Y`
+/// follows. The Kotlin method clamps to surface bounds and no-ops
+/// when the overlay isn't live.
+pub(crate) fn move_trackpad_cursor(android_app: &AndroidApp, x: f32, y: f32) {
+    if let Err(err) = move_trackpad_cursor_inner(android_app, x, y) {
+        log::warn!("move_trackpad_cursor failed: {err:#}");
+    }
+}
+
+fn move_trackpad_cursor_inner(android_app: &AndroidApp, x: f32, y: f32) -> anyhow::Result<()> {
+    let vm = unsafe { JavaVM::from_raw(android_app.vm_as_ptr().cast()) }
+        .context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let activity = unsafe { JObject::from_raw(android_app.activity_as_ptr() as _) };
+    env.call_method(
+        &activity,
+        "setTrackpadCursorPosition",
+        "(FF)V",
+        &[x.into(), y.into()],
+    )
+    .context("call MainActivity.setTrackpadCursorPosition")?;
+    Ok(())
+}
+
+/// Tell Kotlin to show or hide the SurfaceControl cursor overlay
+/// for touch-trackpad mode. Called from the platform reconcile
+/// loop when the `TRACKPAD_MODE_ENABLED` atomic flips. When the
+/// user has hardware pointer capture, the sprite is already shown
+/// for that path; the Kotlin method merges both signals.
+pub(crate) fn set_trackpad_mode_active(android_app: &AndroidApp, active: bool) {
+    if let Err(err) = set_trackpad_mode_active_inner(android_app, active) {
+        log::warn!("set_trackpad_mode_active({active}) failed: {err:#}");
+    }
+}
+
+fn set_trackpad_mode_active_inner(
+    android_app: &AndroidApp,
+    active: bool,
+) -> anyhow::Result<()> {
+    let vm = unsafe { JavaVM::from_raw(android_app.vm_as_ptr().cast()) }
+        .context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let activity = unsafe { JObject::from_raw(android_app.activity_as_ptr() as _) };
+    env.call_method(
+        &activity,
+        "setTrackpadModeActive",
+        "(Z)V",
+        &[active.into()],
+    )
+    .context("call MainActivity.setTrackpadModeActive")?;
     Ok(())
 }

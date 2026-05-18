@@ -118,6 +118,11 @@ pub(crate) struct AndroidWindowState {
     /// ID tracking, multi-finger gesture classification, tap vs scroll
     /// discrimination. Each window's touchscreen events are isolated.
     pub(crate) touch: crate::touch::TouchState,
+    /// Trackpad-mode counterpart to `touch`. Receives the same
+    /// `TouchEvent` stream when `android_input.trackpad_mode` is on
+    /// (the dispatcher branches via the
+    /// `ime::TRACKPAD_MODE_ENABLED` atomic).
+    pub(crate) trackpad_touch: crate::touch::TrackpadTouchState,
     /// Set by elements (scrollbar thumb, splitter, resize handle) while
     /// they're actively driving a direct-manipulation drag. Flips via
     /// `PlatformWindow::set_drag_active` on this window's
@@ -477,6 +482,7 @@ impl AndroidWindow {
             clicks: crate::events::click_track::ClickTrackState::default(),
             captured: crate::captured_pointer::CapturedPointerState::default(),
             touch: crate::touch::TouchState::default(),
+            trackpad_touch: crate::touch::TrackpadTouchState::default(),
             drag_active: AtomicBool::new(false),
             last_input_was_touch: AtomicBool::new(false),
             ime_composition_start: None,
@@ -731,6 +737,15 @@ impl PlatformWindow for AndroidWindow {
     fn set_on_screen_keyboard_enabled(&self, enabled: bool) {
         crate::ime::ON_SCREEN_KEYBOARD_ENABLED
             .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    fn set_trackpad_mode_enabled(&self, enabled: bool) {
+        crate::ime::TRACKPAD_MODE_ENABLED
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    fn trackpad_mode_enabled(&self) -> bool {
+        crate::ime::trackpad_mode_enabled()
     }
 
     fn draw(&self, scene: &Scene) {

@@ -472,6 +472,18 @@ pub struct AndroidInputSettingsContent {
     ///
     /// Default: true
     pub on_screen_keyboard: Option<bool>,
+    /// Whether to treat the screen as a virtual trackpad (VNC-style
+    /// mouse simulation) instead of routing touches as direct
+    /// input. When enabled: one-finger drag moves the cursor by the
+    /// delta; one-finger tap clicks at the cursor's current
+    /// position; two-finger tap right-clicks; two-finger drag is
+    /// scroll-wheel. Direct touch is fully disabled — taps no
+    /// longer place the cursor at the tap location. The cursor
+    /// sprite is shown automatically while this is on. A pane
+    /// tab-bar toggle button lets the user flip the mode at runtime.
+    ///
+    /// Default: false
+    pub trackpad_mode: Option<bool>,
 }
 
 #[with_fallible_options]

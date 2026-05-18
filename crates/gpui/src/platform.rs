@@ -697,6 +697,21 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// cheap atomic store. No-op on other platforms.
     fn set_on_screen_keyboard_enabled(&self, _enabled: bool) {}
 
+    /// Mirror the `android_input.trackpad_mode` setting. When true,
+    /// the Android touch state machine routes touches as virtual
+    /// trackpad gestures (one-finger drag = cursor delta, tap =
+    /// click, two-finger tap = right-click, two-finger drag =
+    /// scroll). Direct touch is replaced. The cursor sprite is
+    /// shown automatically. No-op on other platforms.
+    fn set_trackpad_mode_enabled(&self, _enabled: bool) {}
+
+    /// True when virtual trackpad mode is currently active. Used
+    /// by the pane tab-bar toggle button to draw its lit-up state,
+    /// matching the convention other togglable buttons use.
+    fn trackpad_mode_enabled(&self) -> bool {
+        false
+    }
+
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;

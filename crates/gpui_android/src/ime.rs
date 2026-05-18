@@ -42,6 +42,18 @@ pub(crate) fn on_screen_keyboard_enabled() -> bool {
     ON_SCREEN_KEYBOARD_ENABLED.load(Ordering::Acquire)
 }
 
+/// Mirrors the `android_input.trackpad_mode` user setting. Written
+/// by pane render via `Window::set_trackpad_mode_enabled` each frame.
+/// Read by the touch state machine (`crate::touch`) to branch
+/// between direct-touch and virtual-trackpad behaviors. Read by
+/// platform reconcile to drive cursor-sprite visibility on the
+/// Kotlin side.
+pub(crate) static TRACKPAD_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn trackpad_mode_enabled() -> bool {
+    TRACKPAD_MODE_ENABLED.load(Ordering::Acquire)
+}
+
 use anyhow::Context as _;
 use android_activity::AndroidApp;
 use futures::channel::mpsc;

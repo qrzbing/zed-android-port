@@ -1283,6 +1283,13 @@
     // stops auto-showing on text-input focus and the pane button is
     // hidden from the tab bar.
     "on_screen_keyboard": true,
+    // VNC-style virtual trackpad: when enabled, the screen acts as
+    // a trackpad. One-finger drag moves the on-screen cursor by
+    // the touch delta. One-finger tap clicks at the cursor's
+    // current position. Two-finger tap is right-click; two-finger
+    // drag is scroll. Direct touch is fully disabled while this
+    // is on — taps no longer place the cursor at the tap location.
+    "trackpad_mode": false,
   },
   // Settings related to the editor's tabs
   "tabs": {

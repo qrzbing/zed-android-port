@@ -75,6 +75,7 @@ pub struct TabBarSettings {
 #[derive(Deserialize, RegisterSetting)]
 pub struct AndroidInputSettings {
     pub on_screen_keyboard: bool,
+    pub trackpad_mode: bool,
 }
 
 impl Settings for WorkspaceSettings {
@@ -162,6 +163,7 @@ impl Settings for AndroidInputSettings {
         let android_input = content.android_input.clone().unwrap_or_default();
         AndroidInputSettings {
             on_screen_keyboard: android_input.on_screen_keyboard.unwrap_or(true),
+            trackpad_mode: android_input.trackpad_mode.unwrap_or(false),
         }
     }
 }

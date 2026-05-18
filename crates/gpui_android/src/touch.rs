@@ -37,6 +37,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use android_activity::AndroidApp;
 use android_activity::input::{MetaState, MotionAction, MotionEvent};
 use gpui::{
     MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point, ScrollDelta,
@@ -129,6 +130,12 @@ pub(crate) fn dispatch_primary(
     let Some(touch_event) = build_from_motion_event(event, scale_factor) else {
         return MotionInputs::new();
     };
+    if crate::ime::trackpad_mode_enabled() {
+        let android_app = state.android_app.clone();
+        return state
+            .trackpad_touch
+            .on_event(&touch_event, &android_app, scale_factor);
+    }
     let drag_capture = state
         .drag_active
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -153,6 +160,12 @@ pub(crate) fn dispatch_extra(
     else {
         return MotionInputs::new();
     };
+    if crate::ime::trackpad_mode_enabled() {
+        let android_app = state.android_app.clone();
+        return state
+            .trackpad_touch
+            .on_event(&touch_event, &android_app, scale_factor);
+    }
     let drag_capture = state
         .drag_active
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -759,6 +772,284 @@ impl TouchState {
     fn reset(&mut self) {
         self.pointers.clear();
         self.phase = GesturePhase::Idle;
+        self.scroll_centroid = None;
+    }
+}
+
+// ============================================================================
+// Trackpad mode (VNC-style virtual trackpad)
+// ============================================================================
+//
+// When `android_input.trackpad_mode` is enabled, the screen acts as a
+// virtual trackpad rather than direct touch:
+//
+//   - 1-finger tap (no significant motion before lift) → click at the
+//     virtual cursor's current position (`MouseDown` + `MouseUp`).
+//   - 1-finger drag → advance the virtual cursor by the touch delta
+//     and re-position the cursor sprite. No mouse button held.
+//   - 2-finger tap → right-click at the cursor.
+//   - 2-finger drag → `ScrollWheel` based on centroid Y-delta.
+//
+// The virtual cursor lives on Kotlin's side (`MainActivity.cursorX/Y`,
+// same SurfaceControl overlay the hardware trackpad uses) and we keep
+// a Rust-side mirror in `TrackpadTouchState::cursor` so the emitted
+// `MouseDown`/`MouseMove` events have the correct position. Each move
+// fires a JNI call to `MainActivity.setTrackpadCursorPosition` to
+// keep the sprite in sync.
+
+/// Click vs drag threshold: motion above this on the touch surface
+/// commits the gesture to drag (cursor motion); below it, lift is a
+/// tap (click at cursor).
+const TRACKPAD_TAP_THRESHOLD_PX: f64 = 8.0;
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+enum TrackpadGesturePhase {
+    #[default]
+    Idle,
+    /// One finger down, motion still below tap threshold. Lift →
+    /// tap (click at cursor). Move past threshold → SingleFingerDrag.
+    SingleFingerDown,
+    /// One finger past tap threshold; subsequent moves advance the
+    /// cursor, no click is emitted on lift.
+    SingleFingerDrag,
+    /// 2+ fingers down within the 2-finger-tap window. Not yet
+    /// decided 2-finger-tap (right click) vs 2-finger-scroll.
+    MultiFingerDown,
+    /// 2+ fingers past scroll threshold; emits `ScrollWheel`.
+    MultiFingerScroll,
+    /// 2-finger tap resolved as right-click. Waiting for all
+    /// fingers to lift before returning to Idle.
+    RightClickResolved,
+}
+
+#[derive(Debug, Clone)]
+struct TrackpadPointerState {
+    down_pos: Point<Pixels>,
+    last_pos: Point<Pixels>,
+    accumulated_motion: f64,
+}
+
+#[derive(Default)]
+pub(crate) struct TrackpadTouchState {
+    /// Per-pointer state for the active gesture.
+    pointers: HashMap<i32, TrackpadPointerState>,
+    phase: TrackpadGesturePhase,
+    /// Last centroid for 2-finger scroll delta computation.
+    scroll_centroid: Option<Point<Pixels>>,
+    /// Virtual cursor position in physical pixels (decorView space —
+    /// matches `MainActivity.cursorX/Y` convention). Updated by
+    /// single-finger drag deltas; read by all gesture emit branches
+    /// so synthesized mouse events fire at the right position.
+    cursor: Point<Pixels>,
+}
+
+impl TrackpadTouchState {
+    /// `android_app` is needed for the JNI call that moves the
+    /// cursor sprite on the Kotlin side. `scale_factor` converts
+    /// between gpui's logical-pixel coordinate space (`self.cursor`,
+    /// emitted to MouseMove / MouseDown) and the physical-pixel
+    /// space the Kotlin cursor sprite lives in (`MainActivity.cursorX/Y`,
+    /// matching the captured-trackpad convention). Coordinates passed
+    /// to gpui events come from `self.cursor`, not the raw touch
+    /// position — that's the whole point of trackpad mode.
+    pub(crate) fn on_event(
+        &mut self,
+        event: &TouchEvent,
+        android_app: &AndroidApp,
+        scale_factor: f32,
+    ) -> MotionInputs {
+        let mut out = MotionInputs::new();
+        if event.pointers.is_empty() {
+            return out;
+        }
+        let modifiers = event.modifiers;
+
+        match event.action {
+            TouchAction::Down => {
+                self.reset();
+                let primary = &event.pointers[0];
+                if self.cursor == Point::default() {
+                    self.cursor = primary.pos;
+                }
+                self.pointers.insert(
+                    primary.id,
+                    TrackpadPointerState {
+                        down_pos: primary.pos,
+                        last_pos: primary.pos,
+                        accumulated_motion: 0.0,
+                    },
+                );
+                self.phase = TrackpadGesturePhase::SingleFingerDown;
+                crate::cursor::move_trackpad_cursor(
+                    android_app,
+                    f32::from(self.cursor.x) * scale_factor,
+                    f32::from(self.cursor.y) * scale_factor,
+                );
+                // Deliberately don't emit MouseDown here. Pre-emitting
+                // would land as a "click outside" on any open
+                // context menu / overlay whose dismiss handler
+                // listens for MouseDown anywhere, and the user's
+                // subsequent cursor-drag would dismiss it before
+                // they could navigate to a menu item. Click emission
+                // is deferred to TouchAction::Up (tap path) when we
+                // know the gesture was a tap, not a drag.
+            }
+
+            TouchAction::PointerDown { index } => {
+                let new_p = &event.pointers[index];
+                self.pointers.insert(
+                    new_p.id,
+                    TrackpadPointerState {
+                        down_pos: new_p.pos,
+                        last_pos: new_p.pos,
+                        accumulated_motion: 0.0,
+                    },
+                );
+                if self.pointers.len() >= 2 {
+                    self.phase = TrackpadGesturePhase::MultiFingerDown;
+                    self.scroll_centroid = Some(centroid(&event.pointers));
+                }
+            }
+
+            TouchAction::Move => match self.phase {
+                TrackpadGesturePhase::SingleFingerDown
+                | TrackpadGesturePhase::SingleFingerDrag => {
+                    let primary = &event.pointers[0];
+                    let (delta, accumulated) = {
+                        let Some(pstate) = self.pointers.get_mut(&primary.id) else {
+                            return out;
+                        };
+                        let delta = primary.pos - pstate.last_pos;
+                        pstate.last_pos = primary.pos;
+                        pstate.accumulated_motion += delta.magnitude();
+                        (delta, pstate.accumulated_motion)
+                    };
+
+                    if self.phase == TrackpadGesturePhase::SingleFingerDown
+                        && accumulated > TRACKPAD_TAP_THRESHOLD_PX
+                    {
+                        // Promote to drag (cursor motion). No
+                        // MouseDown was emitted on touch-down, so
+                        // there's nothing to cancel — just flip the
+                        // phase and continue with cursor motion.
+                        self.phase = TrackpadGesturePhase::SingleFingerDrag;
+                    }
+
+                    // Advance the virtual cursor by the touch delta.
+                    self.cursor.x += delta.x;
+                    self.cursor.y += delta.y;
+
+                    out.push(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: self.cursor,
+                        modifiers,
+                        pressed_button: None,
+                    }));
+
+                    crate::cursor::move_trackpad_cursor(
+                        android_app,
+                        f32::from(self.cursor.x) * scale_factor,
+                        f32::from(self.cursor.y) * scale_factor,
+                    );
+                }
+                TrackpadGesturePhase::MultiFingerDown
+                | TrackpadGesturePhase::MultiFingerScroll => {
+                    let new_centroid = centroid(&event.pointers);
+                    let baseline = self.scroll_centroid.unwrap_or(new_centroid);
+                    let delta = point(new_centroid.x - baseline.x, new_centroid.y - baseline.y);
+                    self.scroll_centroid = Some(new_centroid);
+
+                    if self.phase == TrackpadGesturePhase::MultiFingerDown
+                        && delta.magnitude() > TRACKPAD_TAP_THRESHOLD_PX
+                    {
+                        // Promote to scroll once motion crosses threshold.
+                        self.phase = TrackpadGesturePhase::MultiFingerScroll;
+                    }
+
+                    if self.phase == TrackpadGesturePhase::MultiFingerScroll {
+                        out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position: self.cursor,
+                            delta: ScrollDelta::Pixels(delta),
+                            modifiers,
+                            touch_phase: TouchPhase::Moved,
+                        }));
+                    }
+                }
+                _ => {}
+            },
+
+            TouchAction::PointerUp { index } => {
+                let p = &event.pointers[index];
+                self.pointers.remove(&p.id);
+
+                // 2-finger tap (no motion past threshold) → right click.
+                if matches!(self.phase, TrackpadGesturePhase::MultiFingerDown) {
+                    out.push(PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Right,
+                        position: self.cursor,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }));
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Right,
+                        position: self.cursor,
+                        modifiers,
+                        click_count: 1,
+                    }));
+                    self.phase = TrackpadGesturePhase::RightClickResolved;
+                }
+            }
+
+            TouchAction::Up => {
+                let phase = self.phase;
+                self.reset();
+                match phase {
+                    TrackpadGesturePhase::SingleFingerDown => {
+                        // Quick tap without significant motion =
+                        // click at cursor. Emit MouseMove (hover
+                        // refresh, so hover-only elements like tab
+                        // close are armed) + MouseDown + MouseUp.
+                        // All three land in the same event batch
+                        // but gpui's click handler completes the
+                        // click on the matching MouseUp regardless.
+                        out.push(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position: self.cursor,
+                            modifiers,
+                            pressed_button: None,
+                        }));
+                        out.push(PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: self.cursor,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }));
+                        out.push(PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: self.cursor,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
+                    _ => {
+                        // SingleFingerDrag / MultiFingerScroll /
+                        // RightClickResolved: no MouseDown was ever
+                        // emitted; cursor motion / scroll / right-
+                        // click already fired their events.
+                    }
+                }
+            }
+
+            TouchAction::Cancel => {
+                self.reset();
+            }
+        }
+        out
+    }
+
+    fn reset(&mut self) {
+        self.pointers.clear();
+        self.phase = TrackpadGesturePhase::Idle;
         self.scroll_centroid = None;
     }
 }
