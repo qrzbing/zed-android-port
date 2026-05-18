@@ -213,7 +213,10 @@ fn android_input_page() -> SettingsPage {
                     the screen into VNC-style trackpad mode: drag \
                     moves an on-screen cursor, tap clicks, \
                     two-finger tap is right-click, two-finger drag \
-                    scrolls.",
+                    scrolls. While trackpad mode is active, standard \
+                    Android touch (direct-tap on UI elements, scroll, \
+                    splitter drag) is disabled; toggle off from the \
+                    tab-bar icon to go back.",
                 field: Box::new(SettingField {
                     json_path: Some("android_input.trackpad_mode"),
                     pick: |settings_content| {
