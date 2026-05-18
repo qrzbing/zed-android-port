@@ -53,16 +53,28 @@ type SetFrameRateFn =
     unsafe extern "C" fn(window: *mut c_void, frame_rate: f32, compatibility: i8) -> i32;
 
 /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`. Tells the system
-/// "this app can run at any refresh the panel offers; pick the highest
-/// you support." Pairs with `frame_rate: 0.0` for "no specific target."
+/// "I want at least this rate; the system may choose to render
+/// higher if it benefits the user." The right hint for an interactive
+/// app where smoother is always better.
 const FRAME_RATE_COMPATIBILITY_DEFAULT: i8 = 0;
 
-/// Ask the system to render the given native window at the panel's
-/// maximum refresh rate. No-op on API 26-29 (returns `false`). On API
-/// 30+, `0.0` Hz with `COMPATIBILITY_DEFAULT` translates to "as high
-/// as the panel can go" — 120Hz on Tab S9 Ultra / Pixel Tablet, 90Hz
-/// on mid-range, 60Hz everywhere else. Safe to call repeatedly; the
-/// system de-dupes.
+/// Target frame rate. Samsung Tab S9 Ultra / Pixel Tablet support
+/// 120Hz panels; mid-range devices typically expose 90Hz; older
+/// devices stay at 60Hz. When the panel can't deliver the requested
+/// rate the compositor downgrades transparently, so hardcoding the
+/// max we care about is safe across the device matrix. Floating-point
+/// because Android's API takes float.
+const TARGET_FRAME_RATE_HZ: f32 = 120.0;
+
+/// Ask the system to render the given native window at our target
+/// refresh rate. No-op on API 26-29 (returns `false`).
+///
+/// CRITICAL: passing `0.0` Hz here means "I'm inactive / I have no
+/// preference" — Samsung's adaptive panel reads that as a hint to drop
+/// to its idle rate (30Hz on Tab S9 Ultra), producing visible 33ms
+/// vsync intervals and the user-visible stutter that motivated this
+/// fix. Always pass a positive frame rate so the panel knows we're an
+/// active app that wants high refresh.
 ///
 /// The pointer must be a valid `ANativeWindow*` for at least the
 /// duration of this call. Caller (window.rs::attach_surface) holds an
@@ -73,8 +85,8 @@ pub(crate) fn set_native_window_frame_rate(window: *mut c_void) -> bool {
         return false;
     }
     // RTLD_NOLOAD asks "is this already loaded?" without mapping it
-    // afresh. libandroid.so is always loaded on Android — Choreographer
-    // FFI above depends on it — so this is effectively a handle fetch.
+    // afresh. libandroid.so is always loaded on Android (Choreographer
+    // FFI above depends on it) so this is effectively a handle fetch.
     let lib = unsafe {
         libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_LAZY)
     };
@@ -91,11 +103,13 @@ pub(crate) fn set_native_window_frame_rate(window: *mut c_void) -> bool {
         return false;
     }
     let set_frame_rate: SetFrameRateFn = unsafe { std::mem::transmute(sym) };
-    let result = unsafe { set_frame_rate(window, 0.0, FRAME_RATE_COMPATIBILITY_DEFAULT) };
+    let result = unsafe {
+        set_frame_rate(window, TARGET_FRAME_RATE_HZ, FRAME_RATE_COMPATIBILITY_DEFAULT)
+    };
     if result == 0 {
         log::info!(
-            "ANativeWindow_setFrameRate(0.0, DEFAULT) accepted; panel \
-             will run at its maximum supported refresh"
+            "ANativeWindow_setFrameRate({TARGET_FRAME_RATE_HZ}, DEFAULT) accepted; \
+             panel will run at the highest available rate up to the target"
         );
         true
     } else {
