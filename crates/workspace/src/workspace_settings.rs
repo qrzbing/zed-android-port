@@ -77,6 +77,7 @@ pub struct AndroidInputSettings {
     pub on_screen_keyboard: bool,
     pub trackpad_mode: bool,
     pub trackpad_mode_active: bool,
+    pub programming_extras_row: bool,
 }
 
 impl Settings for WorkspaceSettings {
@@ -166,6 +167,7 @@ impl Settings for AndroidInputSettings {
             on_screen_keyboard: android_input.on_screen_keyboard.unwrap_or(true),
             trackpad_mode: android_input.trackpad_mode.unwrap_or(false),
             trackpad_mode_active: android_input.trackpad_mode_active.unwrap_or(false),
+            programming_extras_row: android_input.programming_extras_row.unwrap_or(true),
         }
     }
 }

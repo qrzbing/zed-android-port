@@ -27,4 +27,23 @@ interface ImeHost {
     /// `MainActivity.updateImeTextState` / the extra-activity
     /// equivalent on every commit / compose / delete.
     fun getImeTextState(): ImeTextState?
+
+    /// `KeyEvent.META_*` bits currently active on the
+    /// [ExtraKeysView] (pending OR locked). Read by
+    /// `ZdroidInputConnection.commitText` so a single-character
+    /// soft-keyboard commit (e.g. user taps `Ctrl` on the row
+    /// then `c` on Gboard) is re-synthesized as a `KeyEvent` with
+    /// the modifier set, instead of arriving at the editor as the
+    /// bare letter. Gboard's `commitText` has no modifier slot,
+    /// so without this intercept any `Ctrl+<letter>` combination
+    /// involving a soft-keyboard letter would lose the modifier.
+    val extraKeysModifierState: Int
+
+    /// Clear the *pending* portion of the modifier state (one-shot
+    /// modifiers consumed by a key), keeping any *locked* portion
+    /// in place (latched-on modifiers stay active until the user
+    /// taps the modifier button a third time to unlatch).
+    /// `ZdroidInputConnection.commitText` calls this after
+    /// successfully re-synthesizing a commit as a key event.
+    fun clearExtrasPendingModifier()
 }

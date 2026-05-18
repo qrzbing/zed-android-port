@@ -492,6 +492,17 @@ pub struct AndroidInputSettingsContent {
     ///
     /// Default: false
     pub trackpad_mode_active: Option<bool>,
+    /// Render a Termux-style programming extras row above the
+    /// soft keyboard with Esc, Tab, Ctrl, Alt, and arrow keys.
+    /// Ctrl and Alt are sticky modifiers: tap once to apply to the
+    /// next regular key, double-tap to lock until tapped again.
+    /// Visible only while the soft keyboard is shown. No-op when
+    /// the soft keyboard is disabled or the system IME is in
+    /// floating mode (the row stays anchored to the editor and
+    /// can't follow a floating keyboard).
+    ///
+    /// Default: true
+    pub programming_extras_row: Option<bool>,
 }
 
 #[with_fallible_options]

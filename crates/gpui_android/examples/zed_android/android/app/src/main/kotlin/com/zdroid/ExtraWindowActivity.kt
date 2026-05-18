@@ -9,6 +9,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -64,6 +65,13 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     /// and invoke `InputMethodManager`.
     private var imeHostView: ImeHostView? = null
 
+    private var extraKeysView: ExtraKeysView? = null
+    private var programmingExtrasRowEnabled: Boolean = true
+    @Volatile
+    private var extraKeysPendingMeta: Int = 0
+    @Volatile
+    private var extraKeysLockedMeta: Int = 0
+
     /// Mirror of the OS IME's visibility from our perspective. Same
     /// rationale as MainActivity: gpui's `set_input_handler` /
     /// `take_input_handler` fires per paint, so we filter repeats
@@ -83,6 +91,13 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
         private set
 
     override fun getImeTextState(): ImeTextState? = imeTextState
+
+    override val extraKeysModifierState: Int
+        get() = extraKeysPendingMeta or extraKeysLockedMeta
+
+    override fun clearExtrasPendingModifier() {
+        extraKeysView?.consumePendingModifier()
+    }
 
     /// Cursor position in physical pixels relative to this Activity's
     /// SurfaceView. Mirrors MainActivity's state machine.
@@ -249,6 +264,11 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
                 }
                 setImeShown(false)
             }
+            // Edge-to-edge: IME draws over content. Translate the
+            // ExtraKeysView up by the IME inset so it floats above
+            // the keyboard. See [MainActivity] for the longer note.
+            extraKeysView?.translationY = -imeBottom.toFloat()
+
             lastImeInsetBottom = imeBottom
             insets
         }
@@ -264,6 +284,47 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
         if (imeShown != shown) {
             imeShown = shown
             NativeBridge.nativeSetSoftKeyboardVisible(shown)
+            updateExtrasRowVisibility()
+        }
+    }
+
+    /// Mirror of [MainActivity.updateExtrasRowVisibility]: gate the
+    /// `ExtraKeysView` on (user setting AND IME currently shown).
+    /// Lazy-inflated on first enable, removed entirely when the
+    /// setting flips off so we don't carry the layout overhead.
+    private fun updateExtrasRowVisibility() {
+        val shouldShow = programmingExtrasRowEnabled && imeShown
+        if (shouldShow) {
+            if (extraKeysView == null) {
+                val view = ExtraKeysView(this) { pending, locked ->
+                    extraKeysPendingMeta = pending
+                    extraKeysLockedMeta = locked
+                }
+                val params = android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                    android.view.Gravity.BOTTOM,
+                )
+                addContentView(view, params)
+                view.translationY = -lastImeInsetBottom.toFloat()
+                extraKeysView = view
+            }
+            extraKeysView?.visibility = View.VISIBLE
+        } else {
+            extraKeysView?.visibility = View.GONE
+        }
+    }
+
+    @Suppress("unused")
+    fun setProgrammingExtrasRowEnabled(enabled: Boolean) {
+        runOnUiThread {
+            if (programmingExtrasRowEnabled == enabled) return@runOnUiThread
+            programmingExtrasRowEnabled = enabled
+            if (!enabled) {
+                extraKeysView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+                extraKeysView = null
+            }
+            updateExtrasRowVisibility()
         }
     }
 

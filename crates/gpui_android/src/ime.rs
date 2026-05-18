@@ -53,6 +53,15 @@ pub(crate) fn on_screen_keyboard_enabled() -> bool {
 /// reconcile to drive cursor-sprite visibility on the Kotlin side.
 pub(crate) static TRACKPAD_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Mirrors `android_input.programming_extras_row`. Written by the
+/// SettingsStore observer in `zed_android::lib::main`, pushed to
+/// Kotlin via `Activity.setProgrammingExtrasRowEnabled` on each
+/// settings change. Kotlin decides whether to inflate the
+/// `ExtraKeysView` (Esc / Tab / Ctrl / Alt / arrow row). Default
+/// true so the row works out of the box for users who haven't
+/// opened settings.
+pub(crate) static EXTRAS_ROW_ENABLED: AtomicBool = AtomicBool::new(true);
+
 pub(crate) fn trackpad_mode_enabled() -> bool {
     TRACKPAD_MODE_ENABLED.load(Ordering::Acquire)
 }

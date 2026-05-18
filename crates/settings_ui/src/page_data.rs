@@ -181,6 +181,31 @@ fn android_input_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Programming Keys Row",
+                description: "Render a row above the soft keyboard \
+                    with Esc, Tab, Ctrl, Alt, and arrow keys. Ctrl \
+                    and Alt are sticky: tap once for next key, \
+                    double-tap to lock until tapped again.",
+                field: Box::new(SettingField {
+                    json_path: Some("android_input.programming_extras_row"),
+                    pick: |settings_content| {
+                        settings_content
+                            .android_input
+                            .as_ref()?
+                            .programming_extras_row
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .android_input
+                            .get_or_insert_default()
+                            .programming_extras_row = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SectionHeader("Touch Behavior"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Enable Virtual Trackpad",

@@ -31,6 +31,54 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val s = text?.toString() ?: ""
+        // Modifier intercept: when the user has armed (or latched)
+        // a sticky modifier on `ExtraKeysView` and the next event
+        // is a single-character soft-keyboard commit, re-synthesize
+        // the commit as a `KeyEvent` carrying the modifier in its
+        // metaState. Without this, Gboard's `commitText("c")` lands
+        // at the editor as a literal 'c' insert, because Gboard's
+        // commit path has no slot for `META_CTRL_*` bits.
+        //
+        // The lookup uses Android's [KeyCharacterMap.VIRTUAL_KEYBOARD]
+        // which maps printable chars to their keyCode + the meta
+        // bits needed to type them (e.g. 'C' returns
+        // KEYCODE_C / META_SHIFT_ON). We OR our modifier on top so
+        // Ctrl+Shift+C goes through correctly when both are active.
+        // Multi-character commits skip the intercept and fall
+        // through to the plain text path; CJK composition + paste
+        // shouldn't be re-keyed.
+        val host = hostView.context as? ImeHost
+        val modifier = host?.extraKeysModifierState ?: 0
+        if (modifier != 0 && s.length == 1) {
+            val keyMap = android.view.KeyCharacterMap
+                .load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD)
+            val events = keyMap.getEvents(charArrayOf(s[0]))
+            val firstDown = events?.firstOrNull { it.action == KeyEvent.ACTION_DOWN }
+            if (firstDown != null && firstDown.keyCode != KeyEvent.KEYCODE_UNKNOWN) {
+                val combinedMeta = modifier or firstDown.metaState
+                Log.i(
+                    TAG,
+                    "IC.commitText w=$windowId intercepted ${quote(s)} as " +
+                        "key=${firstDown.keyCode} meta=0x${Integer.toHexString(combinedMeta)}"
+                )
+                NativeBridge.nativeImeSendKeyEvent(
+                    windowId,
+                    KeyEvent.ACTION_DOWN,
+                    firstDown.keyCode,
+                    combinedMeta,
+                    0,
+                )
+                NativeBridge.nativeImeSendKeyEvent(
+                    windowId,
+                    KeyEvent.ACTION_UP,
+                    firstDown.keyCode,
+                    combinedMeta,
+                    0,
+                )
+                host?.clearExtrasPendingModifier()
+                return true
+            }
+        }
         Log.i(TAG, "IC.commitText w=$windowId text=${quote(s)} cursor=$newCursorPosition")
         NativeBridge.nativeImeCommitText(windowId, s, newCursorPosition)
         return true

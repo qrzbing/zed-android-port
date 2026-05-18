@@ -224,6 +224,12 @@ pub(crate) struct AndroidCommon {
     /// overlay on the Kotlin side only when the mode actually flips.
     /// Avoids burning a JNI call every tick.
     pub(crate) last_trackpad_mode_enabled: bool,
+    /// Mirrors the last-pushed value of `EXTRAS_ROW_ENABLED` to
+    /// Kotlin. Pushed via `Activity.setProgrammingExtrasRowEnabled`
+    /// on transitions so each Activity inflates / removes its
+    /// ExtraKeysView; without the edge-tracking we'd issue a JNI
+    /// call every tick.
+    pub(crate) last_extras_row_enabled: bool,
     pub(crate) running: bool,
 }
 
@@ -264,6 +270,10 @@ impl AndroidCommon {
             ime_event_rx: Some(crate::ime::init_event_channel()),
             last_soft_keyboard_visible: false,
             last_trackpad_mode_enabled: false,
+            // Init mismatched so the first tick force-pushes the
+            // actual value to Kotlin even if the setting agrees with
+            // the runtime default.
+            last_extras_row_enabled: !crate::programming_extras_row_enabled(),
             running: true,
         }
     }
@@ -888,6 +898,37 @@ impl AndroidPlatform {
         }
     }
 
+    /// Push the current `EXTRAS_ROW_ENABLED` value to every live
+    /// Activity (MainActivity + each extra) on edges. The Kotlin
+    /// side inflates / removes its `ExtraKeysView` in response so
+    /// the row appears / disappears without an app restart when
+    /// the user toggles the setting.
+    fn tick_extras_row_enabled(&self) {
+        let current = crate::programming_extras_row_enabled();
+        let last = self.common.borrow().last_extras_row_enabled;
+        if current == last {
+            return;
+        }
+        self.common.borrow_mut().last_extras_row_enabled = current;
+        if let Err(err) = call_activity_set_extras_row(&self.android_app, None, current) {
+            log::warn!("set_extras_row_enabled(primary): {err:#}");
+        }
+        let extra_ids: Vec<u64> = self
+            .common
+            .borrow()
+            .extra_windows
+            .keys()
+            .copied()
+            .collect();
+        for id in extra_ids {
+            if let Err(err) =
+                call_activity_set_extras_row(&self.android_app, Some(id), current)
+            {
+                log::warn!("set_extras_row_enabled(w={id}): {err:#}");
+            }
+        }
+    }
+
     fn tick_soft_keyboard_visibility(&self) {
         let current = crate::ime::soft_keyboard_visible();
         let last = self.common.borrow().last_soft_keyboard_visible;
@@ -1103,6 +1144,7 @@ impl Platform for AndroidPlatform {
             self.reconcile_ime_visibility();
             self.tick_soft_keyboard_visibility();
             self.tick_trackpad_mode_active();
+            self.tick_extras_row_enabled();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have
@@ -1365,4 +1407,52 @@ impl Platform for AndroidPlatform {
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
         self.common.borrow_mut().callbacks.keyboard_layout_change = Some(callback);
     }
+}
+
+/// Invoke `Activity.setProgrammingExtrasRowEnabled(enabled)` on the
+/// primary or one extra Activity. Used by
+/// `AndroidPlatform::tick_extras_row_enabled` to push the user's
+/// `android_input.programming_extras_row` setting into Kotlin so it
+/// can inflate / remove the `ExtraKeysView` without an app restart.
+fn call_activity_set_extras_row(
+    android_app: &AndroidApp,
+    extra_window_id: Option<u64>,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use jni::{JavaVM, objects::JObject};
+
+    let vm_ptr = android_app.vm_as_ptr();
+    let activity_ptr = android_app.activity_as_ptr();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        anyhow::bail!("AndroidApp vm/activity pointer is null");
+    }
+    let vm = unsafe { JavaVM::from_raw(vm_ptr as _) }.context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let args = [enabled.into()];
+    match extra_window_id {
+        Some(id) => {
+            let Some(activity_ref) = crate::multi_window::extra_activity_for(id) else {
+                return Ok(());
+            };
+            env.call_method(
+                activity_ref.as_obj(),
+                "setProgrammingExtrasRowEnabled",
+                "(Z)V",
+                &args,
+            )
+            .context("call ExtraWindowActivity.setProgrammingExtrasRowEnabled")?;
+        }
+        None => {
+            let activity = unsafe { JObject::from_raw(activity_ptr as _) };
+            env.call_method(
+                &activity,
+                "setProgrammingExtrasRowEnabled",
+                "(Z)V",
+                &args,
+            )
+            .context("call MainActivity.setProgrammingExtrasRowEnabled")?;
+        }
+    }
+    Ok(())
 }

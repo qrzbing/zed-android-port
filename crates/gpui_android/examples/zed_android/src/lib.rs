@@ -802,6 +802,7 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
         gpui_android::set_on_screen_keyboard_enabled(android_input.on_screen_keyboard);
         let trackpad_active = android_input.trackpad_mode && android_input.trackpad_mode_active;
         gpui_android::set_trackpad_mode_enabled(trackpad_active);
+        gpui_android::set_programming_extras_row_enabled(android_input.programming_extras_row);
     };
     push_android_input_atomics(cx);
     cx.observe_global::<SettingsStore>(move |cx| {

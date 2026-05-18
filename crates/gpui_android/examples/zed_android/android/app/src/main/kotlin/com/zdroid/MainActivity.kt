@@ -67,6 +67,24 @@ class MainActivity : GameActivity(), ImeHost {
     /// requestFocus on the host and invoke `InputMethodManager`.
     private var imeHostView: ImeHostView? = null
 
+    /// Programming extras row (Esc/Tab/Ctrl/Alt/arrows). Inflated
+    /// lazily on first enable so we don't pay the layout cost when
+    /// the user has the setting off. Visibility additionally gates
+    /// on `imeShown` so the row only appears alongside the soft
+    /// keyboard.
+    private var extraKeysView: ExtraKeysView? = null
+    private var programmingExtrasRowEnabled: Boolean = true
+
+    /// Mirror of the [ExtraKeysView] modifier state machine. The
+    /// view stores the source-of-truth state internally; this is
+    /// a published copy read by [extraKeysModifierState] so
+    /// [ZdroidInputConnection.commitText] can attach the
+    /// modifier to a single-character soft-keyboard commit.
+    @Volatile
+    private var extraKeysPendingMeta: Int = 0
+    @Volatile
+    private var extraKeysLockedMeta: Int = 0
+
     /// Mirrors the IME's visibility from our perspective so repeated
     /// `showIme()` calls within a single visible-IME session don't
     /// re-trigger requestFocus / showSoftInput. gpui's paint logic
@@ -110,6 +128,57 @@ class MainActivity : GameActivity(), ImeHost {
         if (imeShown != shown) {
             imeShown = shown
             NativeBridge.nativeSetSoftKeyboardVisible(shown)
+            updateExtrasRowVisibility()
+        }
+    }
+
+    /// Reconcile the `ExtraKeysView`'s presence in the content view
+    /// against the two gates: the user setting
+    /// (`programmingExtrasRowEnabled`) and the OS-side IME state
+    /// (`imeShown`). Called whenever either input changes. Inflates
+    /// the view lazily on first enable, then toggles visibility on
+    /// subsequent changes, then removes the view when the setting
+    /// is turned off entirely so we don't pay the layout cost.
+    private fun updateExtrasRowVisibility() {
+        val shouldShow = programmingExtrasRowEnabled && imeShown
+        if (shouldShow) {
+            if (extraKeysView == null) {
+                val view = ExtraKeysView(this) { pending, locked ->
+                    extraKeysPendingMeta = pending
+                    extraKeysLockedMeta = locked
+                }
+                val params = android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                    android.view.Gravity.BOTTOM,
+                )
+                addContentView(view, params)
+                view.translationY = -lastImeInsetBottom.toFloat()
+                extraKeysView = view
+            }
+            extraKeysView?.visibility = View.VISIBLE
+        } else {
+            extraKeysView?.visibility = View.GONE
+        }
+    }
+
+    /// JNI hook: Rust pushes the user's
+    /// `android_input.programming_extras_row` setting here on every
+    /// transition. We persist the new value and reconcile against
+    /// `imeShown`. Called from
+    /// `gpui_android::platform::tick_extras_row_enabled` via JNI.
+    @Suppress("unused")
+    fun setProgrammingExtrasRowEnabled(enabled: Boolean) {
+        runOnUiThread {
+            if (programmingExtrasRowEnabled == enabled) return@runOnUiThread
+            programmingExtrasRowEnabled = enabled
+            if (!enabled) {
+                // Tear down completely so the disabled state is also
+                // free of layout overhead, not just visually hidden.
+                extraKeysView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+                extraKeysView = null
+            }
+            updateExtrasRowVisibility()
         }
     }
 
@@ -252,6 +321,13 @@ class MainActivity : GameActivity(), ImeHost {
         private set
 
     override fun getImeTextState(): ImeTextState? = imeTextState
+
+    override val extraKeysModifierState: Int
+        get() = extraKeysPendingMeta or extraKeysLockedMeta
+
+    override fun clearExtrasPendingModifier() {
+        extraKeysView?.consumePendingModifier()
+    }
 
     /// Switch input modes and force the IME to re-read EditorInfo.
     /// Called from Rust via JNI when the focused input target's kind
@@ -422,6 +498,16 @@ class MainActivity : GameActivity(), ImeHost {
             // during typing) — do nothing. The previous bug was firing
             // "user dismissed" on the steady-state-0 reading right
             // after our show call, before the animation had started.
+
+            // Edge-to-edge (setDecorFitsSystemWindows=false) means the
+            // OS does NOT auto-translate content above the IME — the
+            // IME draws over the bottom of our surface. Any view with
+            // gravity=BOTTOM (the ExtraKeysView) would sit at the
+            // screen bottom and be hidden behind the keyboard. Apply
+            // the IME bottom inset as a negative translationY on the
+            // row so it floats just above the keyboard, following the
+            // IME show/hide animation smoothly.
+            extraKeysView?.translationY = -imeBottom.toFloat()
 
             lastImeInsetBottom = imeBottom
             insets

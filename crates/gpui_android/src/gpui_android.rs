@@ -51,6 +51,21 @@ pub fn set_trackpad_mode_enabled(enabled: bool) {
     ime::TRACKPAD_MODE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
 }
 
+/// Push the user's `android_input.programming_extras_row` setting
+/// to the runtime atomic. The platform reconcile loop forwards
+/// changes to Kotlin's `Activity.setProgrammingExtrasRowEnabled` so
+/// the extras-row view is inflated / torn down without restart.
+pub fn set_programming_extras_row_enabled(enabled: bool) {
+    ime::EXTRAS_ROW_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
+/// Read the current value of the extras-row atomic. Used by the
+/// platform reconcile loop to drive the JNI push to Kotlin only on
+/// transitions.
+pub(crate) fn programming_extras_row_enabled() -> bool {
+    ime::EXTRAS_ROW_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 use std::rc::Rc;
 
 /// Run a gpui application backed by Android's GameActivity event loop.
