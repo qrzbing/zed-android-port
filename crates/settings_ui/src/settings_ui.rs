@@ -618,19 +618,20 @@ pub fn open_settings_editor(
         cx.notify();
     }
 
-    let existing_window = cx
-        .windows()
-        .into_iter()
-        .find_map(|window| window.downcast::<SettingsWindow>());
-
-    if let Some(existing_window) = existing_window {
+    fn activate_existing(
+        existing_window: WindowHandle<SettingsWindow>,
+        workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+        path: Option<&str>,
+        target_worktree_id: Option<WorktreeId>,
+        cx: &mut App,
+    ) {
+        let path = path.map(ToOwned::to_owned);
         existing_window
             .update(cx, |settings_window, window, cx| {
                 settings_window.original_window = workspace_handle;
-
                 window.activate_window();
                 if let Some(path) = path {
-                    open_path(path, settings_window, window, cx);
+                    open_path(&path, settings_window, window, cx);
                 } else if let Some(target_id) = target_worktree_id
                     && let Some(file_index) = settings_window
                         .files
@@ -642,12 +643,44 @@ pub fn open_settings_editor(
                 }
             })
             .ok();
+    }
+
+    let existing_window = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<SettingsWindow>());
+
+    if let Some(existing_window) = existing_window {
+        activate_existing(existing_window, workspace_handle, path, target_worktree_id, cx);
         return;
     }
 
     // We have to defer this to get the workspace off the stack.
+    // Re-check the existing window inside the defer too: rapid back-to-back
+    // OpenSettings dispatches (e.g. tapping the menu twice, or two action
+    // handlers firing for the same dispatch) can both pass the immediate
+    // check before either defer runs, leading to two Settings windows
+    // spawned on the next tick — which on Android shows up as two
+    // ExtraWindowActivity instances stacked in Recents. The inside-defer
+    // check catches the race because cx.open_window registers the
+    // window synchronously, so by the time the second defer fires the
+    // first defer's window is already in cx.windows().
     let path = path.map(ToOwned::to_owned);
     cx.defer(move |cx| {
+        if let Some(existing_window) = cx
+            .windows()
+            .into_iter()
+            .find_map(|window| window.downcast::<SettingsWindow>())
+        {
+            activate_existing(
+                existing_window,
+                workspace_handle,
+                path.as_deref(),
+                target_worktree_id,
+                cx,
+            );
+            return;
+        }
         let current_rem_size: f32 = theme_settings::ThemeSettings::get_global(cx)
             .ui_font_size(cx)
             .into();
