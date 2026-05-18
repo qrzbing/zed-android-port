@@ -4335,7 +4335,7 @@ fn default_render_tab_bar_buttons(
         // icon disappears entirely.
         if trackpad_master {
             right_children.child(
-                IconButton::new("toggle_trackpad_mode", IconName::ArrowUpRight)
+                IconButton::new("toggle_trackpad_mode", IconName::Crosshair)
                     .icon_size(IconSize::Small)
                     .toggle_state(trackpad_active)
                     .on_click(cx.listener(|_pane, _, _window, cx| {
