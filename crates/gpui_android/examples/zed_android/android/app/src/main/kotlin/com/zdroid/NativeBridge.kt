@@ -167,35 +167,45 @@ object NativeBridge {
 
     /// IME `commitText` from `ZdroidInputConnection`. Final text the
     /// IME wants inserted at the current cursor (or replacing any
-    /// active composition). gpui's `PlatformInputHandler::
-    /// replace_text_in_range` is the canonical commit primitive.
-    external fun nativeImeCommitText(text: String, newCursorPosition: Int)
+    /// active composition). The `windowId` selects which gpui
+    /// window's `PlatformInputHandler` receives the edit — `0` for
+    /// the primary `MainActivity` surface, the value gpui assigned
+    /// to spawned `ExtraWindowActivity` instances for those.
+    external fun nativeImeCommitText(windowId: Long, text: String, newCursorPosition: Int)
 
     /// IME `setComposingText`. In-progress composition (CJK, gesture
     /// typing, prediction). Routes to `replace_and_mark_text_in_range`
-    /// so the editor can render the composition with the underline /
-    /// styled span.
-    external fun nativeImeSetComposingText(text: String, newCursorPosition: Int)
+    /// on the window identified by `windowId`.
+    external fun nativeImeSetComposingText(windowId: Long, text: String, newCursorPosition: Int)
 
     /// IME `finishComposingText`. End of composition without further
-    /// edits. Routes to `unmark_text`.
-    external fun nativeImeFinishComposingText()
+    /// edits. Routes to `unmark_text` on the target window.
+    external fun nativeImeFinishComposingText(windowId: Long)
 
     /// IME `deleteSurroundingText(before, after)`. Backspace / delete
-    /// spans a range around the cursor. We compute the range from the
-    /// current selection and call `replace_text_in_range(range, "")`.
-    external fun nativeImeDeleteSurroundingText(beforeLength: Int, afterLength: Int)
+    /// spans a range around the cursor of the target window.
+    external fun nativeImeDeleteSurroundingText(
+        windowId: Long,
+        beforeLength: Int,
+        afterLength: Int,
+    )
 
     /// IME `sendKeyEvent` fallback for hardware-style key events the
-    /// IME wants to deliver (Enter, Backspace, arrows). Routes through
-    /// the existing `events/keyboard.rs` translator so the gpui side
-    /// sees `PlatformInput::KeyDown` / `KeyUp` exactly as for hardware
-    /// keys.
-    external fun nativeImeSendKeyEvent(action: Int, keyCode: Int, metaState: Int, repeatCount: Int)
+    /// IME wants to deliver (Enter, Backspace, arrows). Routed to
+    /// the target window's `handle_input` via
+    /// `events/keyboard.rs::translate_extra_key_event`.
+    external fun nativeImeSendKeyEvent(
+        windowId: Long,
+        action: Int,
+        keyCode: Int,
+        metaState: Int,
+        repeatCount: Int,
+    )
 
     /// IME `performEditorAction(actionId)` — Enter / Done / Next /
-    /// Search etc. Emits a gpui action on the focused element.
-    external fun nativeImePerformEditorAction(actionId: Int)
+    /// Search etc. Emits a gpui action on the focused element of the
+    /// target window.
+    external fun nativeImePerformEditorAction(windowId: Long, actionId: Int)
 
     /// Mirror Kotlin's `imeShown` flag into the Rust-side global
     /// `SOFT_KEYBOARD_VISIBLE` atomic. Pushed on every transition

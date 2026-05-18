@@ -688,23 +688,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         false
     }
 
-    /// Mirror the `android_input.on_screen_keyboard` setting into
-    /// the platform layer. When false, the Android platform's
-    /// `reconcile_ime_visibility` skips the auto-show on text-input
-    /// focus and the pane keyboard button is hidden — the user has
-    /// opted out (presumably because they're on a hardware
-    /// keyboard). The pane render calls this every frame; it's a
-    /// cheap atomic store. No-op on other platforms.
-    fn set_on_screen_keyboard_enabled(&self, _enabled: bool) {}
-
-    /// Mirror the `android_input.trackpad_mode` setting. When true,
-    /// the Android touch state machine routes touches as virtual
-    /// trackpad gestures (one-finger drag = cursor delta, tap =
-    /// click, two-finger tap = right-click, two-finger drag =
-    /// scroll). Direct touch is replaced. The cursor sprite is
-    /// shown automatically. No-op on other platforms.
-    fn set_trackpad_mode_enabled(&self, _enabled: bool) {}
-
     /// True when virtual trackpad mode is currently active. Used
     /// by the pane tab-bar toggle button to draw its lit-up state,
     /// matching the convention other togglable buttons use.

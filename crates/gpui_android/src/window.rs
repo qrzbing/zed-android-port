@@ -162,6 +162,27 @@ pub(crate) struct AndroidWindowState {
     /// adequate for editor ASCII typing.
     pub(crate) ime_composition_start: Option<usize>,
     pub(crate) ime_composition_text: Option<String>,
+    /// Per-window mirror of whether the input handler was present at
+    /// the last frame-boundary IME reconcile. Compared against the
+    /// current `input_handler.is_some()` to detect show/hide
+    /// transitions. Per-window so that an `ExtraWindowActivity`
+    /// (settings, picker) can drive its own IME independent of the
+    /// primary surface — without this, focusing a text input in a
+    /// spawned window wouldn't trigger show_keyboard because the
+    /// global was already true for MainActivity.
+    pub(crate) ime_currently_visible: bool,
+    /// Per-window cache of the last classified IME target kind
+    /// (terminal vs editor). On change we issue restartInput on this
+    /// window's Activity so the IME's EditorInfo reflects the new
+    /// pane type (terminal: VISIBLE_PASSWORD/no autocorrect; editor:
+    /// VISIBLE_PASSWORD/no suggestions). See `ime::probe_target_kind`.
+    pub(crate) last_ime_target_kind: Option<crate::ime::ImeTargetKind>,
+    /// Per-window cache of the last (start, end) selection we pushed
+    /// to this window's Kotlin Activity via `updateImeTextState`.
+    /// Compared each tick against the editor's current selection; on
+    /// diff we re-push so the IME observes touch-driven cursor moves
+    /// in this specific window.
+    pub(crate) last_pushed_selection: Option<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -495,6 +516,9 @@ impl AndroidWindow {
             extra_window_id: None,
             ime_composition_start: None,
             ime_composition_text: None,
+            ime_currently_visible: false,
+            last_ime_target_kind: None,
+            last_pushed_selection: None,
         };
 
         Self {
@@ -721,35 +745,28 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn toggle_soft_keyboard(&self) {
-        let android_app = self.ptr.state.borrow().android_app.clone();
+        let (android_app, extra_window_id) = {
+            let state = self.ptr.state.borrow();
+            (state.android_app.clone(), state.extra_window_id)
+        };
         // Optimistically flip our local view of IME visibility
         // BEFORE the JNI roundtrip. The actual hide/show on Kotlin
         // side is async (runOnUiThread + IME animation), so Kotlin's
         // post-toggle `setImeShown` call can land 100-500ms after
         // the user tapped the button. Without the optimistic flip
-        // the pane button's `toggle_state` lags by that much — user
-        // perceives "first tap didn't work, second tap did" because
-        // by the time the visual catches up, they've already tapped
-        // again. Kotlin's WindowInsetsListener will correct if the
-        // OS-side toggle fails for any reason.
+        // the pane button's `toggle_state` lags by that much, the
+        // user perceives "first tap didn't work, second tap did"
+        // because by the time the visual catches up, they've already
+        // tapped again. Kotlin's WindowInsetsListener will correct
+        // if the OS-side toggle fails for any reason.
         let new_visible = !crate::ime::soft_keyboard_visible();
         crate::ime::SOFT_KEYBOARD_VISIBLE
             .store(new_visible, std::sync::atomic::Ordering::Release);
-        crate::ime::toggle_keyboard(&android_app);
+        crate::ime::toggle_keyboard(&android_app, extra_window_id);
     }
 
     fn soft_keyboard_visible(&self) -> bool {
         crate::ime::soft_keyboard_visible()
-    }
-
-    fn set_on_screen_keyboard_enabled(&self, enabled: bool) {
-        crate::ime::ON_SCREEN_KEYBOARD_ENABLED
-            .store(enabled, std::sync::atomic::Ordering::Release);
-    }
-
-    fn set_trackpad_mode_enabled(&self, enabled: bool) {
-        crate::ime::TRACKPAD_MODE_ENABLED
-            .store(enabled, std::sync::atomic::Ordering::Release);
     }
 
     fn trackpad_mode_enabled(&self) -> bool {

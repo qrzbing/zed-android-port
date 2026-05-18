@@ -30,7 +30,7 @@ class ImeHostView(context: Context) : View(context) {
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        val mode = (context as? MainActivity)?.currentImeMode ?: ImeInputMode.CODE_EDITOR
+        val mode = (context as? ImeHost)?.currentImeMode ?: ImeInputMode.CODE_EDITOR
         android.util.Log.i("zdroid_ime", "ImeHostView.onCreateInputConnection mode=$mode")
         // EditorInfo per target kind (see ImeInputMode + ImeTargetKind):
         //

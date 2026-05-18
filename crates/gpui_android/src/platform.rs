@@ -188,34 +188,14 @@ pub(crate) struct AndroidCommon {
     pub(crate) captured_pointer_rx:
         Option<futures::channel::mpsc::UnboundedReceiver<crate::captured_pointer::CapturedEvent>>,
     /// Receiver side of the JNI → game-thread channel for IME events.
-    /// Drained each iteration of the platform run loop; each event
-    /// dispatches into the primary window's `PlatformInputHandler`
-    /// (commit text, composition, deletion) or `handle_input` (key
-    /// events delivered by the IME's `sendKeyEvent` fallback).
-    pub(crate) ime_event_rx:
-        Option<futures::channel::mpsc::UnboundedReceiver<crate::ime::ImeEvent>>,
-    /// Last frame-boundary view of whether the primary window's
-    /// `input_handler` was set. The main-loop tick reconciles by
-    /// comparing the current state to this; on a diff it fires
-    /// show/hide IME. Sampling at frame boundaries (between paints)
-    /// avoids the take→set oscillation gpui does within each paint.
-    pub(crate) ime_currently_visible: bool,
-    /// Cache of the last-classified IME target so we can detect when
-    /// focus has moved between editor panes / a terminal pane and
-    /// trigger `InputMethodManager.restartInput` with new
-    /// `EditorInfo`. Without restart, Gboard treats the underlying
-    /// input as the same field across the swap — its in-flight
-    /// composition then dumps into whatever pane the user lands on.
-    /// See ime::probe_target_kind.
-    pub(crate) last_ime_target_kind: Option<crate::ime::ImeTargetKind>,
-    /// Last selection (start, end) we pushed to Kotlin via
-    /// `updateImeTextState`. Compared each tick against the
-    /// editor's current selection; on diff we re-push so Gboard
-    /// learns about touch-driven cursor moves (the "sticky cursor"
-    /// bug where typing after a tap-move kept inserting at the
-    /// old position because Gboard's composition state hadn't
-    /// observed the move).
-    pub(crate) last_pushed_selection: Option<(usize, usize)>,
+    /// Each event carries the originating window id (0 = primary
+    /// `MainActivity`, otherwise the `ExtraWindowActivity` window id
+    /// gpui assigned). Drained each iteration of the platform run
+    /// loop; `crate::ime::drain_ime_events` routes per-id into the
+    /// right window's `PlatformInputHandler`.
+    pub(crate) ime_event_rx: Option<
+        futures::channel::mpsc::UnboundedReceiver<(u64, crate::ime::ImeEvent)>,
+    >,
     /// Tracks whether the soft keyboard was visible last tick.
     /// When this disagrees with the atomic Kotlin pushes via
     /// `nativeSetSoftKeyboardVisible`, we force a `window.refresh()`
@@ -268,9 +248,6 @@ impl AndroidCommon {
             extra_event_rx: Some(crate::multi_window::init_event_channel()),
             captured_pointer_rx: Some(crate::captured_pointer::init_event_channel()),
             ime_event_rx: Some(crate::ime::init_event_channel()),
-            ime_currently_visible: false,
-            last_ime_target_kind: None,
-            last_pushed_selection: None,
             last_soft_keyboard_visible: false,
             last_trackpad_mode_enabled: false,
             running: true,
@@ -653,47 +630,66 @@ impl AndroidPlatform {
     }
 
     /// Drain queued IME events posted from `ZdroidInputConnection` on
-    /// Android's UI thread. Each event dispatches into the primary
-    /// window's `PlatformInputHandler` (commit / composition /
-    /// deletion) or `handle_input` (the IME's `sendKeyEvent`
-    /// fallback). Currently routes only the primary window; multi-
-    /// window IME (per-extra-window InputConnection) is Phase 4.
+    /// Android's UI thread. Each event carries the originating
+    /// window's id (0 = MainActivity, otherwise the ExtraWindow id)
+    /// and routes into that window's `PlatformInputHandler`.
     fn drain_ime_events(&self) {
         let mut rx = match self.common.borrow_mut().ime_event_rx.take() {
             Some(rx) => rx,
             None => return,
         };
-        let window_ptr = self.common.borrow().window.clone();
-        if let Some(window_ptr) = window_ptr {
-            crate::ime::drain_ime_events(&window_ptr, &mut rx);
-        }
+        let (primary_window, extras) = {
+            let common = self.common.borrow();
+            (common.window.clone(), common.extra_windows.clone())
+        };
+        crate::ime::drain_ime_events(
+            primary_window.as_ref(),
+            |id| extras.get(&id).cloned(),
+            &mut rx,
+        );
         self.common.borrow_mut().ime_event_rx = Some(rx);
     }
 
-    /// Sample the primary window's text-input focus at frame boundary
-    /// and drive show / hide IME when it changes. The check runs once
-    /// per main-loop tick, between gpui paint cycles, so the in-paint
-    /// `take_input_handler` / `set_input_handler` shuffle (which would
-    /// otherwise oscillate IME visibility 60 times per second) is
-    /// invisible to us — by the time we look, the frame has settled
-    /// into its post-set state.
+    /// Sample every window's text-input focus at frame boundary
+    /// and drive show / hide IME (per window) when it changes. The
+    /// per-window state lives on `AndroidWindowState`, so each
+    /// `ExtraWindowActivity` can drive its own IME independent of
+    /// the primary surface — required for settings / picker windows
+    /// that own their own InputConnection and need the soft
+    /// keyboard to follow their focus instead of MainActivity's.
     fn reconcile_ime_visibility(&self) {
-        let (currently_visible, app, window_ptr) = {
+        let windows: Vec<(Option<u64>, crate::window::AndroidWindowStatePtr)> = {
             let common = self.common.borrow();
-            let Some(window_ptr) = common.window.clone() else {
-                return;
-            };
+            let mut all = Vec::new();
+            if let Some(primary) = common.window.clone() {
+                all.push((None, primary));
+            }
+            for (id, ptr) in common.extra_windows.iter() {
+                all.push((Some(*id), ptr.clone()));
+            }
+            all
+        };
+        for (extra_window_id, window_ptr) in windows {
+            self.reconcile_ime_for_window(extra_window_id, &window_ptr);
+        }
+    }
+
+    fn reconcile_ime_for_window(
+        &self,
+        extra_window_id: Option<u64>,
+        window_ptr: &crate::window::AndroidWindowStatePtr,
+    ) {
+        let (currently_visible, app, was_visible) = {
             let state = window_ptr.state.borrow();
             (
                 state.input_handler.is_some(),
                 state.android_app.clone(),
-                window_ptr.clone(),
+                state.ime_currently_visible,
             )
         };
-        let was_visible = self.common.borrow().ime_currently_visible;
         let visibility_changed = currently_visible != was_visible;
         if visibility_changed {
-            self.common.borrow_mut().ime_currently_visible = currently_visible;
+            window_ptr.state.borrow_mut().ime_currently_visible = currently_visible;
             if currently_visible {
                 // `android_input.on_screen_keyboard` user setting:
                 // when false, the user opted out of the soft IME
@@ -703,18 +699,18 @@ impl AndroidPlatform {
                 // on and tap the keyboard button, the IME has
                 // current state.
                 if crate::ime::on_screen_keyboard_enabled() {
-                    crate::ime::show_keyboard(&app);
+                    crate::ime::show_keyboard(&app, extra_window_id);
                 } else {
                     log::info!(
                         "ime::reconcile auto-show suppressed by android_input.on_screen_keyboard=false"
                     );
                 }
-                crate::ime::notify_text_state(&window_ptr);
+                crate::ime::notify_text_state(window_ptr);
             } else {
-                // IME going hidden — clear cached selection so the
-                // next show-transition re-seeds cleanly.
-                self.common.borrow_mut().last_pushed_selection = None;
-                crate::ime::hide_keyboard(&app);
+                // IME going hidden — clear cached selection on this
+                // window so the next show-transition re-seeds cleanly.
+                window_ptr.state.borrow_mut().last_pushed_selection = None;
+                crate::ime::hide_keyboard(&app, extra_window_id);
             }
         }
 
@@ -727,13 +723,13 @@ impl AndroidPlatform {
         // single buffer lookup, selected_text_range is also O(1).
         // Only runs while IME is visible so background frames don't
         // pay this cost.
-        self.tick_ime_target_and_selection(&window_ptr, &app);
+        self.tick_ime_target_and_selection(extra_window_id, window_ptr, &app);
     }
 
-    /// Once per main-loop tick (while IME is visible): detect target
-    /// kind changes (terminal ↔ code editor pane swap) and push
-    /// `updateSelection` whenever the editor's selection moved
-    /// outside an IME-driven path. Solves two bugs:
+    /// Once per main-loop tick (while this window's IME is visible):
+    /// detect target kind changes (terminal ↔ code editor pane
+    /// swap) and push `updateSelection` whenever the editor's
+    /// selection moved outside an IME-driven path. Solves two bugs:
     ///
     /// 1. Cross-pane composition contamination — Gboard's
     ///    composition state was sticky across pane swaps because
@@ -749,6 +745,7 @@ impl AndroidPlatform {
     /// abandons it, even though the IME doesn't send finishComposing.
     fn tick_ime_target_and_selection(
         &self,
+        extra_window_id: Option<u64>,
         window_ptr: &crate::window::AndroidWindowStatePtr,
         android_app: &android_activity::AndroidApp,
     ) {
@@ -757,8 +754,12 @@ impl AndroidPlatform {
         let composition_anchor: Option<(usize, usize)>;
         let our_composition_active: bool;
         let handler_has_stale_mark: bool;
+        let last_kind: Option<crate::ime::ImeTargetKind>;
+        let last_selection: Option<(usize, usize)>;
         {
             let mut state = window_ptr.state.borrow_mut();
+            last_kind = state.last_ime_target_kind;
+            last_selection = state.last_pushed_selection;
             // Snapshot composition tracking before mut-borrowing
             // input_handler — once `handler` is alive, we can't
             // touch other fields of `state` immutably.
@@ -793,11 +794,6 @@ impl AndroidPlatform {
             log::info!("ime::tick cleared stale editor marked range");
         }
 
-        let (last_kind, last_selection) = {
-            let common = self.common.borrow();
-            (common.last_ime_target_kind, common.last_pushed_selection)
-        };
-
         let mut should_notify = false;
 
         // Detect target swap → restartInput with new EditorInfo.
@@ -809,15 +805,15 @@ impl AndroidPlatform {
                 state.ime_composition_start = None;
                 state.ime_composition_text = None;
             }
-            crate::ime::restart_input_for_kind(android_app, kind);
-            self.common.borrow_mut().last_ime_target_kind = Some(kind);
+            crate::ime::restart_input_for_kind(android_app, extra_window_id, kind);
+            window_ptr.state.borrow_mut().last_ime_target_kind = Some(kind);
             should_notify = true;
         }
 
         // Detect selection move (touch-driven cursor click) →
         // updateSelection so the IME sees it.
         if current_selection != last_selection {
-            self.common.borrow_mut().last_pushed_selection = current_selection;
+            window_ptr.state.borrow_mut().last_pushed_selection = current_selection;
             should_notify = true;
 
             // If cursor moved outside the active composition

@@ -4283,23 +4283,24 @@ fn default_render_tab_bar_buttons(
     // Hidden when `android_input.on_screen_keyboard` is false (user
     // is on a hardware keyboard and doesn't need the soft IME). The
     // pane render reads the setting each frame so toggling it in
-    // settings.json takes effect without an app restart, and also
-    // writes the value into a global atomic that the platform
-    // reconcile loop consults to gate auto-show on text-input focus.
+    // settings.json takes effect without an app restart. The runtime
+    // gate atomic that the platform reconcile loop consults to gate
+    // auto-show is mirrored via a SettingsStore observer registered
+    // in `zed_android::lib::main` — NOT here, because the pane
+    // doesn't render during onboarding (no project open) and the
+    // atomic would otherwise stay at its `true` default while the
+    // user toggles the setting off in Settings.
     #[cfg(target_os = "android")]
     let right_children = {
         let android_input = crate::AndroidInputSettings::get_global(cx);
         let on_screen_keyboard_enabled = android_input.on_screen_keyboard;
-        // Master / runtime split: `trackpad_mode` is the feature
-        // gate (icon visible at all), `trackpad_mode_active` is
-        // whether the user has currently flipped the mode on via
-        // the icon. The runtime atomic must AND both — when the
-        // master is off, the module is fully inert regardless of
-        // any leftover active=true value the user persisted.
+        // Master / runtime split for the trackpad-mode icon:
+        // `trackpad_mode` gates icon visibility, `trackpad_mode_active`
+        // controls its toggle state. The runtime atomic the touch
+        // dispatcher reads is pushed from the SettingsStore observer
+        // in `zed_android::lib::main`, not here.
         let trackpad_master = android_input.trackpad_mode;
         let trackpad_active = trackpad_master && android_input.trackpad_mode_active;
-        window.set_on_screen_keyboard_enabled(on_screen_keyboard_enabled);
-        window.set_trackpad_mode_enabled(trackpad_active);
 
         let right_children = if on_screen_keyboard_enabled {
             let keyboard_visible = window.soft_keyboard_visible();

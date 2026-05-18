@@ -48,9 +48,42 @@ import androidx.core.view.WindowInsetsControllerCompat
 /// recreation, `onDestroy` notifies Rust which tears down the gpui Window;
 /// the user's window disappears, which is bad UX. Test by aggressive
 /// drag-resize after any manifest change.
-class ExtraWindowActivity : AppCompatActivity() {
+class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     private var extraWindowId: Long = -1L
+    /// Window id used by [ImeHostView] / [ZdroidInputConnection] to
+    /// route IME events to the right gpui-side window. Mirrors
+    /// [extraWindowId].
+    override val imeWindowId: Long
+        get() = extraWindowId
     private lateinit var surfaceView: SurfaceView
+
+    /// Invisible 1x1 [ImeHostView] that owns the IME `InputConnection`
+    /// for this Activity's gpui window. Installed in [onCreate]
+    /// alongside the SurfaceView; Rust signals show / hide via JNI
+    /// calls to [showIme] / [hideIme] which requestFocus on this view
+    /// and invoke `InputMethodManager`.
+    private var imeHostView: ImeHostView? = null
+
+    /// Mirror of the OS IME's visibility from our perspective. Same
+    /// rationale as MainActivity: gpui's `set_input_handler` /
+    /// `take_input_handler` fires per paint, so we filter repeats
+    /// before touching `InputMethodManager`.
+    private var imeShown: Boolean = false
+    private var programmaticHidePending: Boolean = false
+    private var programmaticShowPending: Boolean = false
+    private var lastImeInsetBottom: Int = 0
+    @Volatile
+    private var imeManuallyDismissed: Boolean = false
+
+    @Volatile
+    private var imeTextState: ImeTextState? = null
+
+    @Volatile
+    override var currentImeMode: Int = ImeInputMode.CODE_EDITOR
+        private set
+
+    override fun getImeTextState(): ImeTextState? = imeTextState
+
     /// Cursor position in physical pixels relative to this Activity's
     /// SurfaceView. Mirrors MainActivity's state machine.
     private var cursorX: Float = 0f
@@ -176,6 +209,189 @@ class ExtraWindowActivity : AppCompatActivity() {
             // is active.
         }
         setContentView(surfaceView)
+
+        // IME host. Invisible 1x1 view that owns the InputConnection
+        // for this extra window's gpui surface. Without it, focusing
+        // a text input in the settings window or any other spawned
+        // window leaves the gpui-side `set_input_handler` registered
+        // but the OS soft keyboard never appears, because Android
+        // dispatches IME events through the focused View — not the
+        // SurfaceView, which doesn't override `onCreateInputConnection`.
+        val imeHost = ImeHostView(this)
+        addContentView(imeHost, android.view.ViewGroup.LayoutParams(1, 1))
+        imeHostView = imeHost
+
+        // Inset-transition listener — same rationale as MainActivity.
+        // Tracks programmatic-vs-user IME dismissals so the
+        // auto-show on text-input focus is correctly suppressed
+        // once the user has manually closed the keyboard in this
+        // window (Back press, swipe-down on the IME bar).
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(imeHost) { _, insets ->
+            val imeBottom = insets.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.ime()
+            ).bottom
+            val wasVisible = lastImeInsetBottom > 0
+            val nowVisible = imeBottom > 0
+            if (!wasVisible && nowVisible) {
+                programmaticShowPending = false
+                if (!imeShown) setImeShown(true)
+                Log.i(TAG_IME, "WindowInsets[w=$extraWindowId]: IME shown (inset=$imeBottom)")
+            } else if (wasVisible && !nowVisible) {
+                if (programmaticHidePending) {
+                    programmaticHidePending = false
+                    Log.i(TAG_IME, "WindowInsets[w=$extraWindowId]: IME hidden (programmatic)")
+                } else {
+                    Log.i(
+                        TAG_IME,
+                        "WindowInsets[w=$extraWindowId]: IME hidden by user, marking manual-dismiss"
+                    )
+                    setImeManuallyDismissed(true)
+                }
+                setImeShown(false)
+            }
+            lastImeInsetBottom = imeBottom
+            insets
+        }
+    }
+
+    /// Update [imeShown] and push the value into Rust's
+    /// `SOFT_KEYBOARD_VISIBLE` mirror so the pane keyboard button's
+    /// `toggle_state` highlight reflects this window's IME state.
+    /// The global atomic represents whichever Activity most recently
+    /// transitioned — only one IME can be up across the app at a time,
+    /// so a single global is still correct semantics.
+    private fun setImeShown(shown: Boolean) {
+        if (imeShown != shown) {
+            imeShown = shown
+            NativeBridge.nativeSetSoftKeyboardVisible(shown)
+        }
+    }
+
+    private fun setImeManuallyDismissed(dismissed: Boolean) {
+        if (imeManuallyDismissed != dismissed) {
+            Log.i(TAG_IME, "imeManuallyDismissed[w=$extraWindowId]: $imeManuallyDismissed -> $dismissed")
+            imeManuallyDismissed = dismissed
+        }
+    }
+
+    /// Bring up the soft keyboard for this window. Called from Rust
+    /// via JNI when gpui's `set_input_handler` fires on a text-input
+    /// focus inside this Activity's gpui window. Suppressed while the
+    /// user has manually dismissed the IME in this window.
+    @Suppress("unused")
+    fun showIme() {
+        runOnUiThread {
+            val host = imeHostView ?: run {
+                Log.w(TAG_IME, "showIme[w=$extraWindowId]: imeHostView is null, skipping")
+                return@runOnUiThread
+            }
+            if (imeManuallyDismissed) {
+                Log.i(TAG_IME, "showIme[w=$extraWindowId] suppressed (user dismissed)")
+                return@runOnUiThread
+            }
+            Log.i(
+                TAG_IME,
+                "showIme[w=$extraWindowId] imeShown=$imeShown hostFocused=${host.isFocused}"
+            )
+            if (imeShown) return@runOnUiThread
+            if (!host.isFocused) host.requestFocus()
+            programmaticShowPending = true
+            WindowInsetsControllerCompat(window, window.decorView)
+                .show(WindowInsetsCompat.Type.ime())
+            setImeShown(true)
+        }
+    }
+
+    /// Dismiss the soft keyboard.
+    @Suppress("unused")
+    fun hideIme() {
+        runOnUiThread {
+            Log.i(TAG_IME, "hideIme[w=$extraWindowId] imeShown=$imeShown")
+            if (!imeShown) return@runOnUiThread
+            programmaticHidePending = true
+            WindowInsetsControllerCompat(window, window.decorView)
+                .hide(WindowInsetsCompat.Type.ime())
+            setImeShown(false)
+        }
+    }
+
+    /// Toggle the IME — pane keyboard button entry point.
+    @Suppress("unused")
+    fun toggleIme() {
+        runOnUiThread {
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            if (imeShown) {
+                Log.i(TAG_IME, "toggleIme[w=$extraWindowId]: hiding (manual dismiss)")
+                programmaticHidePending = true
+                WindowInsetsControllerCompat(window, window.decorView)
+                    .hide(WindowInsetsCompat.Type.ime())
+                setImeShown(false)
+                setImeManuallyDismissed(true)
+            } else {
+                Log.i(TAG_IME, "toggleIme[w=$extraWindowId]: showing (clearing manual-dismiss)")
+                if (!host.isFocused) host.requestFocus()
+                imm.showSoftInput(host, 0)
+                setImeShown(true)
+                setImeManuallyDismissed(false)
+            }
+        }
+    }
+
+    /// Switch input modes for this window's IME and force a
+    /// `restartInput` so the IME re-reads `EditorInfo` (terminal vs
+    /// code-editor `EditorInfo` differs in autocorrect / multi-line
+    /// flags). Called from Rust via JNI when the focused target's
+    /// kind changes.
+    @Suppress("unused")
+    fun restartImeForTarget(modeId: Int) {
+        runOnUiThread {
+            if (modeId != ImeInputMode.TERMINAL && modeId != ImeInputMode.CODE_EDITOR) {
+                Log.w(TAG_IME, "restartImeForTarget[w=$extraWindowId]: unknown modeId=$modeId")
+                return@runOnUiThread
+            }
+            if (currentImeMode == modeId) return@runOnUiThread
+            Log.i(
+                TAG_IME,
+                "restartImeForTarget[w=$extraWindowId]: $currentImeMode -> $modeId"
+            )
+            currentImeMode = modeId
+            setImeManuallyDismissed(false)
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.restartInput(host)
+        }
+    }
+
+    /// Push Rust's view of this window's text + selection into Kotlin
+    /// so the IME's read-side queries (getTextBeforeCursor / etc.)
+    /// return real values, and fire `updateSelection` so Gboard sees
+    /// touch-driven cursor moves.
+    @Suppress("unused")
+    fun updateImeTextState(
+        text: String,
+        windowStart: Int,
+        selectionStart: Int,
+        selectionEnd: Int,
+        composingStart: Int,
+        composingEnd: Int,
+    ) {
+        imeTextState = ImeTextState(
+            text = text,
+            windowStart = windowStart,
+            selectionStart = selectionStart,
+            selectionEnd = selectionEnd,
+            composingStart = composingStart,
+            composingEnd = composingEnd,
+        )
+        runOnUiThread {
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.updateSelection(host, selectionStart, selectionEnd, composingStart, composingEnd)
+        }
     }
 
     override fun onDestroy() {
@@ -524,6 +740,7 @@ class ExtraWindowActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "zed_android_extra"
+        private const val TAG_IME = "zdroid_ime"
         const val EXTRA_WINDOW_ID = "com.zdroid.window_id"
         /// Software cursor side length in dp — matches MainActivity.
         private const val CURSOR_SIZE_DP = 24

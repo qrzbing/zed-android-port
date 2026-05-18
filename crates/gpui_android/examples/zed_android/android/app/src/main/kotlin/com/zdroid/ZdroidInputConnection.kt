@@ -31,27 +31,27 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val s = text?.toString() ?: ""
-        Log.i(TAG, "IC.commitText text=${quote(s)} cursor=$newCursorPosition")
-        NativeBridge.nativeImeCommitText(s, newCursorPosition)
+        Log.i(TAG, "IC.commitText w=$windowId text=${quote(s)} cursor=$newCursorPosition")
+        NativeBridge.nativeImeCommitText(windowId, s, newCursorPosition)
         return true
     }
 
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val s = text?.toString() ?: ""
-        Log.i(TAG, "IC.setComposingText text=${quote(s)} cursor=$newCursorPosition")
-        NativeBridge.nativeImeSetComposingText(s, newCursorPosition)
+        Log.i(TAG, "IC.setComposingText w=$windowId text=${quote(s)} cursor=$newCursorPosition")
+        NativeBridge.nativeImeSetComposingText(windowId, s, newCursorPosition)
         return true
     }
 
     override fun finishComposingText(): Boolean {
-        Log.i(TAG, "IC.finishComposingText")
-        NativeBridge.nativeImeFinishComposingText()
+        Log.i(TAG, "IC.finishComposingText w=$windowId")
+        NativeBridge.nativeImeFinishComposingText(windowId)
         return true
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        Log.i(TAG, "IC.deleteSurroundingText before=$beforeLength after=$afterLength")
-        NativeBridge.nativeImeDeleteSurroundingText(beforeLength, afterLength)
+        Log.i(TAG, "IC.deleteSurroundingText w=$windowId before=$beforeLength after=$afterLength")
+        NativeBridge.nativeImeDeleteSurroundingText(windowId, beforeLength, afterLength)
         return true
     }
 
@@ -59,11 +59,12 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
         event ?: return false
         Log.i(
             TAG,
-            "IC.sendKeyEvent action=${event.action} keyCode=${event.keyCode} " +
+            "IC.sendKeyEvent w=$windowId action=${event.action} keyCode=${event.keyCode} " +
                 "meta=0x${Integer.toHexString(event.metaState)} repeat=${event.repeatCount} " +
                 "unicode=${event.unicodeChar} chars=${quote(event.characters ?: "")}"
         )
         NativeBridge.nativeImeSendKeyEvent(
+            windowId,
             event.action,
             event.keyCode,
             event.metaState,
@@ -73,8 +74,8 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
     }
 
     override fun performEditorAction(actionCode: Int): Boolean {
-        Log.i(TAG, "IC.performEditorAction action=$actionCode")
-        NativeBridge.nativeImePerformEditorAction(actionCode)
+        Log.i(TAG, "IC.performEditorAction w=$windowId action=$actionCode")
+        NativeBridge.nativeImePerformEditorAction(windowId, actionCode)
         return true
     }
 
@@ -89,7 +90,13 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
     // change.
 
     private fun mirror(): ImeTextState =
-        (hostView.context as? MainActivity)?.getImeTextState() ?: ImeTextState.EMPTY
+        (hostView.context as? ImeHost)?.getImeTextState() ?: ImeTextState.EMPTY
+
+    /// Identifier of the gpui window this host's input flows
+    /// into. Passed through to every `nativeIme*` JNI call so Rust
+    /// can route the event to the right window's
+    /// `PlatformInputHandler`. `0` = primary (MainActivity).
+    private val windowId: Long = (hostView.context as? ImeHost)?.imeWindowId ?: 0L
 
     override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? {
         val text = mirror().textBeforeCursor(n)

@@ -48,7 +48,9 @@ import java.io.File
 /// [ExtraWindowActivity] launched via Intent, giving each window OS-managed
 /// freeform chrome on devices that support it. See `multi_window.rs` and
 /// `ExtraWindowActivity.kt`.
-class MainActivity : GameActivity() {
+class MainActivity : GameActivity(), ImeHost {
+    /// MainActivity is always gpui's primary window — id 0.
+    override val imeWindowId: Long = 0L
     /// Splash overlay shown from `super.onCreate` until the gpui-side
     /// flips `nativeIsZedReady` after first paint. Sits above the
     /// GameActivity `SurfaceView` so the animated Zdroid sigil is
@@ -246,10 +248,10 @@ class MainActivity : GameActivity() {
     /// `@Volatile`: Rust JNI thread writes via [restartImeForTarget]
     /// while the UI thread reads in `onCreateInputConnection`.
     @Volatile
-    var currentImeMode: Int = ImeInputMode.CODE_EDITOR
+    override var currentImeMode: Int = ImeInputMode.CODE_EDITOR
         private set
 
-    fun getImeTextState(): ImeTextState? = imeTextState
+    override fun getImeTextState(): ImeTextState? = imeTextState
 
     /// Switch input modes and force the IME to re-read EditorInfo.
     /// Called from Rust via JNI when the focused input target's kind

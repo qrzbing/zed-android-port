@@ -786,6 +786,30 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     });
     info!("zed_android: settings file watcher attached");
 
+    // Mirror `android_input.*` settings into gpui_android's runtime
+    // atomics directly via observe_global, NOT via per-paint
+    // `window.set_*` writes from `workspace::pane`. The pane path
+    // only fires when a Pane renders — during onboarding (before a
+    // project is open) there is no Pane, so the atomics stay at
+    // their `true`/`false` defaults regardless of what the user
+    // toggles in Settings. Symptom: opening Settings during
+    // onboarding, switching `on_screen_keyboard` off, then focusing
+    // a text input still pops the soft IME because the gate atomic
+    // is stale. Observer fires once immediately + on every
+    // SettingsStore change, so the gate is always fresh.
+    let push_android_input_atomics = |cx: &gpui::App| {
+        let android_input = workspace::AndroidInputSettings::get_global(cx);
+        gpui_android::set_on_screen_keyboard_enabled(android_input.on_screen_keyboard);
+        let trackpad_active = android_input.trackpad_mode && android_input.trackpad_mode_active;
+        gpui_android::set_trackpad_mode_enabled(trackpad_active);
+    };
+    push_android_input_atomics(cx);
+    cx.observe_global::<SettingsStore>(move |cx| {
+        push_android_input_atomics(cx);
+    })
+    .detach();
+    info!("zed_android: android_input atomics observer registered");
+
     cx.text_system().add_fonts(
         BUNDLED_FONTS
             .iter()
