@@ -48,10 +48,22 @@ fn android_app() -> Result<&'static AndroidApp> {
 /// at a third-party APK.
 pub const RELEASE_REPO: &str = "Dylanmurzello/zed-android-port";
 
-/// Asset name within each release. v0.2.0+ uses this exact name; older
-/// releases used different naming and aren't reachable through the
-/// auto-updater (the user can sideload them manually if needed).
-const RELEASE_ASSET_NAME: &str = "app-release.apk";
+/// Asset name conventions the updater knows how to find. v0.2.0/v0.2.1
+/// shipped with `app-release.apk` (gradle's default release-output
+/// name); v0.2.2 onward switched to the prettier `Zdroid-X.Y.Z.apk`
+/// for user-facing downloads but the updater code wasn't updated, so
+/// the auto-update path silently 404'd between those versions. The
+/// fix is to try both: the primary name follows the
+/// `Zdroid-X.Y.Z.apk` convention so future releases just need the
+/// pretty name, and `app-release.apk` stays as a fallback so a
+/// stale release that uploaded only the gradle default still works.
+/// Walked in order; first 200 wins.
+fn candidate_asset_names(version: &str) -> [String; 2] {
+    [
+        format!("Zdroid-{version}.apk"),
+        "app-release.apk".to_string(),
+    ]
+}
 
 /// HTTP User-Agent. GitHub requires a non-empty UA for the static
 /// redirect endpoint to behave correctly.
@@ -68,12 +80,16 @@ const CACHE_SUBDIR: &str = "updater";
 pub enum UpdateCheck {
     /// Running app is already at the latest tag.
     UpToDate { current: String, latest: String },
-    /// A newer tag exists. `download_url` points at the signed APK
-    /// asset on the release.
+    /// A newer tag exists. `download_urls` lists every URL the
+    /// updater knows how to find the APK at, in priority order.
+    /// `download_apk` walks the list and returns the first 200.
+    /// The Vec is used (not a single URL) so a release that
+    /// uploaded only one of our two known asset-name conventions
+    /// still works.
     Available {
         current: String,
         latest: String,
-        download_url: String,
+        download_urls: Vec<String>,
     },
 }
 
@@ -187,6 +203,28 @@ fn query_current_version(android_app: &AndroidApp) -> Result<String> {
     Ok(env.get_string(&s)?.into())
 }
 
+/// `Context.getCacheDir().getAbsolutePath()` via JNI. The
+/// `AndroidApp::internal_data_path()` accessor on android-activity 0.6
+/// only exposes the FILES dir; there is no cache-dir accessor, so we
+/// reach through to the Activity (which inherits the Context method).
+/// The returned path is the same one that the FileProvider's
+/// `<cache-path>` declaration resolves against, which is the load-
+/// bearing invariant for `launchPackageInstaller` to find a configured
+/// root for the downloaded APK.
+fn system_cache_dir(android_app: &AndroidApp) -> Result<PathBuf> {
+    let vm = unsafe { JavaVM::from_raw(android_app.vm_as_ptr().cast())? };
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(android_app.activity_as_ptr() as _) };
+    let file = env
+        .call_method(&activity, "getCacheDir", "()Ljava/io/File;", &[])?
+        .l()?;
+    let path_value =
+        env.call_method(&file, "getAbsolutePath", "()Ljava/lang/String;", &[])?;
+    let s: JString = path_value.l()?.into();
+    let path: String = env.get_string(&s)?.into();
+    Ok(PathBuf::from(path))
+}
+
 /// Top-level check-for-update entry. Resolves the latest tag, compares
 /// against the running version, and returns a structured result. Does
 /// no downloading.
@@ -202,59 +240,130 @@ pub fn check_for_update() -> Result<UpdateCheck> {
         ));
     }
     if is_newer(&current, &latest) {
-        let download_url = format!(
-            "https://github.com/{RELEASE_REPO}/releases/download/v{latest}/{RELEASE_ASSET_NAME}"
-        );
+        // Build candidate URLs in priority order. `download_apk` will
+        // walk them and use the first one that returns 200. The
+        // primary slot stays the prettier `Zdroid-X.Y.Z.apk` name
+        // that v0.2.2+ release notes refer to; the secondary slot is
+        // gradle's `app-release.apk` for releases that only uploaded
+        // that name.
+        let download_urls = candidate_asset_names(&latest)
+            .into_iter()
+            .map(|name| {
+                format!(
+                    "https://github.com/{RELEASE_REPO}/releases/download/v{latest}/{name}"
+                )
+            })
+            .collect();
         Ok(UpdateCheck::Available {
             current,
             latest,
-            download_url,
+            download_urls,
         })
     } else {
         Ok(UpdateCheck::UpToDate { current, latest })
     }
 }
 
-/// Download the APK at `url` to `<cacheDir>/updater/zdroid-<tag>.apk`.
-/// Returns the path on success. Streams the response body so we don't
-/// hold the full ~225 MB APK in memory.
-pub fn download_apk(tag: &str, url: &str) -> Result<PathBuf> {
+/// Download the release APK to `<cacheDir>/updater/zdroid-<tag>.apk`.
+/// Walks `urls` in order, returning as soon as one returns 200. A 404
+/// (or any other non-2xx) is logged and the next URL is tried; this
+/// is how the updater absorbs asset-name drift between releases
+/// (see [`candidate_asset_names`] for the why). Returns an error only
+/// when ALL candidate URLs have failed. Streams the response body so
+/// we don't hold the full ~225 MB APK in memory.
+pub fn download_apk(tag: &str, urls: &[String]) -> Result<PathBuf> {
+    if urls.is_empty() {
+        return Err(anyhow!("download_apk: no candidate URLs"));
+    }
     let android_app = android_app()?;
-    let cache_dir = android_app
+    // Use Context.getCacheDir() via JNI. `android_app.internal_data_path()`
+    // returns the FILES dir (`getFilesDir()`); the OS cache dir is its
+    // sibling, NOT a `cache/` subdirectory of files. Pre-v0.3.1 the
+    // updater wrote to `<filesDir>/cache/updater/` which doesn't match
+    // the FileProvider's `<cache-path>` declaration, so even successful
+    // downloads failed with `Failed to find configured root that
+    // contains …` when handing off to the system installer. The XML
+    // (res/xml/updater_file_paths.xml) maps `<cache-path path="updater/">`
+    // to `getCacheDir()+"/updater/"`, which is what this path now
+    // resolves to. One-time migration: if the old wrong directory
+    // exists from a previous failed attempt, wipe it so stale 225 MB
+    // APKs don't sit on disk forever.
+    let cache_root = system_cache_dir(android_app)
+        .context("query Context.getCacheDir() via JNI")?;
+    let stale_dir = android_app
         .internal_data_path()
-        .ok_or_else(|| anyhow!("no internal_data_path"))?
-        .join("cache")
-        .join(CACHE_SUBDIR);
+        .map(|p| p.join("cache").join(CACHE_SUBDIR));
+    if let Some(stale) = stale_dir.as_ref()
+        && stale.exists()
+        && stale != &cache_root.join(CACHE_SUBDIR)
+    {
+        if let Err(err) = std::fs::remove_dir_all(stale) {
+            log::warn!(
+                "updater: failed to wipe stale cache dir {}: {err:#}",
+                stale.display()
+            );
+        } else {
+            log::info!("updater: wiped stale cache dir {}", stale.display());
+        }
+    }
+    let cache_dir = cache_root.join(CACHE_SUBDIR);
     std::fs::create_dir_all(&cache_dir).context("create updater cache dir")?;
     let dest = cache_dir.join(format!("zdroid-{tag}.apk"));
-    // Wipe any partial download from a prior aborted attempt.
-    if dest.exists() {
-        let _ = std::fs::remove_file(&dest);
-    }
-    log::info!("updater: downloading {url} -> {}", dest.display());
+
     let agent = ureq::builder().redirects(5).build();
-    let resp = agent
-        .get(url)
-        .set("User-Agent", USER_AGENT)
-        .call()
-        .with_context(|| format!("GET {url}"))?;
-    let mut reader = resp.into_reader();
-    let mut file = std::fs::File::create(&dest)
-        .with_context(|| format!("create {}", dest.display()))?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        let n = reader.read(&mut buf).context("read response body")?;
-        if n == 0 {
-            break;
+    let mut last_err: Option<anyhow::Error> = None;
+    for url in urls {
+        // Wipe any partial download from a prior failed candidate so
+        // a 404 followed by a 200 doesn't leave a truncated file from
+        // the 404 attempt under the same dest path.
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
         }
-        std::io::Write::write_all(&mut file, &buf[..n])
-            .with_context(|| format!("write {}", dest.display()))?;
-        total += n as u64;
+        log::info!("updater: downloading {url} -> {}", dest.display());
+        let resp = match agent
+            .get(url)
+            .set("User-Agent", USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                log::warn!("updater: GET {url} failed: {err:#}; trying next candidate");
+                last_err = Some(anyhow::Error::new(err).context(format!("GET {url}")));
+                continue;
+            }
+        };
+        let mut reader = resp.into_reader();
+        let mut file = std::fs::File::create(&dest)
+            .with_context(|| format!("create {}", dest.display()))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total: u64 = 0;
+        let read_result = (|| -> Result<()> {
+            loop {
+                let n = reader.read(&mut buf).context("read response body")?;
+                if n == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut file, &buf[..n])
+                    .with_context(|| format!("write {}", dest.display()))?;
+                total += n as u64;
+            }
+            Ok(())
+        })();
+        drop(file);
+        match read_result {
+            Ok(()) => {
+                log::info!("updater: downloaded {total} bytes to {}", dest.display());
+                return Ok(dest);
+            }
+            Err(err) => {
+                log::warn!("updater: streaming {url} failed: {err:#}; trying next candidate");
+                last_err = Some(err);
+                continue;
+            }
+        }
     }
-    drop(file);
-    log::info!("updater: downloaded {total} bytes to {}", dest.display());
-    Ok(dest)
+    Err(last_err
+        .unwrap_or_else(|| anyhow!("download_apk: all candidate URLs failed without errors")))
 }
 
 /// JNI into `MainActivity.launchPackageInstaller` to hand the

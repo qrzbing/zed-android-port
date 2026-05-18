@@ -400,7 +400,7 @@ fn run_update_check(
             gpui_android::updater::UpdateCheck::Available {
                 current,
                 latest,
-                download_url,
+                download_urls,
             } => {
                 let answer_rx = cx.update(|window, cx| {
                     window.prompt(
@@ -425,7 +425,7 @@ fn run_update_check(
                 let download = cx
                     .background_executor()
                     .spawn(async move {
-                        gpui_android::updater::download_apk(&download_tag, &download_url)
+                        gpui_android::updater::download_apk(&download_tag, &download_urls)
                     })
                     .await;
                 let apk_path = match download {
