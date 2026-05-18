@@ -460,30 +460,38 @@ pub struct TabBarSettingsContent {
     pub show_pinned_tabs_in_separate_row: Option<bool>,
 }
 
-/// Settings specific to the Android port — touch / on-screen
+/// Settings specific to the Android port: touch / on-screen
 /// keyboard behavior that doesn't apply on other platforms.
 #[with_fallible_options]
 #[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
 pub struct AndroidInputSettingsContent {
     /// Whether to enable the on-screen IME (soft keyboard) and the
     /// pane keyboard toggle button. Disable when relying on a
-    /// hardware keyboard — the IME stops auto-showing on text-input
-    /// focus and the pane button is hidden.
+    /// hardware keyboard, so the IME stops auto-showing on
+    /// text-input focus and the pane button is hidden.
     ///
     /// Default: true
     pub on_screen_keyboard: Option<bool>,
-    /// Whether to treat the screen as a virtual trackpad (VNC-style
-    /// mouse simulation) instead of routing touches as direct
-    /// input. When enabled: one-finger drag moves the cursor by the
-    /// delta; one-finger tap clicks at the cursor's current
-    /// position; two-finger tap right-clicks; two-finger drag is
-    /// scroll-wheel. Direct touch is fully disabled — taps no
-    /// longer place the cursor at the tap location. The cursor
-    /// sprite is shown automatically while this is on. A pane
-    /// tab-bar toggle button lets the user flip the mode at runtime.
+    /// MASTER toggle for the virtual trackpad feature. When true,
+    /// the pane tab bar exposes a trackpad-mode icon and the user
+    /// can switch the screen between direct touch and a VNC-style
+    /// virtual mouse via that icon. When false, the icon is hidden
+    /// and the whole module is inert regardless of
+    /// [`trackpad_mode_active`].
     ///
     /// Default: false
     pub trackpad_mode: Option<bool>,
+    /// RUNTIME state of the virtual trackpad: true means the
+    /// screen is currently acting as a virtual trackpad
+    /// (one-finger drag moves an on-screen cursor; tap clicks at
+    /// the cursor; two-finger tap right-clicks; two-finger drag
+    /// scrolls). Only honored when [`trackpad_mode`] (master) is
+    /// also true. Mutated by the pane tab-bar icon so the state
+    /// survives across launches, not edited directly through the
+    /// settings UI.
+    ///
+    /// Default: false
+    pub trackpad_mode_active: Option<bool>,
 }
 
 #[with_fallible_options]

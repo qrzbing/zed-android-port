@@ -163,6 +163,15 @@ fn refs_table() -> std::sync::MutexGuard<'static, Option<HashMap<u64, GlobalRef>
     EXTRA_ACTIVITY_REFS.lock().unwrap()
 }
 
+/// Clone the `GlobalRef` for the `ExtraWindowActivity` with this
+/// `window_id`. Returns `None` if the Activity isn't registered
+/// (already destroyed, or never created). Callers that need to call
+/// Kotlin methods on a specific extra Activity (cursor sprite for
+/// trackpad mode, per-window IME mode, etc.) go through this.
+pub(crate) fn extra_activity_for(window_id: u64) -> Option<GlobalRef> {
+    refs_table().as_ref().and_then(|m| m.get(&window_id)).cloned()
+}
+
 fn registered_set()
 -> std::sync::MutexGuard<'static, Option<std::collections::HashSet<u64>>> {
     REGISTERED_WINDOWS.lock().unwrap()
@@ -581,7 +590,27 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraActivityCreated
     };
     let mut table = refs_table();
     let map = table.get_or_insert_with(HashMap::new);
-    map.insert(window_id, global_ref);
+    map.insert(window_id, global_ref.clone());
+    drop(table); // release the mutex before the JNI call below
+
+    // If trackpad mode is currently on, push the active state to
+    // this newly-created activity so its cursor sprite appears the
+    // moment its surface is ready. Without this, opening an extra
+    // window while trackpad mode is on leaves it without a cursor
+    // until the user toggles trackpad mode off-and-on again.
+    if crate::ime::trackpad_mode_enabled() {
+        let mut env = env;
+        if let Err(err) = env.call_method(
+            global_ref.as_obj(),
+            "setTrackpadModeActive",
+            "(Z)V",
+            &[true.into()],
+        ) {
+            log::warn!(
+                "multi_window: failed to push trackpad-mode state to new extra activity {window_id}: {err:#}"
+            );
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

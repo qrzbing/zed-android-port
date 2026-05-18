@@ -159,10 +159,9 @@ fn android_input_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("On-Screen Keyboard"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Enable On-Screen Keyboard",
-                description: "Show the soft IME on text-input focus and \
-                    expose the pane keyboard-toggle button. Disable when \
-                    using a hardware keyboard exclusively — the IME stops \
-                    auto-showing and the pane button is hidden.",
+                description: "Auto-show the soft IME on text-input \
+                    focus and expose its toggle in the pane tab bar. \
+                    Turn off when using a hardware keyboard.",
                 field: Box::new(SettingField {
                     json_path: Some("android_input.on_screen_keyboard"),
                     pick: |settings_content| {
@@ -184,15 +183,12 @@ fn android_input_page() -> SettingsPage {
             }),
             SettingsPageItem::SectionHeader("Touch Behavior"),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Virtual Trackpad Mode",
-                description: "VNC-style: the screen becomes a virtual \
-                    trackpad. One-finger drag moves the on-screen cursor; \
-                    tap clicks at the cursor position; two-finger tap \
-                    right-clicks; two-finger drag scrolls. Direct touch \
-                    is fully disabled while this is on — taps no longer \
-                    place the cursor where you tap. Useful when paired \
-                    with a hardware keyboard for fine-grained mouse-like \
-                    interaction.",
+                title: "Enable Virtual Trackpad",
+                description: "Add a tab-bar toggle that switches \
+                    the screen into VNC-style trackpad mode: drag \
+                    moves an on-screen cursor, tap clicks, \
+                    two-finger tap is right-click, two-finger drag \
+                    scrolls.",
                 field: Box::new(SettingField {
                     json_path: Some("android_input.trackpad_mode"),
                     pick: |settings_content| {

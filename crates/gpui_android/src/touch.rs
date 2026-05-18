@@ -132,9 +132,10 @@ pub(crate) fn dispatch_primary(
     };
     if crate::ime::trackpad_mode_enabled() {
         let android_app = state.android_app.clone();
+        let extra_window_id = state.extra_window_id;
         return state
             .trackpad_touch
-            .on_event(&touch_event, &android_app, scale_factor);
+            .on_event(&touch_event, &android_app, scale_factor, extra_window_id);
     }
     let drag_capture = state
         .drag_active
@@ -162,9 +163,10 @@ pub(crate) fn dispatch_extra(
     };
     if crate::ime::trackpad_mode_enabled() {
         let android_app = state.android_app.clone();
+        let extra_window_id = state.extra_window_id;
         return state
             .trackpad_touch
-            .on_event(&touch_event, &android_app, scale_factor);
+            .on_event(&touch_event, &android_app, scale_factor, extra_window_id);
     }
     let drag_capture = state
         .drag_active
@@ -802,16 +804,58 @@ impl TouchState {
 /// tap (click at cursor).
 const TRACKPAD_TAP_THRESHOLD_PX: f64 = 8.0;
 
+/// Minimum hold time before a one-finger touch promotes to
+/// "hold-to-drag" (Left button held + cursor motion = text
+/// selection / click-and-drag). Below this duration, finger
+/// motion is interpreted as plain cursor motion (no button held);
+/// at or above it, the gesture switches to drag-with-button so
+/// the user can select text via the trackpad.
+const TRACKPAD_HOLD_DRAG_THRESHOLD_MS: u128 = 300;
+
+/// Per-axis acceleration applied to single-finger cursor-drag
+/// deltas (no button held). Slow movement stays near 1:1 for
+/// precision; faster movement gets a quadratic boost so the
+/// cursor can cross the full screen without lifting and
+/// re-touching. Capped to avoid runaway sensitivity on jitter.
+///
+/// `output = sign(delta) * |delta| * min(1 + |delta|² * 0.01, 4)`
+///
+/// Examples (one axis, logical pixels):
+///   delta = 1px  → 1.01px (precision)
+///   delta = 3px  → 3.27px
+///   delta = 10px → 20px   (2x boost)
+///   delta = 20px → 80px   (cap at 4x)
+///
+/// Not applied during hold-to-drag — text selection wants
+/// precise 1:1 control.
+fn accelerate_delta(delta_px: f32) -> f32 {
+    let abs = delta_px.abs();
+    let sign = delta_px.signum();
+    let boost = (1.0 + abs * abs * 0.01).min(4.0);
+    sign * abs * boost
+}
+
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 enum TrackpadGesturePhase {
     #[default]
     Idle,
-    /// One finger down, motion still below tap threshold. Lift →
-    /// tap (click at cursor). Move past threshold → SingleFingerDrag.
+    /// One finger down, motion still below tap threshold AND
+    /// elapsed time still below the hold-to-drag threshold. Lift
+    /// → tap (click at cursor). Move past threshold →
+    /// SingleFingerDrag. Hold past hold-drag threshold →
+    /// HoldDrag.
     SingleFingerDown,
     /// One finger past tap threshold; subsequent moves advance the
-    /// cursor, no click is emitted on lift.
+    /// cursor (with acceleration), no mouse button held. Lift
+    /// emits nothing — the gesture was pure navigation.
     SingleFingerDrag,
+    /// One finger held still past the hold-to-drag threshold; we
+    /// emitted MouseDown(Left) on the transition, subsequent moves
+    /// emit MouseMove with the button held so the editor sees a
+    /// drag (text selection on an editor, drag-and-drop elsewhere).
+    /// 1:1 motion (no acceleration) for selection precision.
+    /// Lift → MouseUp(count=1) to complete the click.
+    HoldDrag,
     /// 2+ fingers down within the 2-finger-tap window. Not yet
     /// decided 2-finger-tap (right click) vs 2-finger-scroll.
     MultiFingerDown,
@@ -824,6 +868,7 @@ enum TrackpadGesturePhase {
 
 #[derive(Debug, Clone)]
 struct TrackpadPointerState {
+    down_time: Instant,
     down_pos: Point<Pixels>,
     last_pos: Point<Pixels>,
     accumulated_motion: f64,
@@ -857,6 +902,7 @@ impl TrackpadTouchState {
         event: &TouchEvent,
         android_app: &AndroidApp,
         scale_factor: f32,
+        extra_window_id: Option<u64>,
     ) -> MotionInputs {
         let mut out = MotionInputs::new();
         if event.pointers.is_empty() {
@@ -874,6 +920,7 @@ impl TrackpadTouchState {
                 self.pointers.insert(
                     primary.id,
                     TrackpadPointerState {
+                        down_time: Instant::now(),
                         down_pos: primary.pos,
                         last_pos: primary.pos,
                         accumulated_motion: 0.0,
@@ -882,6 +929,7 @@ impl TrackpadTouchState {
                 self.phase = TrackpadGesturePhase::SingleFingerDown;
                 crate::cursor::move_trackpad_cursor(
                     android_app,
+                    extra_window_id,
                     f32::from(self.cursor.x) * scale_factor,
                     f32::from(self.cursor.y) * scale_factor,
                 );
@@ -900,6 +948,7 @@ impl TrackpadTouchState {
                 self.pointers.insert(
                     new_p.id,
                     TrackpadPointerState {
+                        down_time: Instant::now(),
                         down_pos: new_p.pos,
                         last_pos: new_p.pos,
                         accumulated_motion: 0.0,
@@ -913,40 +962,87 @@ impl TrackpadTouchState {
 
             TouchAction::Move => match self.phase {
                 TrackpadGesturePhase::SingleFingerDown
-                | TrackpadGesturePhase::SingleFingerDrag => {
+                | TrackpadGesturePhase::SingleFingerDrag
+                | TrackpadGesturePhase::HoldDrag => {
                     let primary = &event.pointers[0];
-                    let (delta, accumulated) = {
+                    let (delta, accumulated, elapsed_ms) = {
                         let Some(pstate) = self.pointers.get_mut(&primary.id) else {
                             return out;
                         };
                         let delta = primary.pos - pstate.last_pos;
                         pstate.last_pos = primary.pos;
                         pstate.accumulated_motion += delta.magnitude();
-                        (delta, pstate.accumulated_motion)
+                        let elapsed = pstate.down_time.elapsed().as_millis();
+                        (delta, pstate.accumulated_motion, elapsed)
                     };
 
-                    if self.phase == TrackpadGesturePhase::SingleFingerDown
-                        && accumulated > TRACKPAD_TAP_THRESHOLD_PX
-                    {
-                        // Promote to drag (cursor motion). No
-                        // MouseDown was emitted on touch-down, so
-                        // there's nothing to cancel — just flip the
-                        // phase and continue with cursor motion.
-                        self.phase = TrackpadGesturePhase::SingleFingerDrag;
+                    // Phase transitions on the first Move that
+                    // satisfies the respective threshold. Order
+                    // matters: hold-to-drag wins over drag when
+                    // both fire on the same event (user held still
+                    // 300ms then jittered slightly — they want
+                    // selection, not navigation).
+                    if self.phase == TrackpadGesturePhase::SingleFingerDown {
+                        if accumulated < TRACKPAD_TAP_THRESHOLD_PX
+                            && elapsed_ms >= TRACKPAD_HOLD_DRAG_THRESHOLD_MS
+                        {
+                            // Hold-to-drag: emit MouseMove (hover
+                            // refresh so the target gets pressed
+                            // state on the next MouseDown) +
+                            // MouseDown(Left). Subsequent moves
+                            // emit MouseMove with the button held
+                            // so the editor sees a held-button
+                            // drag = text selection.
+                            self.phase = TrackpadGesturePhase::HoldDrag;
+                            out.push(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                position: self.cursor,
+                                modifiers,
+                                pressed_button: None,
+                            }));
+                            out.push(PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position: self.cursor,
+                                modifiers,
+                                click_count: 1,
+                                first_mouse: false,
+                            }));
+                        } else if accumulated > TRACKPAD_TAP_THRESHOLD_PX {
+                            // Plain drag (cursor navigation, no
+                            // button held).
+                            self.phase = TrackpadGesturePhase::SingleFingerDrag;
+                        }
                     }
 
-                    // Advance the virtual cursor by the touch delta.
-                    self.cursor.x += delta.x;
-                    self.cursor.y += delta.y;
+                    // Advance virtual cursor. Acceleration only on
+                    // pure navigation; hold-to-drag stays 1:1 for
+                    // text-selection precision.
+                    let (scaled_dx, scaled_dy) = if self.phase
+                        == TrackpadGesturePhase::SingleFingerDrag
+                    {
+                        (
+                            accelerate_delta(f32::from(delta.x)),
+                            accelerate_delta(f32::from(delta.y)),
+                        )
+                    } else {
+                        (f32::from(delta.x), f32::from(delta.y))
+                    };
+                    self.cursor.x += px(scaled_dx);
+                    self.cursor.y += px(scaled_dy);
 
+                    let pressed = if self.phase == TrackpadGesturePhase::HoldDrag {
+                        Some(MouseButton::Left)
+                    } else {
+                        None
+                    };
                     out.push(PlatformInput::MouseMove(gpui::MouseMoveEvent {
                         position: self.cursor,
                         modifiers,
-                        pressed_button: None,
+                        pressed_button: pressed,
                     }));
 
                     crate::cursor::move_trackpad_cursor(
                         android_app,
+                        extra_window_id,
                         f32::from(self.cursor.x) * scale_factor,
                         f32::from(self.cursor.y) * scale_factor,
                     );
@@ -1031,6 +1127,21 @@ impl TrackpadTouchState {
                             click_count: 1,
                         }));
                     }
+                    TrackpadGesturePhase::HoldDrag => {
+                        // Hold-to-drag ended. MouseDown(Left) was
+                        // emitted on the hold transition;
+                        // MouseMoves with the button held fired
+                        // during the drag. Close the gesture with
+                        // MouseUp(count=1) at the final cursor
+                        // position so the editor completes its
+                        // selection / drag operation.
+                        out.push(PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: self.cursor,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
                     _ => {
                         // SingleFingerDrag / MultiFingerScroll /
                         // RightClickResolved: no MouseDown was ever
@@ -1041,7 +1152,21 @@ impl TrackpadTouchState {
             }
 
             TouchAction::Cancel => {
+                let phase = self.phase;
                 self.reset();
+                if matches!(phase, TrackpadGesturePhase::HoldDrag) {
+                    // OS canceled the gesture mid-hold-drag. Close
+                    // the pending click with MouseUp(count=0) so
+                    // the editor doesn't see a stuck Left button
+                    // and doesn't commit a selection on a canceled
+                    // gesture.
+                    out.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: self.cursor,
+                        modifiers,
+                        click_count: 0,
+                    }));
+                }
             }
         }
         out

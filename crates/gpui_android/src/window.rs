@@ -140,6 +140,13 @@ pub(crate) struct AndroidWindowState {
     /// to widen hit zones for touch without affecting mouse
     /// precision (e.g. the pane splitter MouseDown handler).
     pub(crate) last_input_was_touch: AtomicBool,
+    /// Mirror of [`AndroidWindow::extra_window_id`] — set by
+    /// `cx.open_window` after the wrapping `AndroidWindow` is
+    /// built. None for the primary surface, `Some(id)` for
+    /// `ExtraWindowActivity`-backed windows. Read by the touch
+    /// trackpad SM so cursor-sprite JNI calls route to the
+    /// correct Activity (`MainActivity` vs the right extra).
+    pub(crate) extra_window_id: Option<u64>,
     /// IME composition state we maintain ourselves rather than asking
     /// `handler.marked_text_range()` for it. The handler's marked-text
     /// support varies by input view (the editor implements it
@@ -485,6 +492,7 @@ impl AndroidWindow {
             trackpad_touch: crate::touch::TrackpadTouchState::default(),
             drag_active: AtomicBool::new(false),
             last_input_was_touch: AtomicBool::new(false),
+            extra_window_id: None,
             ime_composition_start: None,
             ime_composition_text: None,
         };

@@ -203,6 +203,20 @@ class ExtraWindowActivity : AppCompatActivity() {
         } else {
             window.decorView.releasePointerCapture()
         }
+        // Hide / re-show the trackpad cursor sprite based on
+        // foreground state. Each window owns its own SurfaceControl
+        // cursor overlay; without this gate, multiple visible
+        // windows render their cursor simultaneously (the "ghost
+        // sprite behind the foreground window" symptom).
+        if (::surfaceView.isInitialized && trackpadModeActive) {
+            if (hasFocus) {
+                ensureCursorOverlay()
+                cursorOverlay?.move(cursorX, cursorY)
+                cursorOverlay?.setVisible(true)
+            } else {
+                cursorOverlay?.setVisible(false)
+            }
+        }
     }
 
     private fun hasIndirectPointer(): Boolean {
@@ -227,8 +241,92 @@ class ExtraWindowActivity : AppCompatActivity() {
             ensureCursorOverlay()
             cursorOverlay?.move(cursorX, cursorY)
             cursorOverlay?.setVisible(true)
-        } else {
+        } else if (!trackpadModeActive) {
+            // Only hide if touch-trackpad mode isn't also keeping the
+            // sprite on — same OR-of-signals as MainActivity.
             cursorOverlay?.setVisible(false)
+        }
+    }
+
+    /// True while the user is in touch-trackpad mode and clicked
+    /// into this extra window. Pushed from Rust via JNI on every
+    /// `TRACKPAD_MODE_ENABLED` flip (and on this Activity's
+    /// creation if mode was already on).
+    private var trackpadModeActive: Boolean = false
+
+    /// Called from Rust via JNI. Shows / hides this window's
+    /// SurfaceControl cursor overlay for trackpad mode, mirroring
+    /// the same method on `MainActivity` so the user gets a
+    /// visible cursor on whichever window they're interacting with.
+    @Suppress("unused")
+    fun setTrackpadModeActive(active: Boolean) {
+        runOnUiThread {
+            Log.i(TAG, "setTrackpadModeActive($active) windowId=$extraWindowId")
+            trackpadModeActive = active
+            // `surfaceView` is a `lateinit var` set during onCreate
+            // (after JNI-creation completes). Rust pushes the
+            // trackpad-mode state right after
+            // `nativeOnExtraActivityCreated` fires — which can race
+            // ahead of surfaceView init. Guard against that: store
+            // the desired state and apply once the surface is
+            // ready (via [applyDeferredTrackpadCursor], called from
+            // surfaceCreated).
+            if (!::surfaceView.isInitialized) {
+                Log.i(TAG, "setTrackpadModeActive: surfaceView not yet init, deferred")
+                return@runOnUiThread
+            }
+            if (active) {
+                ensureCursorOverlay()
+                if (cursorOverlay != null) {
+                    val (w, h) = visibleBounds()
+                    if (cursorX == 0f && cursorY == 0f) {
+                        cursorX = w / 2f
+                        cursorY = h / 2f
+                    }
+                    cursorOverlay?.move(cursorX, cursorY)
+                    cursorOverlay?.setVisible(true)
+                }
+            } else if (!window.decorView.hasPointerCapture()) {
+                cursorOverlay?.setVisible(false)
+            }
+        }
+    }
+
+    /// Called from this Activity's `SurfaceHolder.Callback` once
+    /// `surfaceView` is fully initialized. If trackpad mode was
+    /// already active when we registered (typical path: user
+    /// opens settings while in trackpad mode), the cursor sprite
+    /// build was deferred — apply it now.
+    private fun applyDeferredTrackpadCursor() {
+        if (!trackpadModeActive) return
+        if (!::surfaceView.isInitialized) return
+        if (!hasWindowFocus()) return
+        ensureCursorOverlay()
+        if (cursorOverlay != null) {
+            val (w, h) = visibleBounds()
+            if (cursorX == 0f && cursorY == 0f) {
+                cursorX = w / 2f
+                cursorY = h / 2f
+            }
+            cursorOverlay?.move(cursorX, cursorY)
+            cursorOverlay?.setVisible(true)
+        }
+    }
+
+    // (focus-gated cursor visibility is folded into the existing
+    // `onWindowFocusChanged` override above)
+
+    /// Position the cursor sprite at (x, y) physical pixels —
+    /// pushed by Rust's touch trackpad SM after each single-finger
+    /// drag delta.
+    @Suppress("unused")
+    fun setTrackpadCursorPosition(x: Float, y: Float) {
+        runOnUiThread {
+            if (!::surfaceView.isInitialized) return@runOnUiThread
+            val (w, h) = visibleBounds()
+            cursorX = x.coerceIn(0f, w - 1f)
+            cursorY = y.coerceIn(0f, h - 1f)
+            cursorOverlay?.move(cursorX, cursorY)
         }
     }
 
@@ -367,6 +465,12 @@ class ExtraWindowActivity : AppCompatActivity() {
         override fun surfaceCreated(holder: SurfaceHolder) {
             Log.i(TAG, "surfaceCreated windowId=$id")
             NativeBridge.nativeOnExtraSurfaceCreated(id, holder.surface)
+            // If trackpad mode was already active when this window
+            // was created (user opened a settings/picker window
+            // while already in trackpad mode), Rust pushed the
+            // active state before `surfaceView` finished init and
+            // we deferred the cursor build. Apply it now.
+            applyDeferredTrackpadCursor()
         }
 
         override fun surfaceChanged(

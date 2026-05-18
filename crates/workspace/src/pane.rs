@@ -4290,12 +4290,16 @@ fn default_render_tab_bar_buttons(
     let right_children = {
         let android_input = crate::AndroidInputSettings::get_global(cx);
         let on_screen_keyboard_enabled = android_input.on_screen_keyboard;
-        let trackpad_mode = android_input.trackpad_mode;
-        // Mirror both settings to the gpui_android side via the
-        // Window passthrough so the platform / touch SM see the
-        // current values on the next tick. Cheap atomic stores.
+        // Master / runtime split: `trackpad_mode` is the feature
+        // gate (icon visible at all), `trackpad_mode_active` is
+        // whether the user has currently flipped the mode on via
+        // the icon. The runtime atomic must AND both — when the
+        // master is off, the module is fully inert regardless of
+        // any leftover active=true value the user persisted.
+        let trackpad_master = android_input.trackpad_mode;
+        let trackpad_active = trackpad_master && android_input.trackpad_mode_active;
         window.set_on_screen_keyboard_enabled(on_screen_keyboard_enabled);
-        window.set_trackpad_mode_enabled(trackpad_mode);
+        window.set_trackpad_mode_enabled(trackpad_active);
 
         let right_children = if on_screen_keyboard_enabled {
             let keyboard_visible = window.soft_keyboard_visible();
@@ -4322,30 +4326,33 @@ fn default_render_tab_bar_buttons(
             right_children
         };
 
-        // Trackpad-mode toggle — sibling of the keyboard button.
-        // Same convention: `toggle_state` lights up the icon when
-        // the mode is on. Tap → flip the setting (and the atomic).
-        // We mutate the user-level setting so the change persists
-        // across launches; the pane render picks up the new value
-        // next frame and the touch dispatcher reroutes immediately.
-        let trackpad_visible = trackpad_mode;
-        right_children.child(
-            IconButton::new("toggle_trackpad_mode", IconName::ArrowUpRight)
-                .icon_size(IconSize::Small)
-                .toggle_state(trackpad_visible)
-                .on_click(cx.listener(|_pane, _, _window, cx| {
-                    settings::update_settings_file(<dyn fs::Fs>::global(cx), cx, |content, _| {
-                        let android_input = content.android_input.get_or_insert_default();
-                        let current = android_input.trackpad_mode.unwrap_or(false);
-                        android_input.trackpad_mode = Some(!current);
-                    });
-                }))
-                .tooltip(Tooltip::text(if trackpad_visible {
-                    "Disable Trackpad Mode"
-                } else {
-                    "Enable Trackpad Mode (virtual mouse)"
-                })),
-        )
+        // Trackpad-mode toggle — only rendered when the master
+        // `trackpad_mode` setting is on. Tap flips
+        // `trackpad_mode_active` (the runtime state), which the
+        // next pane render will pick up and push to the gpui_android
+        // atomic. When the user disables the master in settings the
+        // icon disappears entirely.
+        if trackpad_master {
+            right_children.child(
+                IconButton::new("toggle_trackpad_mode", IconName::ArrowUpRight)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(trackpad_active)
+                    .on_click(cx.listener(|_pane, _, _window, cx| {
+                        settings::update_settings_file(<dyn fs::Fs>::global(cx), cx, |content, _| {
+                            let android_input = content.android_input.get_or_insert_default();
+                            let current = android_input.trackpad_mode_active.unwrap_or(false);
+                            android_input.trackpad_mode_active = Some(!current);
+                        });
+                    }))
+                    .tooltip(Tooltip::text(if trackpad_active {
+                        "Disable Trackpad Mode"
+                    } else {
+                        "Enable Trackpad Mode (virtual mouse)"
+                    })),
+            )
+        } else {
+            right_children
+        }
     };
 
     let right_children = right_children.into_any_element().into();

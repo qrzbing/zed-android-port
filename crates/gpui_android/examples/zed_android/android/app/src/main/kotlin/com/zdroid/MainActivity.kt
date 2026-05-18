@@ -749,6 +749,20 @@ class MainActivity : GameActivity() {
         } else {
             window.decorView.releasePointerCapture()
         }
+        // Hide / re-show the trackpad cursor sprite based on
+        // foreground state. Multiple `ExtraWindowActivity`
+        // instances + this main activity each own their own
+        // SurfaceControl cursor overlay; without this gate, all
+        // visible windows render their cursor simultaneously and
+        // the user sees ghost sprites behind the foreground one.
+        if (trackpadModeActive) {
+            if (hasFocus) {
+                cursorOverlay?.move(cursorX, cursorY)
+                cursorOverlay?.setVisible(true)
+            } else {
+                cursorOverlay?.setVisible(false)
+            }
+        }
     }
 
     private fun hasIndirectPointer(): Boolean {

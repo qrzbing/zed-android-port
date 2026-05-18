@@ -418,6 +418,14 @@ impl AndroidPlatform {
         let mut window =
             AndroidWindow::new(handle, options, gpu_context, appearance, self.android_app.clone());
         window.extra_window_id = Some(window_id);
+        // Mirror to the state so the touch / trackpad dispatchers
+        // (which receive `&mut AndroidWindowState`, not the wrapping
+        // `AndroidWindow`) know which Activity owns this window.
+        window
+            .ptr()
+            .state
+            .borrow_mut()
+            .extra_window_id = Some(window_id);
         if let Err(err) = window.ptr().attach_surface(native_window, scale_factor) {
             crate::multi_window::unmark_window_registered(window_id);
             return Err(err);
@@ -841,10 +849,15 @@ impl AndroidPlatform {
     /// input handler is None, e.g. a terminal pane without active
     /// text-input), so gating this on `currently_visible` like
     /// `tick_ime_target_and_selection` would miss those cases.
-    /// Detect `TRACKPAD_MODE_ENABLED` flips and tell Kotlin to show
-    /// or hide the SurfaceControl cursor sprite. The sprite's
-    /// position is updated separately from the touch SM whenever
-    /// the user drags; this only handles the visibility edge.
+    /// Detect `TRACKPAD_MODE_ENABLED` flips and tell every active
+    /// window (primary + each registered extra) to show / hide its
+    /// SurfaceControl cursor sprite. Each Activity owns its own
+    /// cursor overlay bound to its own SurfaceView, so the
+    /// broadcast has to fan out — without this, the user would
+    /// have a visible cursor only on the window where trackpad
+    /// mode was toggled, and any extra window (settings, picker,
+    /// detached editor) would look broken when they navigated to
+    /// it.
     fn tick_trackpad_mode_active(&self) {
         let current = crate::ime::trackpad_mode_enabled();
         let last = self.common.borrow().last_trackpad_mode_enabled;
@@ -852,7 +865,17 @@ impl AndroidPlatform {
             return;
         }
         self.common.borrow_mut().last_trackpad_mode_enabled = current;
-        crate::cursor::set_trackpad_mode_active(&self.android_app, current);
+        crate::cursor::set_trackpad_mode_active(&self.android_app, None, current);
+        let extra_ids: Vec<u64> = self
+            .common
+            .borrow()
+            .extra_windows
+            .keys()
+            .copied()
+            .collect();
+        for id in extra_ids {
+            crate::cursor::set_trackpad_mode_active(&self.android_app, Some(id), current);
+        }
     }
 
     fn tick_soft_keyboard_visibility(&self) {
