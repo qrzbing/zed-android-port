@@ -815,17 +815,24 @@ impl AndroidPlatform {
         if should_notify {
             crate::ime::notify_text_state(window_ptr);
         }
+    }
 
-        // If the OS-side IME visibility flipped since last tick,
-        // force a window redraw so the pane keyboard button's
-        // toggle_state picks up the new value. Without this the
-        // button stays stale until some other event triggers a
-        // repaint — user-visible as "tap button, nothing happens,
-        // tap again, NOW it lights up but in the wrong state".
-        let current_keyboard_visible = crate::ime::soft_keyboard_visible();
-        let last_keyboard_visible = self.common.borrow().last_soft_keyboard_visible;
-        if current_keyboard_visible != last_keyboard_visible {
-            self.common.borrow_mut().last_soft_keyboard_visible = current_keyboard_visible;
+    /// Detect changes to `SOFT_KEYBOARD_VISIBLE` and force a window
+    /// redraw so the pane keyboard button's `toggle_state` picks
+    /// up the new value on the next paint. Runs every main-loop
+    /// tick INDEPENDENTLY of input-handler visibility — the button
+    /// is rendered on any focused pane (including those whose
+    /// input handler is None, e.g. a terminal pane without active
+    /// text-input), so gating this on `currently_visible` like
+    /// `tick_ime_target_and_selection` would miss those cases.
+    fn tick_soft_keyboard_visibility(&self) {
+        let current = crate::ime::soft_keyboard_visible();
+        let last = self.common.borrow().last_soft_keyboard_visible;
+        if current == last {
+            return;
+        }
+        self.common.borrow_mut().last_soft_keyboard_visible = current;
+        if let Some(window_ptr) = self.common.borrow().window.clone() {
             window_ptr
                 .state
                 .borrow_mut()
@@ -1031,6 +1038,7 @@ impl Platform for AndroidPlatform {
             // paint can't leak through because we're sampling between
             // ticks, not inside set/take callbacks.
             self.reconcile_ime_visibility();
+            self.tick_soft_keyboard_visibility();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have

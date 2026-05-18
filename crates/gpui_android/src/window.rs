@@ -708,6 +708,19 @@ impl PlatformWindow for AndroidWindow {
 
     fn toggle_soft_keyboard(&self) {
         let android_app = self.ptr.state.borrow().android_app.clone();
+        // Optimistically flip our local view of IME visibility
+        // BEFORE the JNI roundtrip. The actual hide/show on Kotlin
+        // side is async (runOnUiThread + IME animation), so Kotlin's
+        // post-toggle `setImeShown` call can land 100-500ms after
+        // the user tapped the button. Without the optimistic flip
+        // the pane button's `toggle_state` lags by that much — user
+        // perceives "first tap didn't work, second tap did" because
+        // by the time the visual catches up, they've already tapped
+        // again. Kotlin's WindowInsetsListener will correct if the
+        // OS-side toggle fails for any reason.
+        let new_visible = !crate::ime::soft_keyboard_visible();
+        crate::ime::SOFT_KEYBOARD_VISIBLE
+            .store(new_visible, std::sync::atomic::Ordering::Release);
         crate::ime::toggle_keyboard(&android_app);
     }
 

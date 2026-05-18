@@ -82,6 +82,23 @@ class MainActivity : GameActivity() {
     /// swipe" (mark manual-dismiss so auto-show stays suppressed).
     private var programmaticHidePending: Boolean = false
 
+    /// Set right before we initiate a programmatic show. Helps the
+    /// WindowInsetsListener distinguish the steady-state-0 inset
+    /// (no IME) from a steady-state-0 inset WHILE we're mid-show
+    /// (animation hasn't started or just started). Without this the
+    /// listener fires "user dismissed" between our show call and
+    /// the first positive inset, resetting our state. Cleared once
+    /// the inset goes positive (confirmed show).
+    private var programmaticShowPending: Boolean = false
+
+    /// Last ime-bottom inset value observed by the listener.
+    /// Listener fires on every inset change; we only treat the
+    /// transition `positive → 0` as a real hide event (which can
+    /// distinguish user-dismiss vs programmatic). A steady-state 0
+    /// reading before/during a show animation must not be confused
+    /// with a hide.
+    private var lastImeInsetBottom: Int = 0
+
     /// Setter that wraps the `imeShown` mutation and ALSO pushes
     /// the value into Rust's `SOFT_KEYBOARD_VISIBLE` mirror. Every
     /// site that flips `imeShown` should go through here so the
@@ -118,14 +135,18 @@ class MainActivity : GameActivity() {
                 "showIme called imeShown=$imeShown hostFocused=${host.isFocused}"
             )
             if (imeShown) return@runOnUiThread
-            if (!host.isFocused) {
-                val gotFocus = host.requestFocus()
-                Log.i("zdroid_ime", "showIme: requestFocus -> $gotFocus")
-            }
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
-                as android.view.inputmethod.InputMethodManager
-            val shown = imm.showSoftInput(host, 0)
-            Log.i("zdroid_ime", "showIme: showSoftInput -> $shown")
+            if (!host.isFocused) host.requestFocus()
+            // Use WindowInsetsControllerCompat for the show path too
+            // (matches hide). `imm.showSoftInput` requires focused
+            // text-input AND has a documented "first call silently
+            // fails" race when window state is mid-transition — the
+            // observed symptom where toggleIme:showing was followed
+            // by WindowInsets immediately reporting IME hidden because
+            // imm.show didn't actually take effect. InsetsController
+            // routes through the OS-level inset animation directly.
+            programmaticShowPending = true
+            androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+                .show(androidx.core.view.WindowInsetsCompat.Type.ime())
             setImeShown(true)
         }
     }
@@ -137,12 +158,17 @@ class MainActivity : GameActivity() {
         runOnUiThread {
             Log.i("zdroid_ime", "hideIme called imeShown=$imeShown")
             if (!imeShown) return@runOnUiThread
-            val host = imeHostView ?: return@runOnUiThread
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
-                as android.view.inputmethod.InputMethodManager
             programmaticHidePending = true
-            val hidden = imm.hideSoftInputFromWindow(host.windowToken, 0)
-            Log.i("zdroid_ime", "hideIme: hideSoftInputFromWindow -> $hidden")
+            // Use WindowInsetsControllerCompat over
+            // `imm.hideSoftInputFromWindow` — the Android docs flag
+            // the latter as racy when focus / window-token state is
+            // mid-transition (the documented "first call silently
+            // fails, second call works" symptom). InsetsController
+            // bypasses that race by going through the OS-level inset
+            // animation path directly. AndroidX's compat shim covers
+            // API 21+ (native path on API 30+).
+            androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+                .hide(androidx.core.view.WindowInsetsCompat.Type.ime())
             setImeShown(false)
         }
     }
@@ -180,7 +206,11 @@ class MainActivity : GameActivity() {
             if (imeShown) {
                 Log.i("zdroid_ime", "toggleIme: hiding (manual dismiss)")
                 programmaticHidePending = true
-                imm.hideSoftInputFromWindow(host.windowToken, 0)
+                // Modern hide path — see hideIme rationale. Sidesteps
+                // the `hideSoftInputFromWindow` first-call race that
+                // produced the two-taps-to-dismiss regression.
+                androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+                    .hide(androidx.core.view.WindowInsetsCompat.Type.ime())
                 setImeShown(false)
                 setImeManuallyDismissed(true)
             } else {
@@ -360,8 +390,16 @@ class MainActivity : GameActivity() {
             val imeBottom = insets.getInsets(
                 androidx.core.view.WindowInsetsCompat.Type.ime()
             ).bottom
-            val imeNowVisible = imeBottom > 0
-            if (!imeNowVisible && imeShown) {
+            val wasVisible = lastImeInsetBottom > 0
+            val nowVisible = imeBottom > 0
+
+            if (!wasVisible && nowVisible) {
+                // 0 → positive: IME just opened. Confirms a show.
+                programmaticShowPending = false
+                if (!imeShown) setImeShown(true)
+                Log.i("zdroid_ime", "WindowInsets: IME shown (inset bottom=$imeBottom)")
+            } else if (wasVisible && !nowVisible) {
+                // positive → 0: IME just closed. Distinguish source.
                 if (programmaticHidePending) {
                     programmaticHidePending = false
                     Log.i(
@@ -377,6 +415,13 @@ class MainActivity : GameActivity() {
                 }
                 setImeShown(false)
             }
+            // Steady-state (no transition, e.g. inset stays 0 during
+            // a show that hasn't animated yet, or stays positive
+            // during typing) — do nothing. The previous bug was firing
+            // "user dismissed" on the steady-state-0 reading right
+            // after our show call, before the animation had started.
+
+            lastImeInsetBottom = imeBottom
             insets
         }
 
