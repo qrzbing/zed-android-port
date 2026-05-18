@@ -225,11 +225,13 @@ pub(crate) struct AndroidCommon {
     /// Avoids burning a JNI call every tick.
     pub(crate) last_trackpad_mode_enabled: bool,
     /// Mirrors the last-pushed value of `EXTRAS_ROW_ENABLED` to
-    /// Kotlin. Pushed via `Activity.setProgrammingExtrasRowEnabled`
-    /// on transitions so each Activity inflates / removes its
-    /// ExtraKeysView; without the edge-tracking we'd issue a JNI
-    /// call every tick.
-    pub(crate) last_extras_row_enabled: bool,
+    /// Kotlin. `None` until the first push; the first tick after
+    /// startup always pushes the current value, then subsequent
+    /// ticks edge-detect. Plain-`bool` initialized to `!current`
+    /// missed the sync when the persisted setting in settings.json
+    /// matched the runtime atomic default (both `true`), so Kotlin
+    /// never learned the user's value until they toggled it.
+    pub(crate) last_extras_row_enabled: Option<bool>,
     pub(crate) running: bool,
 }
 
@@ -270,10 +272,7 @@ impl AndroidCommon {
             ime_event_rx: Some(crate::ime::init_event_channel()),
             last_soft_keyboard_visible: false,
             last_trackpad_mode_enabled: false,
-            // Init mismatched so the first tick force-pushes the
-            // actual value to Kotlin even if the setting agrees with
-            // the runtime default.
-            last_extras_row_enabled: !crate::programming_extras_row_enabled(),
+            last_extras_row_enabled: None,
             running: true,
         }
     }
@@ -906,10 +905,10 @@ impl AndroidPlatform {
     fn tick_extras_row_enabled(&self) {
         let current = crate::programming_extras_row_enabled();
         let last = self.common.borrow().last_extras_row_enabled;
-        if current == last {
+        if last == Some(current) {
             return;
         }
-        self.common.borrow_mut().last_extras_row_enabled = current;
+        self.common.borrow_mut().last_extras_row_enabled = Some(current);
         if let Err(err) = call_activity_set_extras_row(&self.android_app, None, current) {
             log::warn!("set_extras_row_enabled(primary): {err:#}");
         }
