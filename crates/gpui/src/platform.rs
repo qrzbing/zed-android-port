@@ -688,6 +688,15 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         false
     }
 
+    /// Mirror the `android_input.on_screen_keyboard` setting into
+    /// the platform layer. When false, the Android platform's
+    /// `reconcile_ime_visibility` skips the auto-show on text-input
+    /// focus and the pane keyboard button is hidden — the user has
+    /// opted out (presumably because they're on a hardware
+    /// keyboard). The pane render calls this every frame; it's a
+    /// cheap atomic store. No-op on other platforms.
+    fn set_on_screen_keyboard_enabled(&self, _enabled: bool) {}
+
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;

@@ -31,6 +31,17 @@ pub(crate) fn soft_keyboard_visible() -> bool {
     SOFT_KEYBOARD_VISIBLE.load(Ordering::Acquire)
 }
 
+/// Mirrors the `android_input.on_screen_keyboard` user setting.
+/// Written by pane render via `Window::set_on_screen_keyboard_enabled`
+/// each frame. Read by `reconcile_ime_visibility` to gate the
+/// auto-show on text-input focus. Default true so the IME works
+/// out of the box for users who haven't opened settings.
+pub(crate) static ON_SCREEN_KEYBOARD_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn on_screen_keyboard_enabled() -> bool {
+    ON_SCREEN_KEYBOARD_ENABLED.load(Ordering::Acquire)
+}
+
 use anyhow::Context as _;
 use android_activity::AndroidApp;
 use futures::channel::mpsc;

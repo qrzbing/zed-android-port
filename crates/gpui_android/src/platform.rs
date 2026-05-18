@@ -681,10 +681,20 @@ impl AndroidPlatform {
         if visibility_changed {
             self.common.borrow_mut().ime_currently_visible = currently_visible;
             if currently_visible {
-                crate::ime::show_keyboard(&app);
-                // Seed the Kotlin-side mirror with the editor's
-                // current text + selection BEFORE the IME's first
-                // `getTextBeforeCursor` query lands.
+                // `android_input.on_screen_keyboard` user setting:
+                // when false, the user opted out of the soft IME
+                // (presumably uses a hardware keyboard). Skip the
+                // auto-show on text-input focus but keep the
+                // mirror seeded so if they later flip the setting
+                // on and tap the keyboard button, the IME has
+                // current state.
+                if crate::ime::on_screen_keyboard_enabled() {
+                    crate::ime::show_keyboard(&app);
+                } else {
+                    log::info!(
+                        "ime::reconcile auto-show suppressed by android_input.on_screen_keyboard=false"
+                    );
+                }
                 crate::ime::notify_text_state(&window_ptr);
             } else {
                 // IME going hidden — clear cached selection so the

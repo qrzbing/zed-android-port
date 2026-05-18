@@ -4280,40 +4280,44 @@ fn default_render_tab_bar_buttons(
         });
 
     // Android-only: keyboard toggle next to the pane controls.
-    // Soft IME is the primary input device on most Android tablets,
-    // but our auto-show suppresses itself after a user-initiated
-    // dismiss (Back press / swipe-down) so the keyboard doesn't keep
-    // popping back up while the user is scrolling through text. The
-    // button is the manual re-show path. No-op on other platforms;
-    // gated by cfg so the desktop tab bar stays uncluttered.
-    //
-    // `toggle_state` is bound to the actual OS-side IME visibility
-    // (Kotlin's `imeShown` mirrored into the Rust-side
-    // `SOFT_KEYBOARD_VISIBLE` atomic), so the button lights up while
-    // the keyboard is on screen and dims back when it's dismissed —
-    // matches the lit-up convention scrollbars / Maximize already use.
+    // Hidden when `android_input.on_screen_keyboard` is false (user
+    // is on a hardware keyboard and doesn't need the soft IME). The
+    // pane render reads the setting each frame so toggling it in
+    // settings.json takes effect without an app restart, and also
+    // writes the value into a global atomic that the platform
+    // reconcile loop consults to gate auto-show on text-input focus.
     #[cfg(target_os = "android")]
     let right_children = {
-        let keyboard_visible = window.soft_keyboard_visible();
-        right_children.child(
-            IconButton::new("toggle_soft_keyboard", IconName::Keyboard)
-                .icon_size(IconSize::Small)
-                .toggle_state(keyboard_visible)
-                .on_click(|_, window, _| {
-                    window.toggle_soft_keyboard();
-                })
-                .tooltip(move |_window, cx| {
-                    Tooltip::for_action(
-                        if keyboard_visible {
-                            "Hide Keyboard"
-                        } else {
-                            "Show Keyboard"
-                        },
-                        &crate::ToggleSoftKeyboard,
-                        cx,
-                    )
-                }),
-        )
+        let on_screen_keyboard_enabled =
+            crate::AndroidInputSettings::get_global(cx).on_screen_keyboard;
+        // Mirror to the gpui_android side via the Window passthrough;
+        // the platform's reconcile_ime_visibility reads this to
+        // decide whether to fire `show_keyboard` on focus edges.
+        window.set_on_screen_keyboard_enabled(on_screen_keyboard_enabled);
+        if on_screen_keyboard_enabled {
+            let keyboard_visible = window.soft_keyboard_visible();
+            right_children.child(
+                IconButton::new("toggle_soft_keyboard", IconName::Keyboard)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(keyboard_visible)
+                    .on_click(|_, window, _| {
+                        window.toggle_soft_keyboard();
+                    })
+                    .tooltip(move |_window, cx| {
+                        Tooltip::for_action(
+                            if keyboard_visible {
+                                "Hide Keyboard"
+                            } else {
+                                "Show Keyboard"
+                            },
+                            &crate::ToggleSoftKeyboard,
+                            cx,
+                        )
+                    }),
+            )
+        } else {
+            right_children
+        }
     };
 
     let right_children = right_children.into_any_element().into();

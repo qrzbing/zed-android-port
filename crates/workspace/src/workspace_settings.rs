@@ -72,6 +72,11 @@ pub struct TabBarSettings {
     pub show_pinned_tabs_in_separate_row: bool,
 }
 
+#[derive(Deserialize, RegisterSetting)]
+pub struct AndroidInputSettings {
+    pub on_screen_keyboard: bool,
+}
+
 impl Settings for WorkspaceSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         let workspace = &content.workspace;
@@ -148,6 +153,15 @@ impl Settings for TabBarSettings {
             show_nav_history_buttons: tab_bar.show_nav_history_buttons.unwrap(),
             show_tab_bar_buttons: tab_bar.show_tab_bar_buttons.unwrap(),
             show_pinned_tabs_in_separate_row: tab_bar.show_pinned_tabs_in_separate_row.unwrap(),
+        }
+    }
+}
+
+impl Settings for AndroidInputSettings {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        let android_input = content.android_input.clone().unwrap_or_default();
+        AndroidInputSettings {
+            on_screen_keyboard: android_input.on_screen_keyboard.unwrap_or(true),
         }
     }
 }

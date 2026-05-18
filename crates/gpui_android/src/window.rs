@@ -728,6 +728,11 @@ impl PlatformWindow for AndroidWindow {
         crate::ime::soft_keyboard_visible()
     }
 
+    fn set_on_screen_keyboard_enabled(&self, enabled: bool) {
+        crate::ime::ON_SCREEN_KEYBOARD_ENABLED
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
     fn draw(&self, scene: &Scene) {
         let mut state = self.ptr.state.borrow_mut();
         let raw_window = state.raw_window;

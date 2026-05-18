@@ -3022,6 +3022,15 @@ impl Window {
         self.platform_window.soft_keyboard_visible()
     }
 
+    /// Push the user's `android_input.on_screen_keyboard` setting
+    /// down to the platform layer. When false, auto-show is
+    /// suppressed and the pane keyboard button stays hidden. The
+    /// pane render calls this every frame so a settings.json edit
+    /// takes effect on the next paint without restart.
+    pub fn set_on_screen_keyboard_enabled(&self, enabled: bool) {
+        self.platform_window.set_on_screen_keyboard_enabled(enabled);
+    }
+
     /// Updates the cursor style for the entire window at the platform level. A cursor
     /// style using this method will have precedence over any cursor style set using
     /// `set_cursor_style`. This method should only be called during the paint

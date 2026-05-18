@@ -139,6 +139,10 @@ pub struct SettingsContent {
 
     pub tabs: Option<ItemSettingsContent>,
     pub tab_bar: Option<TabBarSettingsContent>,
+    /// Android-only input behavior toggles. Ignored on other
+    /// platforms — the settings UI gates the section on
+    /// `cfg(target_os = "android")`.
+    pub android_input: Option<AndroidInputSettingsContent>,
     pub status_bar: Option<StatusBarSettingsContent>,
 
     pub preview_tabs: Option<PreviewTabsSettingsContent>,

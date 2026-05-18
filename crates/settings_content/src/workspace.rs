@@ -460,6 +460,20 @@ pub struct TabBarSettingsContent {
     pub show_pinned_tabs_in_separate_row: Option<bool>,
 }
 
+/// Settings specific to the Android port — touch / on-screen
+/// keyboard behavior that doesn't apply on other platforms.
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+pub struct AndroidInputSettingsContent {
+    /// Whether to enable the on-screen IME (soft keyboard) and the
+    /// pane keyboard toggle button. Disable when relying on a
+    /// hardware keyboard — the IME stops auto-showing on text-input
+    /// focus and the pane button is hidden.
+    ///
+    /// Default: true
+    pub on_screen_keyboard: Option<bool>,
+}
+
 #[with_fallible_options]
 #[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
 pub struct StatusBarSettingsContent {

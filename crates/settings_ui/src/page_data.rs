@@ -82,6 +82,9 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
     #[cfg(target_os = "android")]
     pages.push(android_runtime_page());
 
+    #[cfg(target_os = "android")]
+    pages.push(android_input_page());
+
     use feature_flags::FeatureFlagAppExt as _;
     if cx.is_staff() || cfg!(debug_assertions) {
         pages.push(developer_page());
@@ -138,6 +141,45 @@ fn android_runtime_page() -> SettingsPage {
                         },
                     );
                 }),
+                files: USER,
+            }),
+        ]),
+    }
+}
+
+/// Android-specific: touch / on-screen-keyboard preferences.
+/// Currently exposes one toggle but the page is structured so we
+/// can add more touch-control settings (trackpad sensitivity,
+/// long-press timings, etc.) without re-plumbing.
+#[cfg(target_os = "android")]
+fn android_input_page() -> SettingsPage {
+    SettingsPage {
+        title: "Android Input",
+        items: Box::new([
+            SettingsPageItem::SectionHeader("On-Screen Keyboard"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Enable On-Screen Keyboard",
+                description: "Show the soft IME on text-input focus and \
+                    expose the pane keyboard-toggle button. Disable when \
+                    using a hardware keyboard exclusively — the IME stops \
+                    auto-showing and the pane button is hidden.",
+                field: Box::new(SettingField {
+                    json_path: Some("android_input.on_screen_keyboard"),
+                    pick: |settings_content| {
+                        settings_content
+                            .android_input
+                            .as_ref()?
+                            .on_screen_keyboard
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .android_input
+                            .get_or_insert_default()
+                            .on_screen_keyboard = value;
+                    },
+                }),
+                metadata: None,
                 files: USER,
             }),
         ]),
