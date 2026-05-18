@@ -377,6 +377,7 @@ fn resize_panel_entry(
     entry: &mut PanelEntry,
     size: Option<Pixels>,
     flex: Option<f32>,
+    during_drag: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> (&'static str, PanelSizeState) {
@@ -386,8 +387,19 @@ fn resize_panel_entry(
         // override `snap_size` to round to a multiple of their row
         // height so the dock can't be left at a fractional-row size,
         // which avoids the visible padding gap during interactive drag.
+        //
+        // Skipped during the drag itself so the user feels pixel-smooth
+        // motion while moving the handle, and the snap is applied once
+        // on drag end (mouse-up finalize) so the dock settles to a
+        // row-multiple at rest. Without this two-phase pattern the
+        // dock height ticks by `line_height` per drag event, which
+        // reads as visible stutter.
         let clamped = size.max(RESIZE_HANDLE_SIZE);
-        entry.panel.snap_size(clamped, window, cx).round()
+        if during_drag {
+            clamped.round()
+        } else {
+            entry.panel.snap_size(clamped, window, cx).round()
+        }
     });
     let uses_flexible_width = panel_uses_flexible_width(position, entry.panel.as_ref(), window, cx);
     if uses_flexible_width {
@@ -974,6 +986,7 @@ impl Dock {
         &mut self,
         size: Option<Pixels>,
         flex: Option<f32>,
+        during_drag: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -981,7 +994,7 @@ impl Dock {
             && let Some(entry) = self.panel_entries.get_mut(index)
         {
             let (panel_key, size_state) =
-                resize_panel_entry(self.position, entry, size, flex, window, cx);
+                resize_panel_entry(self.position, entry, size, flex, during_drag, window, cx);
 
             let workspace = self.workspace.clone();
             cx.defer(move |cx| {
@@ -999,6 +1012,7 @@ impl Dock {
         &mut self,
         size: Option<Pixels>,
         flex: Option<f32>,
+        during_drag: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1022,6 +1036,7 @@ impl Dock {
                     entry,
                     size,
                     flex,
+                    during_drag,
                     window,
                     cx,
                 ));
@@ -1156,13 +1171,35 @@ impl Render for Dock {
                         cx.listener(|dock, e: &MouseUpEvent, window, cx| {
                             window.set_drag_active(false);
                             if e.click_count == 2 {
-                                dock.resize_active_panel(None, None, window, cx);
+                                dock.resize_active_panel(None, None, false, window, cx);
                                 dock.workspace
                                     .update(cx, |workspace, cx| {
                                         workspace.serialize_workspace(window, cx);
                                     })
                                     .ok();
                                 cx.stop_propagation();
+                            } else {
+                                // Drag-end finalize: re-apply the size
+                                // with the panel's snap policy so the
+                                // dock settles to its allowed grid
+                                // (row multiples for the terminal
+                                // panel). During the drag itself
+                                // `resize_panel_entry` skipped the
+                                // snap so the user felt pixel-smooth
+                                // motion; without this re-apply on
+                                // mouse-up the dock would stay at a
+                                // non-snapped size and the fractional-
+                                // row padding gap that motivated the
+                                // snap would be back.
+                                if let Some(size_state) = dock.active_panel_size() {
+                                    dock.resize_active_panel(
+                                        size_state.size,
+                                        size_state.flex,
+                                        false,
+                                        window,
+                                        cx,
+                                    );
+                                }
                             }
                         }),
                     )
