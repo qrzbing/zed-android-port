@@ -559,16 +559,24 @@ class MainActivity : GameActivity(), ImeHost {
     /// Desktop-classic auto-hide: cursor disappears on the first
     /// keystroke and reappears on any pointer motion. Tracked so we
     /// only toggle visibility on edges, not on every key.
-    private var cursorHiddenByKeyboard: Boolean = false
-    /// Mirror flag for direct-touch input. Desktop convention: when
-    /// the user shifts modality (finger on the touchscreen), the
-    /// hardware-pointer cursor sprite hides so it doesn't clutter
-    /// the touch surface. Reappears on the next pointer activity
-    /// (trackpad swipe / mouse move). NO-op while
-    /// `trackpadModeActive` is true, because in that mode the
-    /// touch IS the cursor input and hiding the sprite would
-    /// blind the user.
-    private var cursorHiddenByTouch: Boolean = false
+    // Cursor modality is the process-wide [InputModality] flag now,
+    // not a per-Activity field. Per-Activity tracking drifted across
+    // window transitions: opening a new ExtraWindowActivity via the
+    // trackpad would reset its local flag to "no pointer seen yet"
+    // and leave the cursor hidden until the user moved the trackpad
+    // a second time. The global flag means the freshly-opened
+    // window inherits the app's current modality immediately.
+
+    /// Apply [InputModality] + window focus to the cursor sprite.
+    /// The only place that calls `cursorOverlay?.setVisible`. Each
+    /// Activity owns its own SurfaceControl overlay; without the
+    /// `hasWindowFocus()` gate, the unfocused Activity would also
+    /// draw its cursor and the user would see two sprites at once
+    /// (one in MainActivity behind the settings window, one in the
+    /// settings window itself).
+    private fun applyCursorVisibility() {
+        cursorOverlay?.setVisible(InputModality.isPointer() && hasWindowFocus())
+    }
 
     /// Called from Rust via JNI (`set_pointer_icon_inner` in
     /// `crates/gpui_android/src/cursor.rs`). Dispatches to the UI
@@ -609,13 +617,20 @@ class MainActivity : GameActivity(), ImeHost {
                         cursorY = h / 2f
                     }
                     cursorOverlay?.move(cursorX, cursorY)
-                    cursorOverlay?.setVisible(true)
+                    // Activating trackpad mode is the user explicitly
+                    // asking for the cursor, so mark pointer as the
+                    // current modality and let the central applier
+                    // show the sprite.
+                    InputModality.setPointer()
                 }
-            } else if (!window.decorView.hasPointerCapture()) {
-                // Only hide if hardware capture isn't also keeping the
-                // sprite on.
-                cursorOverlay?.setVisible(false)
+            } else {
+                // Deactivating trackpad mode flips modality back to
+                // touch (the touchscreen is no longer a cursor
+                // input). If hardware capture is also off, the cursor
+                // genuinely has no reason to be visible.
+                InputModality.setNonPointer()
             }
+            applyCursorVisibility()
         }
     }
 
@@ -642,25 +657,28 @@ class MainActivity : GameActivity(), ImeHost {
             // Release + rebuild the overlay on every capture-regain so
             // we anchor to the *current* SurfaceView's SurfaceControl.
             // The OS can tear down and recreate the SurfaceView's
-            // surface when another activity steals focus (SAF picker
-            // when the user clicks "Open Project" from onboarding,
+            // surface when another activity steals focus (SAF picker,
             // settings dialogs, etc.), and any SurfaceControl we
             // previously attached as a child of the old surface gets
-            // orphaned by SurfaceFlinger — `setVisible(true)` on the
-            // orphan does nothing and the cursor stays invisible
-            // until the app fully restarts. Rebuilding on regain is
+            // orphaned by SurfaceFlinger. Rebuilding on regain is
             // cheap (small bitmap upload + one SurfaceControl
             // transaction) and bulletproof.
             cursorOverlay?.release()
             cursorOverlay = null
             ensureCursorOverlay()
             cursorOverlay?.move(cursorX, cursorY)
-            cursorOverlay?.setVisible(true)
-        } else if (!trackpadModeActive) {
-            // Only hide if touch-trackpad mode isn't also keeping the
-            // sprite on. The two visibility signals OR.
-            cursorOverlay?.setVisible(false)
         }
+        // Visibility is NOT touched here. It's driven purely by
+        // `InputModality.isPointer()` (set by handleCapturedEvent,
+        // dispatchTouchEvent, dispatchKeyEvent, setTrackpadModeActive)
+        // and applied by `applyCursorVisibility`. Focus cycles (IME
+        // show/hide, dialog open/close) trigger this callback but
+        // shouldn't change what the user sees — if they were in
+        // touch mode the cursor stays hidden across the cycle. The
+        // call below re-applies the existing modality state to the
+        // freshly-built overlay so a rebuild ends up in the right
+        // visual state without needing per-rebuild flag bookkeeping.
+        applyCursorVisibility()
     }
 
     /// Build the SurfaceControl overlay on first capture-gain. API 29+
@@ -789,12 +807,11 @@ class MainActivity : GameActivity(), ImeHost {
     }
 
     private fun handleCapturedEvent(event: MotionEvent) {
-        // Any pointer activity reawakens the cursor if the keyboard
-        // or a direct-touch event hid it.
-        if (cursorHiddenByKeyboard || cursorHiddenByTouch) {
-            cursorOverlay?.setVisible(true)
-            cursorHiddenByKeyboard = false
-            cursorHiddenByTouch = false
+        // Any captured pointer activity makes pointer the current
+        // modality; the central applier ensures the sprite is shown.
+        if (!InputModality.isPointer()) {
+            InputModality.setPointer()
+            applyCursorVisibility()
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
             // Cursor follows the moving finger in two cases:
@@ -835,25 +852,27 @@ class MainActivity : GameActivity(), ImeHost {
     /// Reappears on the next pointer activity via
     /// `handleCapturedEvent`.
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
+        // Direct-touch input flips modality to touch; skipped while
+        // trackpad mode is on because in that mode touch IS the
+        // cursor input (modality stays pointer).
         if (event != null
             && !trackpadModeActive
-            && !cursorHiddenByTouch
-            && cursorOverlay != null
+            && InputModality.isPointer()
             && event.source and InputDevice.SOURCE_TOUCHSCREEN != 0
         ) {
-            cursorOverlay?.setVisible(false)
-            cursorHiddenByTouch = true
+            InputModality.setNonPointer()
+            applyCursorVisibility()
         }
         return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN
-            && !cursorHiddenByKeyboard
-            && cursorOverlay != null
-        ) {
-            cursorOverlay?.setVisible(false)
-            cursorHiddenByKeyboard = true
+        // Key input flips modality to keyboard; central applier
+        // hides the sprite. ACTION_DOWN only so auto-repeat doesn't
+        // re-apply on every UP/DOWN pair.
+        if (event.action == KeyEvent.ACTION_DOWN && InputModality.isPointer()) {
+            InputModality.setNonPointer()
+            applyCursorVisibility()
         }
         return super.dispatchKeyEvent(event)
     }
@@ -868,20 +887,16 @@ class MainActivity : GameActivity(), ImeHost {
         } else {
             window.decorView.releasePointerCapture()
         }
-        // Hide / re-show the trackpad cursor sprite based on
-        // foreground state. Multiple `ExtraWindowActivity`
-        // instances + this main activity each own their own
-        // SurfaceControl cursor overlay; without this gate, all
-        // visible windows render their cursor simultaneously and
-        // the user sees ghost sprites behind the foreground one.
-        if (trackpadModeActive) {
-            if (hasFocus) {
-                cursorOverlay?.move(cursorX, cursorY)
-                cursorOverlay?.setVisible(true)
-            } else {
-                cursorOverlay?.setVisible(false)
-            }
+        // Move the sprite to the current cursor position so the
+        // first visible-frame after a focus regain is correct, but
+        // visibility itself is determined by `InputModality.isPointer()`
+        // via the central applier. This prevents a focus cycle (IME
+        // show/hide, settings window opening) from blindly re-showing
+        // the cursor when the user was in touch mode.
+        if (hasFocus && trackpadModeActive) {
+            cursorOverlay?.move(cursorX, cursorY)
         }
+        applyCursorVisibility()
     }
 
     private fun hasIndirectPointer(): Boolean {

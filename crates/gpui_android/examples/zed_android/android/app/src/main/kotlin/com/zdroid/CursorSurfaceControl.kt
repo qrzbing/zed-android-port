@@ -83,6 +83,14 @@ internal class CursorSurfaceControl(
 
     private var currentStyle: Int = STYLE_ARROW
     private var visible: Boolean = false
+    /// Last position passed to [move]. Cached so [setStyle] can
+    /// re-apply position after a style swap: the new style's
+    /// hot-spot offset differs from the old one, and without
+    /// re-applying with the new offset the sprite stays at the
+    /// raw `x - oldHotX` location and visually jumps by
+    /// `newHotX - oldHotX` pixels on every hover transition.
+    private var lastX: Float = 0f
+    private var lastY: Float = 0f
 
     init {
         // Lift the cursor's z-order above the editor SurfaceView's own
@@ -110,16 +118,57 @@ internal class CursorSurfaceControl(
     /// event (~200 Hz on Samsung trackpad).
     fun move(x: Float, y: Float) {
         val sc = surfaceControl ?: return
+        lastX = x
+        lastY = y
         val (hotX, hotY) = hotSpots[currentStyle] ?: (0 to 0)
         transaction
             .setPosition(sc, x - hotX, y - hotY)
             .apply()
     }
 
+    /// Pending Arrow application, scheduled via [arrowHandler]. Held
+    /// so a non-Arrow style change can cancel an in-flight Arrow.
+    private var pendingArrow: Runnable? = null
+    private val arrowHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     fun setStyle(style: Int) {
+        // Cancel any pending Arrow transition first — whether this
+        // style is Arrow or not, a fresh decision arrives now.
+        pendingArrow?.let { arrowHandler.removeCallbacks(it) }
+        pendingArrow = null
+
         if (currentStyle == style) return
-        currentStyle = style
-        paintCurrentStyle()
+
+        if (style == STYLE_ARROW) {
+            // gpui's `reset_cursor_style` falls back to Arrow during
+            // the click event itself (its `is_hovered_ignoring_last_input`
+            // briefly returns false), then immediately restores the
+            // real hover style on the next paint. Without filtering,
+            // every click on a Hand-cursor button flashes Arrow-Hand
+            // 1002→1000→1002 inside ~10ms. Defer Arrow by 80ms; if a
+            // genuine non-Arrow style arrives during the delay we
+            // cancel and apply that instead, swallowing the spurious
+            // transient at no perceptible cost. A real Arrow (cursor
+            // over empty space) lands 80ms later — still smooth.
+            val runnable = Runnable {
+                currentStyle = STYLE_ARROW
+                paintCurrentStyle()
+                move(lastX, lastY)
+                pendingArrow = null
+            }
+            pendingArrow = runnable
+            arrowHandler.postDelayed(runnable, 80L)
+        } else {
+            currentStyle = style
+            paintCurrentStyle()
+            // Re-apply position with the new style's hot-spot offset so
+            // the cursor's pointing-tip stays anchored to (lastX, lastY)
+            // across the style change. Without this, hovering between
+            // an arrow region (hot-spot top-left) and an IBeam region
+            // (hot-spot centered) makes the sprite jump by ~half its
+            // size each transition.
+            move(lastX, lastY)
+        }
     }
 
     fun setVisible(visible: Boolean) {

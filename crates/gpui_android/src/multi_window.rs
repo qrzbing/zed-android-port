@@ -172,6 +172,17 @@ pub(crate) fn extra_activity_for(window_id: u64) -> Option<GlobalRef> {
     refs_table().as_ref().and_then(|m| m.get(&window_id)).cloned()
 }
 
+/// Snapshot every registered extra-window id so callers can fan a
+/// JNI operation out to all spawned `ExtraWindowActivity` instances
+/// without holding the global mutex across the inner JNI calls
+/// (which would deadlock if the callback re-entered the registry).
+pub(crate) fn extra_activity_ids() -> Vec<u64> {
+    refs_table()
+        .as_ref()
+        .map(|m| m.keys().copied().collect())
+        .unwrap_or_default()
+}
+
 fn registered_set()
 -> std::sync::MutexGuard<'static, Option<std::collections::HashSet<u64>>> {
     REGISTERED_WINDOWS.lock().unwrap()
@@ -598,18 +609,38 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeOnExtraActivityCreated
     // moment its surface is ready. Without this, opening an extra
     // window while trackpad mode is on leaves it without a cursor
     // until the user toggles trackpad mode off-and-on again.
-    if crate::ime::trackpad_mode_enabled() {
-        let mut env = env;
-        if let Err(err) = env.call_method(
+    let mut env = env;
+    if crate::ime::trackpad_mode_enabled()
+        && let Err(err) = env.call_method(
             global_ref.as_obj(),
             "setTrackpadModeActive",
             "(Z)V",
             &[true.into()],
-        ) {
-            log::warn!(
-                "multi_window: failed to push trackpad-mode state to new extra activity {window_id}: {err:#}"
-            );
-        }
+        )
+    {
+        log::warn!(
+            "multi_window: failed to push trackpad-mode state to new extra activity {window_id}: {err:#}"
+        );
+    }
+
+    // Also push the current cursor style. The `set_pointer_icon`
+    // cache short-circuits the per-event JNI fan-out when gpui's
+    // cursor style hasn't changed since the last push, so a
+    // newly-spawned activity could otherwise sit at its default
+    // arrow sprite while the rest of the app is on (say) IBeam
+    // because the cursor was over a text input when the window
+    // was opened.
+    if let Some(icon_type) = crate::cursor::last_pushed_icon_type()
+        && let Err(err) = env.call_method(
+            global_ref.as_obj(),
+            "setCapturedCursorStyle",
+            "(I)V",
+            &[icon_type.into()],
+        )
+    {
+        log::warn!(
+            "multi_window: failed to push cursor style to new extra activity {window_id}: {err:#}"
+        );
     }
 }
 

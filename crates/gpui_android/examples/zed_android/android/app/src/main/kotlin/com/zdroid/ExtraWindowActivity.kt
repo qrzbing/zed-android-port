@@ -109,8 +109,13 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     /// first pointer-capture acquire.
     private var cursorOverlay: CursorSurfaceControl? = null
 
-    private var cursorHiddenByKeyboard: Boolean = false
-    private var cursorHiddenByTouch: Boolean = false
+    // Cursor modality is the process-wide [InputModality] flag.
+    // See `MainActivity` for the longer note; settings/picker
+    // windows inherit the app-wide modality so they don't need a
+    // fresh pointer event after opening to show the cursor.
+    private fun applyCursorVisibility() {
+        cursorOverlay?.setVisible(InputModality.isPointer() && hasWindowFocus())
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -443,20 +448,14 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
         } else {
             window.decorView.releasePointerCapture()
         }
-        // Hide / re-show the trackpad cursor sprite based on
-        // foreground state. Each window owns its own SurfaceControl
-        // cursor overlay; without this gate, multiple visible
-        // windows render their cursor simultaneously (the "ghost
-        // sprite behind the foreground window" symptom).
-        if (::surfaceView.isInitialized && trackpadModeActive) {
-            if (hasFocus) {
-                ensureCursorOverlay()
-                cursorOverlay?.move(cursorX, cursorY)
-                cursorOverlay?.setVisible(true)
-            } else {
-                cursorOverlay?.setVisible(false)
-            }
+        // Maintain SurfaceControl lifecycle on focus change but let
+        // visibility derive from the input modality. See
+        // `MainActivity.onWindowFocusChanged` for the rationale.
+        if (::surfaceView.isInitialized && trackpadModeActive && hasFocus) {
+            ensureCursorOverlay()
+            cursorOverlay?.move(cursorX, cursorY)
         }
+        applyCursorVisibility()
     }
 
     private fun hasIndirectPointer(): Boolean {
@@ -480,12 +479,10 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
             cursorY = h / 2f
             ensureCursorOverlay()
             cursorOverlay?.move(cursorX, cursorY)
-            cursorOverlay?.setVisible(true)
-        } else if (!trackpadModeActive) {
-            // Only hide if touch-trackpad mode isn't also keeping the
-            // sprite on — same OR-of-signals as MainActivity.
-            cursorOverlay?.setVisible(false)
         }
+        // Visibility is driven by [InputModality.isPointer()], not by
+        // capture transitions. See `MainActivity.onPointerCaptureChanged`.
+        applyCursorVisibility()
     }
 
     /// True while the user is in touch-trackpad mode and clicked
@@ -524,11 +521,12 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
                         cursorY = h / 2f
                     }
                     cursorOverlay?.move(cursorX, cursorY)
-                    cursorOverlay?.setVisible(true)
+                    InputModality.setPointer()
                 }
-            } else if (!window.decorView.hasPointerCapture()) {
-                cursorOverlay?.setVisible(false)
+            } else {
+                InputModality.setNonPointer()
             }
+            applyCursorVisibility()
         }
     }
 
@@ -549,7 +547,8 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
                 cursorY = h / 2f
             }
             cursorOverlay?.move(cursorX, cursorY)
-            cursorOverlay?.setVisible(true)
+            InputModality.setPointer()
+            applyCursorVisibility()
         }
     }
 
@@ -599,10 +598,9 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     }
 
     private fun handleCapturedEvent(event: MotionEvent) {
-        if (cursorHiddenByKeyboard || cursorHiddenByTouch) {
-            cursorOverlay?.setVisible(true)
-            cursorHiddenByKeyboard = false
-            cursorHiddenByTouch = false
+        if (!InputModality.isPointer()) {
+            InputModality.setPointer()
+            applyCursorVisibility()
         }
         if (event.actionMasked == MotionEvent.ACTION_MOVE) {
             val isHoldDragMultiTouch = event.pointerCount >= 2 &&
@@ -688,23 +686,19 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
         if (event != null
             && !trackpadModeActive
-            && !cursorHiddenByTouch
-            && cursorOverlay != null
+            && InputModality.isPointer()
             && event.source and InputDevice.SOURCE_TOUCHSCREEN != 0
         ) {
-            cursorOverlay?.setVisible(false)
-            cursorHiddenByTouch = true
+            InputModality.setNonPointer()
+            applyCursorVisibility()
         }
         return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN
-            && !cursorHiddenByKeyboard
-            && cursorOverlay != null
-        ) {
-            cursorOverlay?.setVisible(false)
-            cursorHiddenByKeyboard = true
+        if (event.action == KeyEvent.ACTION_DOWN && InputModality.isPointer()) {
+            InputModality.setNonPointer()
+            applyCursorVisibility()
         }
         if (extraWindowId >= 0L) {
             NativeBridge.nativeOnExtraKeyEvent(

@@ -5,15 +5,32 @@
 //! lives in the JVM so this module hops through JNI to set it on the
 //! activity's decor view whenever gpui asks for a cursor change.
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use android_activity::AndroidApp;
 use anyhow::Context as _;
 use gpui::CursorStyle;
 use jni::{JavaVM, objects::JObject, sys::jint};
 
-thread_local! {
-    static LAST_STYLE: Cell<Option<CursorStyle>> = const { Cell::new(None) };
+/// Last-pushed Android `PointerIcon.TYPE_*` value. Process-wide
+/// atomic so the `nativeOnExtraActivityCreated` handler can read it
+/// and push the current style to a freshly-registered
+/// `ExtraWindowActivity` (otherwise the new activity's cursor
+/// sprite stays at its compile-time default `STYLE_ARROW` until
+/// gpui's hover detection triggers the next style change, which
+/// may not happen for a while if the cursor sits over a region
+/// whose style matches the cached value). `0` = unset (no JNI
+/// push has happened yet this process lifetime).
+static LAST_STYLE_ICON_TYPE: AtomicI32 = AtomicI32::new(0);
+
+/// Read the last-pushed cursor icon-type id. `nativeOnExtraActivityCreated`
+/// uses this to forward the current style to a newly-spawned
+/// activity. Returns `None` when no style has been pushed yet
+/// (initial app launch with cursor never having moved over
+/// anything style-changing).
+pub(crate) fn last_pushed_icon_type() -> Option<jint> {
+    let value = LAST_STYLE_ICON_TYPE.load(Ordering::Acquire);
+    if value == 0 { None } else { Some(value) }
 }
 
 /// Map a gpui `CursorStyle` to one of Android's `PointerIcon.TYPE_*`
@@ -52,15 +69,15 @@ fn pointer_icon_type(style: CursorStyle) -> jint {
 /// gpui's `reset_cursor_style` fires on every input event, so we cache the
 /// last style and skip the JNI round-trip when nothing changed.
 pub(crate) fn set_pointer_icon(android_app: &AndroidApp, style: CursorStyle) {
-    let unchanged = LAST_STYLE.with(|cell| cell.get() == Some(style));
-    if unchanged {
+    let icon_type = pointer_icon_type(style);
+    if LAST_STYLE_ICON_TYPE.load(Ordering::Acquire) == icon_type {
         return;
     }
     if let Err(err) = set_pointer_icon_inner(android_app, style) {
         log::warn!("set_pointer_icon({style:?}) failed: {err:#}");
         return;
     }
-    LAST_STYLE.with(|cell| cell.set(Some(style)));
+    LAST_STYLE_ICON_TYPE.store(icon_type, Ordering::Release);
 }
 
 fn set_pointer_icon_inner(
@@ -95,16 +112,34 @@ fn set_pointer_icon_inner(
     )?;
 
     // While the activity has pointer capture, the system PointerIcon
-    // we just set is hidden. Push the icon-type id to MainActivity so
-    // the SurfaceControl-based cursor overlay can render the matching
-    // sprite. The Kotlin method no-ops when the overlay isn't live
-    // (capture not active or API < 29), so this is safe unconditionally.
+    // we just set is hidden. Push the icon-type id to every live
+    // Activity so each one's SurfaceControl-based cursor overlay
+    // renders the matching sprite. Fanning out (instead of pushing
+    // only to MainActivity) means a focused ExtraWindowActivity
+    // also gets the IBeam / link / etc. style updates from gpui's
+    // `set_cursor_style` — without this, the settings/picker
+    // window's sprite stayed stuck at the default arrow because
+    // gpui calls set_cursor_style at the Platform layer (no per-
+    // window context) and we were only routing to the primary.
+    // Each Activity's Kotlin method no-ops when its overlay isn't
+    // live, so unfocused windows safely accept the push.
     let _ = env.call_method(
         &activity,
         "setCapturedCursorStyle",
         "(I)V",
         &[icon_type.into()],
     );
+    let extra_ids: Vec<u64> = crate::multi_window::extra_activity_ids();
+    for id in extra_ids {
+        if let Some(activity_ref) = crate::multi_window::extra_activity_for(id) {
+            let _ = env.call_method(
+                activity_ref.as_obj(),
+                "setCapturedCursorStyle",
+                "(I)V",
+                &[icon_type.into()],
+            );
+        }
+    }
     Ok(())
 }
 
