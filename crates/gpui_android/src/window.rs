@@ -706,6 +706,15 @@ impl PlatformWindow for AndroidWindow {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn toggle_soft_keyboard(&self) {
+        let android_app = self.ptr.state.borrow().android_app.clone();
+        crate::ime::toggle_keyboard(&android_app);
+    }
+
+    fn soft_keyboard_visible(&self) -> bool {
+        crate::ime::soft_keyboard_visible()
+    }
+
     fn draw(&self, scene: &Scene) {
         let mut state = self.ptr.state.borrow_mut();
         let raw_window = state.raw_window;

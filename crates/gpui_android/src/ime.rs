@@ -17,6 +17,19 @@
 //! `hideIme()`.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Mirror of Kotlin's `imeShown` flag pushed via the
+/// `nativeSetSoftKeyboardVisible` JNI entry point. Read by
+/// `PlatformWindow::soft_keyboard_visible` so the pane keyboard
+/// button can draw its lit-up `toggle_state`. Process-wide because
+/// the IME host is a single ImeHostView shared across all panes
+/// of the primary Activity.
+pub(crate) static SOFT_KEYBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn soft_keyboard_visible() -> bool {
+    SOFT_KEYBOARD_VISIBLE.load(Ordering::Acquire)
+}
 
 use anyhow::Context as _;
 use android_activity::AndroidApp;
@@ -531,6 +544,18 @@ pub(crate) fn hide_keyboard(android_app: &AndroidApp) {
     }
 }
 
+/// Toggle the soft keyboard. Called from the pane tab-bar
+/// keyboard-icon button (via `Window::toggle_soft_keyboard`).
+/// MainActivity inverts the current `imeShown` state — and, when
+/// showing, clears the user-dismissed flag so subsequent text-input
+/// focuses can auto-show again (see MainActivity.toggleIme).
+pub(crate) fn toggle_keyboard(android_app: &AndroidApp) {
+    log::info!("ime::toggle_keyboard (calling MainActivity.toggleIme)");
+    if let Err(err) = call_activity_void(android_app, "toggleIme") {
+        log::warn!("ime::toggle_keyboard failed: {err:#}");
+    }
+}
+
 fn call_activity_void(android_app: &AndroidApp, method: &str) -> anyhow::Result<()> {
     let vm_ptr = android_app.vm_as_ptr();
     let activity_ptr = android_app.activity_as_ptr();
@@ -624,4 +649,17 @@ pub extern "system" fn Java_com_zdroid_NativeBridge_nativeImePerformEditorAction
     action_id: i32,
 ) {
     dispatch_event(ImeEvent::EditorAction { action_id });
+}
+
+/// Kotlin pushes its `imeShown` state here whenever it changes
+/// (after showSoftInput / hideSoftInput / WindowInsetsListener edge).
+/// We mirror it into [`SOFT_KEYBOARD_VISIBLE`] so the pane button can
+/// reflect the actual OS visibility.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_zdroid_NativeBridge_nativeSetSoftKeyboardVisible<'local>(
+    _env: JNIEnv<'local>,
+    _bridge: JObject<'local>,
+    visible: jni::sys::jboolean,
+) {
+    SOFT_KEYBOARD_VISIBLE.store(visible != 0, Ordering::Release);
 }

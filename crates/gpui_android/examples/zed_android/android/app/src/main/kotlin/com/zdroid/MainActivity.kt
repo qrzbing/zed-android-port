@@ -72,20 +72,45 @@ class MainActivity : GameActivity() {
     /// text focus (take then set per frame, see
     /// `crates/gpui/src/window.rs` paint flow), so without this
     /// flag the IME would receive show / focus events 60+ times per
-    /// second and flicker visibly. Diverges from the OS state only if
-    /// the user dismisses the IME via Back (Phase 4 will sync via
-    /// `WindowInsetsListener`); for now a subsequent gpui focus
-    /// transition will resync it.
+    /// second and flicker visibly.
     private var imeShown: Boolean = false
+
+    /// Set right before we call `imm.hideSoftInputFromWindow` from
+    /// our own code (hideIme / toggleIme). The WindowInsets listener
+    /// consults this to distinguish "we asked the IME to close"
+    /// (don't mark manual-dismiss) from "user closed it via Back /
+    /// swipe" (mark manual-dismiss so auto-show stays suppressed).
+    private var programmaticHidePending: Boolean = false
+
+    /// Setter that wraps the `imeShown` mutation and ALSO pushes
+    /// the value into Rust's `SOFT_KEYBOARD_VISIBLE` mirror. Every
+    /// site that flips `imeShown` should go through here so the
+    /// pane keyboard button's `toggle_state` highlight stays
+    /// synchronized with the OS-side IME visibility.
+    private fun setImeShown(shown: Boolean) {
+        if (imeShown != shown) {
+            imeShown = shown
+            NativeBridge.nativeSetSoftKeyboardVisible(shown)
+        }
+    }
 
     /// Bring up the soft keyboard. Called from Rust via JNI on the
     /// edge transition into text-input focus. The first call within
     /// a focus session does the real work; repeats are filtered.
+    /// Suppressed entirely when the user has manually dismissed the
+    /// IME (see [toggleIme] + the WindowInsets listener installed
+    /// in [onCreate]) — the user can re-summon via the pane keyboard
+    /// toggle button or by tapping into a different text target
+    /// (which triggers `restartImeForTarget` and clears the flag).
     @Suppress("unused")
     fun showIme() {
         runOnUiThread {
             val host = imeHostView ?: run {
                 Log.w("zdroid_ime", "showIme: imeHostView is null, skipping")
+                return@runOnUiThread
+            }
+            if (imeManuallyDismissed) {
+                Log.i("zdroid_ime", "showIme suppressed (user dismissed)")
                 return@runOnUiThread
             }
             Log.i(
@@ -101,7 +126,7 @@ class MainActivity : GameActivity() {
                 as android.view.inputmethod.InputMethodManager
             val shown = imm.showSoftInput(host, 0)
             Log.i("zdroid_ime", "showIme: showSoftInput -> $shown")
-            imeShown = true
+            setImeShown(true)
         }
     }
 
@@ -115,9 +140,56 @@ class MainActivity : GameActivity() {
             val host = imeHostView ?: return@runOnUiThread
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
                 as android.view.inputmethod.InputMethodManager
+            programmaticHidePending = true
             val hidden = imm.hideSoftInputFromWindow(host.windowToken, 0)
             Log.i("zdroid_ime", "hideIme: hideSoftInputFromWindow -> $hidden")
-            imeShown = false
+            setImeShown(false)
+        }
+    }
+
+    /// True when the user explicitly dismissed the IME (Back press,
+    /// IME-bar swipe, etc.) and we should suppress the auto-show
+    /// that fires on every text-input focus transition. Cleared by:
+    /// - [toggleIme] when the user taps the pane keyboard button
+    ///   to bring the IME back up,
+    /// - any `restartImeForTarget` call (focus moved to a different
+    ///   input target — fresh context, fresh auto-show budget).
+    @Volatile
+    private var imeManuallyDismissed: Boolean = false
+
+    fun isImeManuallyDismissed(): Boolean = imeManuallyDismissed
+
+    fun setImeManuallyDismissed(dismissed: Boolean) {
+        if (imeManuallyDismissed != dismissed) {
+            Log.i("zdroid_ime", "imeManuallyDismissed: $imeManuallyDismissed -> $dismissed")
+            imeManuallyDismissed = dismissed
+        }
+    }
+
+    /// Toggle the IME. If currently shown, hides it AND marks the
+    /// IME as manually-dismissed so the auto-show on text-input
+    /// focus is suppressed until the user re-toggles. If currently
+    /// hidden, shows the IME and clears the manually-dismissed
+    /// flag so subsequent focuses behave normally again.
+    @Suppress("unused")
+    fun toggleIme() {
+        runOnUiThread {
+            val host = imeHostView ?: return@runOnUiThread
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            if (imeShown) {
+                Log.i("zdroid_ime", "toggleIme: hiding (manual dismiss)")
+                programmaticHidePending = true
+                imm.hideSoftInputFromWindow(host.windowToken, 0)
+                setImeShown(false)
+                setImeManuallyDismissed(true)
+            } else {
+                Log.i("zdroid_ime", "toggleIme: showing (clearing manual-dismiss)")
+                if (!host.isFocused) host.requestFocus()
+                imm.showSoftInput(host, 0)
+                setImeShown(true)
+                setImeManuallyDismissed(false)
+            }
         }
     }
 
@@ -178,6 +250,10 @@ class MainActivity : GameActivity() {
                 "restartImeForTarget: switching mode ${currentImeMode} -> $modeId"
             )
             currentImeMode = modeId
+            // Focus moved to a different input target — fresh
+            // auto-show budget. Any prior manual dismiss applied
+            // to the outgoing target, not this one.
+            setImeManuallyDismissed(false)
             val host = imeHostView ?: return@runOnUiThread
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
                 as android.view.inputmethod.InputMethodManager
@@ -268,6 +344,41 @@ class MainActivity : GameActivity() {
         val host = ImeHostView(this)
         addContentView(host, android.view.ViewGroup.LayoutParams(1, 1))
         imeHostView = host
+
+        // Detect when the IME is dismissed by the user (Back press,
+        // swipe-down on the keyboard) rather than programmatically by
+        // us. Without this, our `imeShown` flag and the OS's actual
+        // visibility drift, and the user-dismiss intent is lost the
+        // next time text-input focus reasserts (auto-show pops the
+        // keyboard back up — exactly the annoyance the user reported).
+        //
+        // Mechanism: the `ime()` inset goes from non-zero to zero
+        // whenever the IME closes. We compare to `programmaticHidePending`
+        // (a flag set right before our own hide calls) to tell apart
+        // "we asked it to close" from "user closed it".
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(host) { _, insets ->
+            val imeBottom = insets.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.ime()
+            ).bottom
+            val imeNowVisible = imeBottom > 0
+            if (!imeNowVisible && imeShown) {
+                if (programmaticHidePending) {
+                    programmaticHidePending = false
+                    Log.i(
+                        "zdroid_ime",
+                        "WindowInsets: IME hidden (programmatic, keeping manual-dismiss flag)"
+                    )
+                } else {
+                    Log.i(
+                        "zdroid_ime",
+                        "WindowInsets: IME hidden by user (Back / swipe), marking manual-dismiss"
+                    )
+                    setImeManuallyDismissed(true)
+                }
+                setImeShown(false)
+            }
+            insets
+        }
 
         // Pointer-capture probe. When the decor view gains focus we ask
         // Android for raw pointer events. The captured listener

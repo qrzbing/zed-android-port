@@ -216,6 +216,15 @@ pub(crate) struct AndroidCommon {
     /// old position because Gboard's composition state hadn't
     /// observed the move).
     pub(crate) last_pushed_selection: Option<(usize, usize)>,
+    /// Tracks whether the soft keyboard was visible last tick.
+    /// When this disagrees with the atomic Kotlin pushes via
+    /// `nativeSetSoftKeyboardVisible`, we force a `window.refresh()`
+    /// so the pane keyboard button re-renders with its updated
+    /// `toggle_state`. Without this, the atomic flips on each
+    /// toggle but the UI keeps showing stale state until some
+    /// other event triggers a paint — the user-visible bug where
+    /// the button needs two taps to "respond".
+    pub(crate) last_soft_keyboard_visible: bool,
     pub(crate) running: bool,
 }
 
@@ -257,6 +266,7 @@ impl AndroidCommon {
             ime_currently_visible: false,
             last_ime_target_kind: None,
             last_pushed_selection: None,
+            last_soft_keyboard_visible: false,
             running: true,
         }
     }
@@ -725,6 +735,16 @@ impl AndroidPlatform {
         let handler_has_stale_mark: bool;
         {
             let mut state = window_ptr.state.borrow_mut();
+            // Snapshot composition tracking before mut-borrowing
+            // input_handler — once `handler` is alive, we can't
+            // touch other fields of `state` immutably.
+            our_composition_active = state.ime_composition_text.is_some();
+            composition_anchor = state.ime_composition_start.and_then(|start| {
+                state
+                    .ime_composition_text
+                    .as_ref()
+                    .map(|t| (start, start + t.encode_utf16().count()))
+            });
             let Some(handler) = state.input_handler.as_mut() else {
                 return;
             };
@@ -740,17 +760,10 @@ impl AndroidPlatform {
             // accidentally replace those stale marks (editor.rs:
             // 23690 — "use marked_ranges if present"). Detect and
             // clean up while we have the handler at hand.
-            our_composition_active = state.ime_composition_text.is_some();
             handler_has_stale_mark = !our_composition_active && handler.marked_text_range().is_some();
             if handler_has_stale_mark {
                 handler.unmark_text();
             }
-            composition_anchor = state.ime_composition_start.and_then(|start| {
-                state
-                    .ime_composition_text
-                    .as_ref()
-                    .map(|t| (start, start + t.encode_utf16().count()))
-            });
         }
         if handler_has_stale_mark {
             log::info!("ime::tick cleared stale editor marked range");
@@ -801,6 +814,23 @@ impl AndroidPlatform {
 
         if should_notify {
             crate::ime::notify_text_state(window_ptr);
+        }
+
+        // If the OS-side IME visibility flipped since last tick,
+        // force a window redraw so the pane keyboard button's
+        // toggle_state picks up the new value. Without this the
+        // button stays stale until some other event triggers a
+        // repaint — user-visible as "tap button, nothing happens,
+        // tap again, NOW it lights up but in the wrong state".
+        let current_keyboard_visible = crate::ime::soft_keyboard_visible();
+        let last_keyboard_visible = self.common.borrow().last_soft_keyboard_visible;
+        if current_keyboard_visible != last_keyboard_visible {
+            self.common.borrow_mut().last_soft_keyboard_visible = current_keyboard_visible;
+            window_ptr
+                .state
+                .borrow_mut()
+                .force_render_after_recovery = true;
+            FRAME_PENDING.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 

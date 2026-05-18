@@ -196,4 +196,12 @@ object NativeBridge {
     /// IME `performEditorAction(actionId)` — Enter / Done / Next /
     /// Search etc. Emits a gpui action on the focused element.
     external fun nativeImePerformEditorAction(actionId: Int)
+
+    /// Mirror Kotlin's `imeShown` flag into the Rust-side global
+    /// `SOFT_KEYBOARD_VISIBLE` atomic. Pushed on every transition
+    /// (showSoftInput / hideSoftInputFromWindow / WindowInsetsListener
+    /// edge). The pane keyboard button reads this via
+    /// `Window::soft_keyboard_visible()` to render its lit-up
+    /// `toggle_state`.
+    external fun nativeSetSoftKeyboardVisible(visible: Boolean)
 }
