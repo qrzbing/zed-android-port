@@ -205,7 +205,7 @@ android {
         // eligibility is the explicit trade.
         targetSdk = 28
         versionCode = 10
-        versionName = "0.3.1"
+        versionName = "0.3.0"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
