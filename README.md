@@ -102,6 +102,39 @@ Three workflows that work with this constraint:
 
 ---
 
+## <img src="https://api.iconify.design/lucide:hand.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Gestures & input
+
+Each surface toggles in **Settings → Android Input** (or on the first-run onboarding card).
+
+### Touch (default)
+- **Tap** to position the cursor
+- **Tap and drag** to scroll
+- **Two-finger tap** for right-click
+- **Two-finger drag** to scroll
+- **Long-press** to select a word
+- **Long-press and drag** to extend the selection
+- **Scrollbar tap and drag** snaps the thumb to your finger and follows
+
+### Virtual trackpad mode
+Toggle the crosshair icon in the tab bar to turn touch into a pointer. Direct touch is disabled while it's on.
+- **One-finger drag** moves the cursor
+- **Tap** for left click, **two-finger tap** for right click
+- **Hold then drag** for text selection
+- **Two-finger drag** to scroll the content
+
+### Hardware mouse / trackpad
+Plug in or pair a mouse, trackpad, or Book Cover Keyboard and it just works. The cursor hides when you switch to touch or typing and comes back on the next pointer event.
+
+### Soft keyboard
+Auto-opens on tap into the editor or terminal. The pane tab bar has a keyboard toggle if you want it off.
+- **Programming keys row** above the keyboard with `Esc`, `Tab`, `Ctrl`, `Alt`, and arrows. `Ctrl` and `Alt` are sticky: tap once for the next key, double-tap to lock.
+- **`Ctrl` + letter** combos work in the terminal: `Ctrl+C` sends `^C`, just like a hardware keyboard.
+
+### Multi-window
+Settings, the runtime picker, and any other spawned window each open as their own Recents entries and get their own soft keyboard and input.
+
+---
+
 <a id="userland"></a>
 ## <img src="https://api.iconify.design/lucide:server.svg?color=%23999999&height=22" valign="middle" /> &nbsp;Userland
 
@@ -140,7 +173,6 @@ Switching is one tap (Settings → Android Runtime). Selection persists in `$PRE
 - **LSPs.** rust-analyzer baked in. gopls, ts-server, pyright, jdtls install in one `pkg`/`npm`/`go install`.
 - **Extensions.** Browse, install, manage. Themes, language configs, grammars, slash commands.
 - **Remote SSH.** Server-picker pill in the title bar, persisted server list, native askpass.
-- **Input.** Hardware keyboard, mouse, trackpad. Two-finger and long-press right-click.
 - **Multi-window.** Android freeform and DeX, each extra window is a real Activity with OS chrome.
 - **Edge-to-edge** rendering with content under the display cutout.
 - **App menu bar** with nested submenus (Settings, Keymap, Themes, Extensions).
