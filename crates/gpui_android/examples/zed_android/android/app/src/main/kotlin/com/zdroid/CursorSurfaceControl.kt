@@ -83,6 +83,20 @@ internal class CursorSurfaceControl(
 
     private var currentStyle: Int = STYLE_ARROW
     private var visible: Boolean = false
+    /// Set to true the moment [release] runs. Every public mutation
+    /// path (move, setStyle, setVisible, pending Arrow runnable) must
+    /// short-circuit when this is true: the underlying SurfaceControl
+    /// is gone, and calling SurfaceControl.Transaction methods against
+    /// a released SC throws `IllegalStateException` from
+    /// `checkNotReleased` and crashes the main thread. The race that
+    /// motivates this: `setStyle(Arrow)` schedules an 80 ms debounced
+    /// runnable; if pointer capture is lost within those 80 ms,
+    /// MainActivity.onPointerCaptureChanged calls release(), and the
+    /// runnable's deferred move() then explodes. The pendingArrow
+    /// cancel below covers the common case, but a flag is required
+    /// too: a fresh setStyle/move from gpui after release (e.g. a
+    /// late JNI dispatch) would still race past the cancel.
+    private var released: Boolean = false
     /// Last position passed to [move]. Cached so [setStyle] can
     /// re-apply position after a style swap: the new style's
     /// hot-spot offset differs from the old one, and without
@@ -117,6 +131,7 @@ internal class CursorSurfaceControl(
     /// top-left corner. Hot path: called per captured-pointer motion
     /// event (~200 Hz on Samsung trackpad).
     fun move(x: Float, y: Float) {
+        if (released) return
         val sc = surfaceControl ?: return
         lastX = x
         lastY = y
@@ -132,6 +147,7 @@ internal class CursorSurfaceControl(
     private val arrowHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     fun setStyle(style: Int) {
+        if (released) return
         // Cancel any pending Arrow transition first — whether this
         // style is Arrow or not, a fresh decision arrives now.
         pendingArrow?.let { arrowHandler.removeCallbacks(it) }
@@ -151,6 +167,16 @@ internal class CursorSurfaceControl(
             // transient at no perceptible cost. A real Arrow (cursor
             // over empty space) lands 80ms later — still smooth.
             val runnable = Runnable {
+                // Belt-and-suspenders: even if `release()` ran between
+                // postDelayed and now, the [released] guard above the
+                // move/paint calls keeps this from touching the dead
+                // SurfaceControl. We still keep the removeCallbacks in
+                // release() because that's the fast path (no allocation
+                // and no main-thread dispatch).
+                if (released) {
+                    pendingArrow = null
+                    return@Runnable
+                }
                 currentStyle = STYLE_ARROW
                 paintCurrentStyle()
                 move(lastX, lastY)
@@ -172,6 +198,7 @@ internal class CursorSurfaceControl(
     }
 
     fun setVisible(visible: Boolean) {
+        if (released) return
         if (this.visible == visible) return
         this.visible = visible
         val sc = surfaceControl ?: return
@@ -181,6 +208,15 @@ internal class CursorSurfaceControl(
     }
 
     fun release() {
+        if (released) return
+        released = true
+        // Yank any debounced Arrow runnable before tearing the
+        // SurfaceControl down so the deferred move() can't fire
+        // against a released SC. The [released] guards on the public
+        // mutators above defend against any path the cancel doesn't
+        // catch (a late JNI setStyle from gpui after release, etc.).
+        pendingArrow?.let { arrowHandler.removeCallbacks(it) }
+        pendingArrow = null
         try {
             drawSurface?.release()
         } catch (t: Throwable) {
