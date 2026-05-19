@@ -133,9 +133,10 @@ pub(crate) fn dispatch_primary(
     if crate::ime::trackpad_mode_enabled() {
         let android_app = state.android_app.clone();
         let extra_window_id = state.extra_window_id;
+        let bounds = state.bounds.size;
         return state
             .trackpad_touch
-            .on_event(&touch_event, &android_app, scale_factor, extra_window_id);
+            .on_event(&touch_event, &android_app, scale_factor, extra_window_id, bounds);
     }
     let drag_capture = state
         .drag_active
@@ -164,9 +165,10 @@ pub(crate) fn dispatch_extra(
     if crate::ime::trackpad_mode_enabled() {
         let android_app = state.android_app.clone();
         let extra_window_id = state.extra_window_id;
+        let bounds = state.bounds.size;
         return state
             .trackpad_touch
-            .on_event(&touch_event, &android_app, scale_factor, extra_window_id);
+            .on_event(&touch_event, &android_app, scale_factor, extra_window_id, bounds);
     }
     let drag_capture = state
         .drag_active
@@ -903,6 +905,7 @@ impl TrackpadTouchState {
         android_app: &AndroidApp,
         scale_factor: f32,
         extra_window_id: Option<u64>,
+        bounds: gpui::Size<gpui::Pixels>,
     ) -> MotionInputs {
         let mut out = MotionInputs::new();
         if event.pointers.is_empty() {
@@ -1028,6 +1031,36 @@ impl TrackpadTouchState {
                     };
                     self.cursor.x += px(scaled_dx);
                     self.cursor.y += px(scaled_dy);
+                    // Clamp to the window's visible bounds so we don't
+                    // accumulate "ghost" travel past the edges. Without
+                    // this, pushing the cursor past the right edge
+                    // grows self.cursor.x unbounded; Kotlin's
+                    // setTrackpadCursorPosition then clamps the DISPLAY
+                    // to width-1 but Rust's internal state stays at the
+                    // overshot value, so the user has to swipe back the
+                    // exact same overshoot distance before the cursor
+                    // visibly leaves the edge. The asymmetric look on
+                    // the right edge (sprite extends past the screen)
+                    // vs the left (sprite hugs the edge) is the Arrow
+                    // hot-spot being in the top-left corner: when the
+                    // hot-point sits at x=width-1 the sprite body
+                    // extends sprite_size pixels further right, into
+                    // off-screen territory, so the cursor "disappears
+                    // outside the screen" until self.cursor.x drops
+                    // back below width-1.
+                    let zero = px(0.0);
+                    if self.cursor.x < zero {
+                        self.cursor.x = zero;
+                    }
+                    if self.cursor.y < zero {
+                        self.cursor.y = zero;
+                    }
+                    if self.cursor.x > bounds.width {
+                        self.cursor.x = bounds.width;
+                    }
+                    if self.cursor.y > bounds.height {
+                        self.cursor.y = bounds.height;
+                    }
 
                     let pressed = if self.phase == TrackpadGesturePhase::HoldDrag {
                         Some(MouseButton::Left)
