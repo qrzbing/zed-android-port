@@ -110,7 +110,6 @@ Each surface toggles in **Settings → Android Input** (or on the first-run onbo
 - **Tap** to position the cursor
 - **Tap and drag** to scroll
 - **Two-finger tap** for right-click
-- **Two-finger drag** to scroll
 - **Long-press** to select a word
 - **Long-press and drag** to extend the selection
 - **Scrollbar tap and drag** snaps the thumb to your finger and follows
@@ -123,7 +122,12 @@ Toggle the crosshair icon in the tab bar to turn touch into a pointer. Direct to
 - **Two-finger drag** to scroll the content
 
 ### Hardware mouse / trackpad
-Plug in or pair a mouse, trackpad, or Book Cover Keyboard and it just works. The cursor hides when you switch to touch or typing and comes back on the next pointer event.
+Plug in or pair a mouse, trackpad, or Book Cover Keyboard and it just works.
+- **Scroll wheel** and **two-finger trackpad scroll** to scroll
+- **Right-click** anywhere for context menus
+- The cursor hides when you switch to touch or typing and comes back on the next pointer event
+
+> Working on Samsung tablets and most Android devices we've tested. If your mouse pairs but doesn't move the cursor (seen on some OnePlus / Oppo Pad ColorOS builds), [open an issue](https://github.com/Dylanmurzello/zed-android-port/issues/new) with `adb shell dumpsys input` output so we can triage.
 
 ### Soft keyboard
 Auto-opens on tap into the editor or terminal. The pane tab bar has a keyboard toggle if you want it off.
