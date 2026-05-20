@@ -99,6 +99,17 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
     override val extraKeysModifierState: Int = 0
     override fun clearExtrasPendingModifier() {}
 
+    override var softKeyboardEnabled: Boolean = false
+        private set
+
+    @Suppress("unused")
+    fun setSoftKeyboardEnabled(enabled: Boolean) {
+        runOnUiThread {
+            if (softKeyboardEnabled == enabled) return@runOnUiThread
+            softKeyboardEnabled = enabled
+        }
+    }
+
     /// Cursor position in physical pixels relative to this Activity's
     /// SurfaceView. Mirrors MainActivity's state machine.
     private var cursorX: Float = 0f

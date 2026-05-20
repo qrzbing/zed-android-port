@@ -86,6 +86,20 @@ class MainActivity : GameActivity(), ImeHost {
     // landed yet or not.
     private var programmingExtrasRowEnabled: Boolean = false
 
+    /// Mirror of `android_input.on_screen_keyboard`. Read by
+    /// [ImeHostView] to gate Android's IME auto-show on focus.
+    /// Pushed from Rust's `tick_soft_keyboard_setting` reconciler.
+    override var softKeyboardEnabled: Boolean = false
+        private set
+
+    @Suppress("unused")
+    fun setSoftKeyboardEnabled(enabled: Boolean) {
+        runOnUiThread {
+            if (softKeyboardEnabled == enabled) return@runOnUiThread
+            softKeyboardEnabled = enabled
+        }
+    }
+
     /// Mirror of the [ExtraKeysView] modifier state machine. The
     /// view stores the source-of-truth state internally; this is
     /// a published copy read by [extraKeysModifierState] so
@@ -152,10 +166,6 @@ class MainActivity : GameActivity(), ImeHost {
     /// is turned off entirely so we don't pay the layout cost.
     private fun updateExtrasRowVisibility() {
         val shouldShow = programmingExtrasRowEnabled && imeShown
-        Log.i(
-            "zdroid_extras_trace",
-            "updateExtrasRowVisibility enabled=$programmingExtrasRowEnabled ime=$imeShown shouldShow=$shouldShow viewExists=${extraKeysView != null}"
-        )
         if (shouldShow) {
             if (extraKeysView == null) {
                 val view = ExtraKeysView(this) { pending, locked ->
@@ -185,10 +195,6 @@ class MainActivity : GameActivity(), ImeHost {
     @Suppress("unused")
     fun setProgrammingExtrasRowEnabled(enabled: Boolean) {
         runOnUiThread {
-            Log.i(
-                "zdroid_extras_trace",
-                "setProgrammingExtrasRowEnabled($enabled) was=$programmingExtrasRowEnabled"
-            )
             if (programmingExtrasRowEnabled == enabled) return@runOnUiThread
             programmingExtrasRowEnabled = enabled
             if (!enabled) {

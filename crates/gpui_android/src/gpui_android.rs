@@ -56,7 +56,6 @@ pub fn set_trackpad_mode_enabled(enabled: bool) {
 /// changes to Kotlin's `Activity.setProgrammingExtrasRowEnabled` so
 /// the extras-row view is inflated / torn down without restart.
 pub fn set_programming_extras_row_enabled(enabled: bool) {
-    log::info!("extras_row_trace: set_programming_extras_row_enabled({enabled})");
     ime::EXTRAS_ROW_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
 }
 

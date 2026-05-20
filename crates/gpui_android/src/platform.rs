@@ -232,6 +232,14 @@ pub(crate) struct AndroidCommon {
     /// matched the runtime atomic default (both `true`), so Kotlin
     /// never learned the user's value until they toggled it.
     pub(crate) last_extras_row_enabled: Option<bool>,
+    /// Edge-detection slot for the soft-keyboard setting push. Same
+    /// pattern as `last_extras_row_enabled`: `None` until the first
+    /// tick, then `Some(current)` after each successful push. Drives
+    /// `ImeHostView.onCheckIsTextEditor` on the Kotlin side so
+    /// Android stops treating the IME host as a text editor (and
+    /// therefore stops auto-showing Gboard on focus) when the user
+    /// has the setting off.
+    pub(crate) last_soft_keyboard_setting: Option<bool>,
     pub(crate) running: bool,
 }
 
@@ -273,6 +281,7 @@ impl AndroidCommon {
             last_soft_keyboard_visible: false,
             last_trackpad_mode_enabled: false,
             last_extras_row_enabled: None,
+            last_soft_keyboard_setting: None,
             running: true,
         }
     }
@@ -908,9 +917,6 @@ impl AndroidPlatform {
         if last == Some(current) {
             return;
         }
-        log::info!(
-            "extras_row_trace: tick edge current={current} last={last:?}, pushing to Kotlin"
-        );
         self.common.borrow_mut().last_extras_row_enabled = Some(current);
         if let Err(err) = call_activity_set_extras_row(&self.android_app, None, current) {
             log::warn!("set_extras_row_enabled(primary): {err:#}");
@@ -927,6 +933,38 @@ impl AndroidPlatform {
                 call_activity_set_extras_row(&self.android_app, Some(id), current)
             {
                 log::warn!("set_extras_row_enabled(w={id}): {err:#}");
+            }
+        }
+    }
+
+    /// Push the user's `android_input.on_screen_keyboard` setting
+    /// (mirrored in `ime::ON_SCREEN_KEYBOARD_ENABLED`) to every
+    /// live Activity on edges. Each Activity stores the value in
+    /// `softKeyboardEnabled` (an `ImeHost` interface property);
+    /// `ImeHostView.onCheckIsTextEditor` reads it to gate Android's
+    /// IME auto-show on focus.
+    fn tick_soft_keyboard_setting(&self) {
+        let current = crate::ime::on_screen_keyboard_enabled();
+        let last = self.common.borrow().last_soft_keyboard_setting;
+        if last == Some(current) {
+            return;
+        }
+        self.common.borrow_mut().last_soft_keyboard_setting = Some(current);
+        if let Err(err) = call_activity_set_soft_keyboard(&self.android_app, None, current) {
+            log::warn!("set_soft_keyboard_enabled(primary): {err:#}");
+        }
+        let extra_ids: Vec<u64> = self
+            .common
+            .borrow()
+            .extra_windows
+            .keys()
+            .copied()
+            .collect();
+        for id in extra_ids {
+            if let Err(err) =
+                call_activity_set_soft_keyboard(&self.android_app, Some(id), current)
+            {
+                log::warn!("set_soft_keyboard_enabled(w={id}): {err:#}");
             }
         }
     }
@@ -1147,6 +1185,7 @@ impl Platform for AndroidPlatform {
             self.tick_soft_keyboard_visibility();
             self.tick_trackpad_mode_active();
             self.tick_extras_row_enabled();
+            self.tick_soft_keyboard_setting();
 
             // Refresh on vsync (FRAME_PENDING set by Choreographer
             // callback) or after main-thread events that may have
@@ -1454,6 +1493,59 @@ fn call_activity_set_extras_row(
                 &args,
             )
             .context("call MainActivity.setProgrammingExtrasRowEnabled")?;
+        }
+    }
+    Ok(())
+}
+
+/// Invoke `Activity.setSoftKeyboardEnabled(enabled)` on the primary
+/// or one extra Activity. Used by `tick_soft_keyboard_setting` to
+/// push the user's `android_input.on_screen_keyboard` setting into
+/// Kotlin so `ImeHostView.onCheckIsTextEditor` can gate Android's
+/// IME auto-show. Routes through the held Activity object (no
+/// `find_class` involved) because JNI's `find_class` against app
+/// classes is unreliable from any thread that wasn't spawned by
+/// the JVM with the app's class loader — and the android_main
+/// thread isn't one of those (it's a native thread spawned by
+/// android-activity's glue).
+fn call_activity_set_soft_keyboard(
+    android_app: &AndroidApp,
+    extra_window_id: Option<u64>,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use jni::{JavaVM, objects::JObject};
+
+    let vm_ptr = android_app.vm_as_ptr();
+    let activity_ptr = android_app.activity_as_ptr();
+    if vm_ptr.is_null() || activity_ptr.is_null() {
+        anyhow::bail!("AndroidApp vm/activity pointer is null");
+    }
+    let vm = unsafe { JavaVM::from_raw(vm_ptr as _) }.context("JavaVM::from_raw")?;
+    let mut env = vm.attach_current_thread().context("attach_current_thread")?;
+    let args = [enabled.into()];
+    match extra_window_id {
+        Some(id) => {
+            let Some(activity_ref) = crate::multi_window::extra_activity_for(id) else {
+                return Ok(());
+            };
+            env.call_method(
+                activity_ref.as_obj(),
+                "setSoftKeyboardEnabled",
+                "(Z)V",
+                &args,
+            )
+            .context("call ExtraWindowActivity.setSoftKeyboardEnabled")?;
+        }
+        None => {
+            let activity = unsafe { JObject::from_raw(activity_ptr as _) };
+            env.call_method(
+                &activity,
+                "setSoftKeyboardEnabled",
+                "(Z)V",
+                &args,
+            )
+            .context("call MainActivity.setSoftKeyboardEnabled")?;
         }
     }
     Ok(())

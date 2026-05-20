@@ -24,34 +24,66 @@ class ImeHostView(context: Context) : View(context) {
         isFocusableInTouchMode = true
     }
 
-    /// Returning `true` here unconditionally is what makes Android
-    /// auto-show the IME the moment this view gains focus — same
-    /// behavior as EditText (Android special-cases "text editor"
-    /// views in `InputMethodManager.startInputInner`). When a
-    /// hardware keyboard is connected via USB or Bluetooth,
-    /// `Configuration.keyboard` flips to `KEYBOARD_QWERTY` /
-    /// `KEYBOARD_12KEY`. Detecting that and returning `false`
-    /// suppresses the auto-show — Termux's TerminalView is a plain
-    /// `View` that doesn't override this method at all, which is
-    /// why Termux never shows Gboard with a HW keyboard attached
-    /// even though the user's IME setting is unchanged.
+    /// Returning `true` here is what makes Android auto-show the
+    /// IME the moment this view gains focus — same path EditText
+    /// uses. Termux's TerminalView is a plain `View` that doesn't
+    /// override this method, which is why Termux never shows Gboard
+    /// on focus.
     ///
-    /// `onCreateInputConnection` is still callable when we manually
-    /// `imm.showSoftInput(host)`, so explicit shows from
-    /// `MainActivity.showIme` (gated on the `on_screen_keyboard`
-    /// setting) still work in the touch-only case.
+    /// We gate on:
+    ///   1. The user's `android_input.on_screen_keyboard` setting
+    ///      (read from the process-wide [SoftKeyboardSetting]
+    ///      singleton, populated by Rust's reconcile tick).
+    ///   2. Any connected keyboard device with
+    ///      `KEYBOARD_TYPE_ALPHABETIC` (BT, USB, hardware dock).
+    ///      `Configuration.keyboard` is unreliable — it reports the
+    ///      *built-in* physical keyboard and stays at `NOKEYS` for
+    ///      tablets even when a BT keyboard is paired and producing
+    ///      key events. `InputManager.inputDeviceIds` + each device's
+    ///      `keyboardType` is the source of truth.
     override fun onCheckIsTextEditor(): Boolean {
-        val hwKeyboardPresent = resources.configuration.keyboard !=
-            android.content.res.Configuration.KEYBOARD_NOKEYS
-        val isTextEditor = !hwKeyboardPresent
-        android.util.Log.i(
-            "zdroid_ime",
-            "ImeHostView.onCheckIsTextEditor() -> $isTextEditor (hwKeyboard=$hwKeyboardPresent)",
-        )
-        return isTextEditor
+        val userWants = (context as? ImeHost)?.softKeyboardEnabled ?: false
+        val hwKeyboardPresent = isPhysicalKeyboardConnected(context)
+        return userWants && !hwKeyboardPresent
     }
 
-    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+    companion object {
+        private fun isPhysicalKeyboardConnected(context: Context): Boolean {
+            val im = context.getSystemService(android.hardware.input.InputManager::class.java)
+                ?: return false
+            for (id in im.inputDeviceIds) {
+                val device = im.getInputDevice(id) ?: continue
+                if (device.isVirtual) continue
+                if (device.keyboardType ==
+                    android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        // Hard kill switch. `onCheckIsTextEditor()` returning false
+        // only suppresses ONE auto-show path; Android still calls
+        // `onCreateInputConnection` on focus and binds the IME if we
+        // return a non-null connection. Returning null here aborts
+        // the bind entirely — no Gboard, no inset, no nothing. The
+        // user's manual `imm.showSoftInput` call from
+        // `MainActivity.showIme` (when the setting is on and no HW
+        // keyboard is connected) lands on the next call to this
+        // method, at which point both gates are satisfied and we
+        // return a real connection.
+        val userWants = (context as? ImeHost)?.softKeyboardEnabled ?: false
+        val hwKeyboardPresent = isPhysicalKeyboardConnected(context)
+        if (!userWants || hwKeyboardPresent) {
+            android.util.Log.i(
+                "zdroid_ime",
+                "ImeHostView.onCreateInputConnection -> null " +
+                    "(userWants=$userWants, hwKeyboard=$hwKeyboardPresent)",
+            )
+            return null
+        }
         val mode = (context as? ImeHost)?.currentImeMode ?: ImeInputMode.CODE_EDITOR
         android.util.Log.i("zdroid_ime", "ImeHostView.onCreateInputConnection mode=$mode")
         // EditorInfo per target kind (see ImeInputMode + ImeTargetKind):
@@ -98,12 +130,4 @@ class ImeHostView(context: Context) : View(context) {
         return ZdroidInputConnection(this)
     }
 
-    override fun onFocusChanged(
-        gainFocus: Boolean,
-        direction: Int,
-        previouslyFocusedRect: android.graphics.Rect?,
-    ) {
-        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        android.util.Log.i("zdroid_ime", "ImeHostView.onFocusChanged gain=$gainFocus")
-    }
 }

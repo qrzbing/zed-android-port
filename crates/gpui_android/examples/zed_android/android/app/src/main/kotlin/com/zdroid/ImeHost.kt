@@ -46,4 +46,17 @@ interface ImeHost {
     /// `ZdroidInputConnection.commitText` calls this after
     /// successfully re-synthesizing a commit as a key event.
     fun clearExtrasPendingModifier()
+
+    /// Mirror of `android_input.on_screen_keyboard`. Read by
+    /// `ImeHostView.onCheckIsTextEditor` / `onCreateInputConnection`
+    /// to gate Android's IME auto-show. Per-Activity instead of a
+    /// global singleton because singletons need JNI class caching
+    /// (Android's `find_class` from a native thread can't see app
+    /// classes), which adds startup machinery and is fragile. The
+    /// per-Activity approach has a theoretical race (a new
+    /// ExtraWindowActivity created after a toggle starts at `false`
+    /// until the next edge push fires), but it's not user-visible
+    /// because extra windows don't have EditText-shaped focus
+    /// targets that auto-show IME.
+    val softKeyboardEnabled: Boolean
 }
