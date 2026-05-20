@@ -908,6 +908,9 @@ impl AndroidPlatform {
         if last == Some(current) {
             return;
         }
+        log::info!(
+            "extras_row_trace: tick edge current={current} last={last:?}, pushing to Kotlin"
+        );
         self.common.borrow_mut().last_extras_row_enabled = Some(current);
         if let Err(err) = call_activity_set_extras_row(&self.android_app, None, current) {
             log::warn!("set_extras_row_enabled(primary): {err:#}");

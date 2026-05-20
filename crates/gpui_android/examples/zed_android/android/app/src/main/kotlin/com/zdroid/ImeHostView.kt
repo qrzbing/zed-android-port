@@ -24,9 +24,31 @@ class ImeHostView(context: Context) : View(context) {
         isFocusableInTouchMode = true
     }
 
+    /// Returning `true` here unconditionally is what makes Android
+    /// auto-show the IME the moment this view gains focus — same
+    /// behavior as EditText (Android special-cases "text editor"
+    /// views in `InputMethodManager.startInputInner`). When a
+    /// hardware keyboard is connected via USB or Bluetooth,
+    /// `Configuration.keyboard` flips to `KEYBOARD_QWERTY` /
+    /// `KEYBOARD_12KEY`. Detecting that and returning `false`
+    /// suppresses the auto-show — Termux's TerminalView is a plain
+    /// `View` that doesn't override this method at all, which is
+    /// why Termux never shows Gboard with a HW keyboard attached
+    /// even though the user's IME setting is unchanged.
+    ///
+    /// `onCreateInputConnection` is still callable when we manually
+    /// `imm.showSoftInput(host)`, so explicit shows from
+    /// `MainActivity.showIme` (gated on the `on_screen_keyboard`
+    /// setting) still work in the touch-only case.
     override fun onCheckIsTextEditor(): Boolean {
-        android.util.Log.i("zdroid_ime", "ImeHostView.onCheckIsTextEditor() -> true")
-        return true
+        val hwKeyboardPresent = resources.configuration.keyboard !=
+            android.content.res.Configuration.KEYBOARD_NOKEYS
+        val isTextEditor = !hwKeyboardPresent
+        android.util.Log.i(
+            "zdroid_ime",
+            "ImeHostView.onCheckIsTextEditor() -> $isTextEditor (hwKeyboard=$hwKeyboardPresent)",
+        )
+        return isTextEditor
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {

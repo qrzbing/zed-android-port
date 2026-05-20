@@ -529,6 +529,29 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 provider.id(),
                 env_root.display(),
             );
+            // Test writability before handing the path to paths::set_custom_data_dir,
+            // which panics in `create_dir_all` if the path lives in another package's
+            // data dir (the ExternalTermux adapter's environment_root points at
+            // /data/data/com.termux/... which we can't write to under SELinux). On
+            // PermissionDenied we fall back to the bare app data dir so the editor
+            // can still boot; the adapter's spawn-side dispatch (env_for_zed_process,
+            // zd-exec routing) stays unaffected because that's a separate seam from
+            // the editor's data_dir. Without this, picking ExternalTermux in the
+            // runtime picker permanently bricks the install in a boot-time panic
+            // loop with no in-app recovery path.
+            let env_root_usable = match std::fs::create_dir_all(&env_root) {
+                Ok(()) => true,
+                Err(err) => {
+                    log::warn!(
+                        "zed_android: {:?} adapter's environment_root {} is not \
+                         writable ({err:#}); falling back to bare app data dir for \
+                         editor data. Spawn-side dispatch is unaffected.",
+                        provider.id(),
+                        env_root.display(),
+                    );
+                    false
+                }
+            };
             // Register the env_root with util::command so absolute-path
             // spawns under it get rewritten to route through `zd-exec`.
             // Gated on `needs_command_bridge()` so adapters whose
@@ -543,7 +566,11 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
             if provider.needs_command_bridge() {
                 util::command::register_environment_root(env_root.clone());
             }
-            env_root.to_string_lossy().into_owned()
+            if env_root_usable {
+                env_root.to_string_lossy().into_owned()
+            } else {
+                data_path.to_string_lossy().into_owned()
+            }
         } else {
             log::info!(
                 "zed_android: no runtime.toml; using bare app data_dir {} \

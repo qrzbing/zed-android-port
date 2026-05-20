@@ -73,7 +73,18 @@ class MainActivity : GameActivity(), ImeHost {
     /// on `imeShown` so the row only appears alongside the soft
     /// keyboard.
     private var extraKeysView: ExtraKeysView? = null
-    private var programmingExtrasRowEnabled: Boolean = true
+    // Kotlin-side cache of `android_input.programming_extras_row`.
+    // Defaults to false so a fresh Activity sits in the "row hidden"
+    // state until the Rust→Kotlin push lands. The push runs on
+    // `runOnUiThread` which queues on the main looper; during boot
+    // the main thread can be busy with language/theme init for
+    // hundreds of ms, leaving a window where this field's value
+    // determines what the IME-show codepath does. Default-true used
+    // to lose that race and inflate the row even when the user had
+    // the setting off. Default-false biases the race direction so the
+    // visible state matches the user's setting whether the push has
+    // landed yet or not.
+    private var programmingExtrasRowEnabled: Boolean = false
 
     /// Mirror of the [ExtraKeysView] modifier state machine. The
     /// view stores the source-of-truth state internally; this is
@@ -141,6 +152,10 @@ class MainActivity : GameActivity(), ImeHost {
     /// is turned off entirely so we don't pay the layout cost.
     private fun updateExtrasRowVisibility() {
         val shouldShow = programmingExtrasRowEnabled && imeShown
+        Log.i(
+            "zdroid_extras_trace",
+            "updateExtrasRowVisibility enabled=$programmingExtrasRowEnabled ime=$imeShown shouldShow=$shouldShow viewExists=${extraKeysView != null}"
+        )
         if (shouldShow) {
             if (extraKeysView == null) {
                 val view = ExtraKeysView(this) { pending, locked ->
@@ -170,6 +185,10 @@ class MainActivity : GameActivity(), ImeHost {
     @Suppress("unused")
     fun setProgrammingExtrasRowEnabled(enabled: Boolean) {
         runOnUiThread {
+            Log.i(
+                "zdroid_extras_trace",
+                "setProgrammingExtrasRowEnabled($enabled) was=$programmingExtrasRowEnabled"
+            )
             if (programmingExtrasRowEnabled == enabled) return@runOnUiThread
             programmingExtrasRowEnabled = enabled
             if (!enabled) {
@@ -1172,6 +1191,7 @@ class MainActivity : GameActivity(), ImeHost {
         super.onDestroy()
         Process.killProcess(Process.myPid())
     }
+
 
     override fun onRequestPermissionsResult(
         requestCode: Int,

@@ -192,6 +192,15 @@ pub struct RuntimePicker {
     /// them here + calls `cx.notify()` so the install button's
     /// label re-renders without the user having to interact.
     install_status: Option<String>,
+    /// True once an adapter selection has been saved to
+    /// `runtime.toml` and the user needs to fully close and reopen
+    /// the app for the change to take effect. Drives the inline
+    /// banner at the top of the picker. We don't attempt an in-app
+    /// restart (canonical Android patterns interact poorly with
+    /// Background Activity Launch rules and per-OEM task lifecycle
+    /// policies); the user closes via Recents and reopens from the
+    /// launcher.
+    restart_required: bool,
 }
 
 impl RuntimePicker {
@@ -207,6 +216,7 @@ impl RuntimePicker {
             entries: build_entries(),
             current: detect_current(),
             install_status: None,
+            restart_required: false,
         }
     }
 
@@ -301,6 +311,19 @@ impl RuntimePicker {
                     current: Some(id),
                 });
                 cx.notify();
+
+                // Surface the close-and-reopen requirement inline,
+                // styled with the picker's own theme — see Render
+                // for the banner. Window-level `window.prompt` is
+                // the native Android AlertDialog which looks out of
+                // place against the editor's chrome. We deliberately
+                // don't attempt an in-app restart either; the
+                // canonical approaches (AlarmManager + PendingIntent,
+                // startActivity + delayed kill, ActivityManager
+                // appTasks sweep) all interact poorly with Android's
+                // evolving Background Activity Launch rules and per-
+                // OEM task lifecycle policies.
+                self.restart_required = true;
             }
             Err(err) => {
                 log::error!(
@@ -336,6 +359,41 @@ impl Render for RuntimePicker {
             })
             .collect();
 
+        let banner = self.restart_required.then(|| {
+            let border = cx.theme().colors().border;
+            let banner_bg = cx.theme().colors().element_background;
+            let warning = cx.theme().status().warning;
+            h_flex()
+                .gap_3()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(border)
+                .bg(banner_bg)
+                .items_start()
+                .child(
+                    Icon::new(IconName::Warning)
+                        .size(IconSize::Small)
+                        .color(Color::Custom(warning)),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            Label::new("Restart to apply")
+                                .size(LabelSize::Default)
+                                .color(Color::Default),
+                        )
+                        .child(
+                            Label::new("Runtime adapter switched.")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                )
+        });
+
         let content = v_flex()
             .key_context("RuntimePicker")
             .track_focus(&self.focus_handle)
@@ -357,6 +415,7 @@ impl Render for RuntimePicker {
                         .color(Color::Muted),
                     ),
             )
+            .when_some(banner, |this, banner| this.child(banner))
             .child(v_flex().gap_3().children(cards));
 
         client_side_decorations(

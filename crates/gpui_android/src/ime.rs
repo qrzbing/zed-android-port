@@ -35,11 +35,14 @@ pub(crate) fn soft_keyboard_visible() -> bool {
 /// Written by a `cx.observe_global::<SettingsStore>` hook in
 /// `zed_android::lib::main` — NOT from pane render, because the
 /// onboarding flow runs without a Pane and would leave the atomic
-/// stuck at its `true` default while the user toggles the setting
-/// off in Settings. Read by `reconcile_ime_visibility` to gate the
-/// auto-show on text-input focus. Default true so the IME works
-/// out of the box for users who haven't opened settings.
-pub(crate) static ON_SCREEN_KEYBOARD_ENABLED: AtomicBool = AtomicBool::new(true);
+/// stuck at its default while the user toggles the setting off in
+/// Settings. Read by `reconcile_ime_visibility` to gate the
+/// auto-show on text-input focus. Defaults to false so the early-
+/// boot window (before the SettingsStore observer fires) doesn't
+/// trip a stray auto-show; the observer overwrites with the user's
+/// real setting within ms. Onboarding card + Android Input settings
+/// page surface the toggle so opt-in is obvious.
+pub(crate) static ON_SCREEN_KEYBOARD_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn on_screen_keyboard_enabled() -> bool {
     ON_SCREEN_KEYBOARD_ENABLED.load(Ordering::Acquire)
@@ -57,10 +60,12 @@ pub(crate) static TRACKPAD_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 /// SettingsStore observer in `zed_android::lib::main`, pushed to
 /// Kotlin via `Activity.setProgrammingExtrasRowEnabled` on each
 /// settings change. Kotlin decides whether to inflate the
-/// `ExtraKeysView` (Esc / Tab / Ctrl / Alt / arrow row). Default
-/// true so the row works out of the box for users who haven't
-/// opened settings.
-pub(crate) static EXTRAS_ROW_ENABLED: AtomicBool = AtomicBool::new(true);
+/// `ExtraKeysView` (Esc / Tab / Ctrl / Alt / arrow row). Defaults
+/// to false to bias the boot-time race (Rust→Kotlin push runs on
+/// `runOnUiThread` which queues on the main looper and can land
+/// 100s of ms after first IME show) toward "row hidden" instead of
+/// "row inflated then torn down".
+pub(crate) static EXTRAS_ROW_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn trackpad_mode_enabled() -> bool {
     TRACKPAD_MODE_ENABLED.load(Ordering::Acquire)
