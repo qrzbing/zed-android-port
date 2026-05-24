@@ -27,8 +27,8 @@ use log::{error, info};
 use settings::{Settings as _, SettingsStore};
 use util::ResultExt as _;
 use workspace::{
-    AppState, CloseIntent, CloseProject, MultiWorkspace, OpenOptions, Workspace, WorkspaceStore,
-    local_workspace_windows, open_new,
+    AppState, CloseIntent, CloseProject, MultiWorkspace, OpenOptions, SerializedWorkspaceLocation,
+    Workspace, WorkspaceStore, open_new, workspace_windows_for_location,
 };
 use reqwest_client::ReqwestClient;
 use zdroid_runtime::{
@@ -1550,8 +1550,11 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 // Fall back to the first local MultiWorkspace window. Same
                 // recovery the upstream `prompt_and_open_paths` does for its
                 // own scheduling.
-                let fallback =
-                    cx.update(|cx| local_workspace_windows(cx).into_iter().next());
+                let fallback = cx.update(|cx| {
+                    workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx)
+                        .into_iter()
+                        .next()
+                });
                 if let Some(mw) = fallback {
                     log::warn!(
                         "zed_android: Open action active_window was not a workspace; \
