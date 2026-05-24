@@ -27,13 +27,15 @@ use clap::Args;
 use edit_prediction::example_spec::ExampleSpec;
 use rand::Rng;
 use rand::SeedableRng;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use similar::{DiffTag, TextDiff};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
+
+const MAX_SPLIT_POINT_SAMPLING_ATTEMPTS: usize = 10;
 
 /// `ep split-commit` CLI args.
 #[derive(Debug, Args, Clone)]
@@ -74,11 +76,12 @@ pub struct AnnotatedCommit {
 }
 
 /// Cursor position in a file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorPosition {
     pub file: String,
     pub line: usize,
     pub column: usize,
+    pub line_length: usize,
 }
 
 impl std::fmt::Display for CursorPosition {
@@ -109,6 +112,89 @@ fn parse_split_point(value: &str) -> Option<SplitPoint> {
     } else {
         value.parse::<usize>().ok().map(SplitPoint::Index)
     }
+}
+
+fn is_service_file(path: &str) -> bool {
+    let path = path.trim();
+    let path = path
+        .strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
+        .trim_start_matches("./");
+
+    if path.is_empty() || path == "/dev/null" {
+        return true;
+    }
+
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    if matches!(
+        file_name,
+        "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "Cargo.lock"
+            | "yarn.lock"
+            | "bun.lock"
+            | "bun.lockb"
+            | "go.sum"
+            | "composer.lock"
+            | "Gemfile.lock"
+            | "Pipfile.lock"
+            | "poetry.lock"
+            | "uv.lock"
+            | ".gitlab-ci.yml"
+            | ".travis.yml"
+            | "azure-pipelines.yml"
+            | "Jenkinsfile"
+    ) {
+        return true;
+    }
+
+    if file_name.ends_with(".min.js")
+        || file_name.ends_with(".bundle.js")
+        || file_name.contains(".generated.")
+        || file_name.ends_with(".pb.go")
+    {
+        return true;
+    }
+
+    if path == ".github/workflows"
+        || path.starts_with(".github/workflows/")
+        || path == ".circleci"
+        || path.starts_with(".circleci/")
+    {
+        return true;
+    }
+
+    path.split('/').any(|component| {
+        matches!(
+            component,
+            "dist" | "build" | "coverage" | "node_modules" | "vendor"
+        )
+    })
+}
+
+fn edit_starts_on_service_file(patch: &Patch, split_pos: usize) -> bool {
+    locate_edited_line(patch, split_pos as isize)
+        .is_some_and(|edit_location| is_service_file(&edit_location.filename))
+}
+
+fn sample_split_point(patch: &Patch, rng: &mut dyn rand::RngCore) -> usize {
+    let stats = patch.stats();
+    let num_edits = stats.added + stats.removed;
+    if num_edits == 0 {
+        return 0;
+    }
+
+    let mut split = rng.random_range(1..=num_edits);
+    for _ in 1..MAX_SPLIT_POINT_SAMPLING_ATTEMPTS {
+        if !edit_starts_on_service_file(patch, split) {
+            break;
+        }
+        split = rng.random_range(1..=num_edits);
+    }
+
+    split
 }
 
 /// Entry point for the `ep split-commit` subcommand.
@@ -302,7 +388,7 @@ pub fn generate_evaluation_example_from_ordered_commit(
     anyhow::ensure!(num_edits != 0, "no edits found in commit");
 
     let split = match split_point {
-        None => rng.random_range(1..=num_edits),
+        None => sample_split_point(&patch, rng.as_mut()),
         Some(SplitPoint::Fraction(f)) => {
             let v = (f * num_edits as f64).floor() as usize;
             v.min(num_edits)
@@ -331,7 +417,7 @@ pub fn generate_evaluation_example_from_ordered_commit(
     // Sample cursor position
     let cursor = match cursor_opt {
         Some(c) => c,
-        None => sample_cursor_position(&patch, &split_commit)
+        None => sample_cursor_position(&split_commit, rng.as_mut())
             .context("failed to sample cursor position")?,
     };
 
@@ -343,7 +429,8 @@ pub fn generate_evaluation_example_from_ordered_commit(
     )
     .context("failed to generate cursor excerpt")?;
 
-    // Handle edge case where split_point == 0
+    // Where the source patch is empty, there's not enough info to make a
+    // meaningful prediction
     if split == 0 {
         split_commit.target_patch = String::new();
     }
@@ -370,6 +457,9 @@ pub fn generate_evaluation_example_from_ordered_commit(
         tags: vec![],
         reasoning: None,
         uncommitted_diff: String::new(),
+        recently_opened_files: Vec::new(),
+        recently_viewed_files: Vec::new(),
+        uncommitted_diff_contains_edit_history: false,
         rejected_patch: None,
 
         telemetry: None,
@@ -389,7 +479,12 @@ pub fn generate_evaluation_example_from_ordered_commit(
 pub fn split_ordered_commit(commit: &str, split_pos: usize) -> (String, String) {
     let patch = Patch::parse_unified_diff(commit);
     let source_edits: BTreeSet<usize> = (0..split_pos).collect();
-    let (source, target) = extract_edits(&patch, &source_edits);
+    let (source, mut target) = extract_edits(&patch, &source_edits);
+    if !target.hunks.is_empty() {
+        if let Some(header) = header_for_edit(&patch, split_pos) {
+            target.header = header;
+        }
+    }
 
     let mut source_str = source.to_string();
     let target_str = target.to_string();
@@ -412,6 +507,47 @@ pub fn split_ordered_commit(commit: &str, split_pos: usize) -> (String, String) 
     }
 
     (source_str, target_str)
+}
+
+fn header_for_edit(patch: &Patch, edit_index: usize) -> Option<String> {
+    let edit_index = edit_index.try_into().ok()?;
+    let edit_location = locate_edited_line(patch, edit_index)?;
+    header_for_hunk(patch, edit_location.hunk_index)
+}
+
+fn header_for_hunk(patch: &Patch, hunk_index: usize) -> Option<String> {
+    for hunk in patch.hunks.get(..hunk_index)?.iter().rev() {
+        let mut header_lines = Vec::new();
+        for line in hunk.lines.iter().rev() {
+            let PatchLine::Garbage(line) = line else {
+                break;
+            };
+            if line.trim().is_empty() && header_lines.is_empty() {
+                continue;
+            }
+            if !line.starts_with("//") {
+                break;
+            }
+            header_lines.push(line.as_str());
+        }
+        if !header_lines.is_empty() {
+            return Some(render_reversed_header_lines(header_lines));
+        }
+    }
+
+    let header_lines = patch
+        .header
+        .lines()
+        .rev()
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| line.starts_with("//"))
+        .collect::<Vec<_>>();
+    (!header_lines.is_empty()).then(|| render_reversed_header_lines(header_lines))
+}
+
+fn render_reversed_header_lines(mut lines: Vec<&str>) -> String {
+    lines.reverse();
+    lines.join("\n") + "\n"
 }
 
 /// Calculate the weight for a split position based on the character at that position.
@@ -751,15 +887,12 @@ pub fn imitate_human_edits(
     }
 
     // Calculate cursor position
-    let cursor = CursorPosition {
-        file: tgt_edit_loc.filename.clone(),
-        line: if is_replacement {
-            src_edit_loc.as_ref().unwrap().source_line_number
-        } else {
-            tgt_edit_loc.target_line_number
-        },
-        column: new_src.len() + 1,
+    let line = if is_replacement {
+        src_edit_loc.as_ref().unwrap().source_line_number
+    } else {
+        tgt_edit_loc.target_line_number
     };
+    let column = new_src.len() + 1;
 
     // Add remainder of source if similar enough to target remainder
     let remainder_src: String = (last_old_end..src_tokens.len())
@@ -781,6 +914,13 @@ pub fn imitate_human_edits(
     if new_src == src_line {
         return no_change;
     }
+
+    let cursor = CursorPosition {
+        file: tgt_edit_loc.filename.clone(),
+        line,
+        column: column.min(new_src.len()),
+        line_length: new_src.len(),
+    };
 
     // Build new source patch with the intermediate line
     let mut new_src_patch = src_patch;
@@ -857,16 +997,17 @@ pub fn imitate_human_edits(
 fn locate_end_of_last_edit(patch: &Patch) -> Option<CursorPosition> {
     let loc = locate_edited_line(patch, -1)?;
 
-    let (line, col) = match &loc.patch_line {
-        PatchLine::Addition(content) => (loc.target_line_number, content.len()),
-        PatchLine::Deletion(_) => (loc.target_line_number, 1),
+    let (line, column, line_length) = match &loc.patch_line {
+        PatchLine::Addition(content) => (loc.target_line_number, content.len(), content.len()),
+        PatchLine::Deletion(_) => (loc.target_line_number, 1, 1),
         _ => return None,
     };
 
     Some(CursorPosition {
         file: loc.filename,
         line,
-        column: col,
+        column,
+        line_length,
     })
 }
 
@@ -875,7 +1016,7 @@ fn locate_beginning_of_first_edit(patch: &Patch) -> Option<CursorPosition> {
     let loc = locate_edited_line(patch, 0)?;
 
     let hunk = patch.hunks.get(loc.hunk_index)?;
-    let column = if loc.line_index_within_hunk > 0 {
+    let line_length = if loc.line_index_within_hunk > 0 {
         if let Some(prev_line) = hunk.lines.get(loc.line_index_within_hunk - 1) {
             let content = match prev_line {
                 PatchLine::Context(s) | PatchLine::Addition(s) | PatchLine::Deletion(s) => s,
@@ -890,32 +1031,57 @@ fn locate_beginning_of_first_edit(patch: &Patch) -> Option<CursorPosition> {
     };
 
     let line = loc.target_line_number.saturating_sub(1).max(1);
+    let column = line_length.saturating_sub(1);
 
     Some(CursorPosition {
         file: loc.filename,
         line,
         column,
+        line_length,
     })
 }
 
 /// Sample cursor position according to the following rules:
-/// 1. 50% chance of cursor being at the end of the source patch
-/// 2. 50% chance of cursor being at the beginning of the target patch
-pub fn sample_cursor_position(patch: &Patch, split_commit: &SplitCommit) -> Option<CursorPosition> {
-    // Try end of history first
+/// 1. 80% chance of cursor being at the end of the source patch
+/// 2. 20% chance of cursor being at the beginning of the target patch
+/// 3. 20% chance of adding a jitter offset
+pub fn sample_cursor_position(
+    split_commit: &SplitCommit,
+    rng: &mut dyn rand::RngCore,
+) -> Option<CursorPosition> {
+    // End of history
     let src_patch = Patch::parse_unified_diff(&split_commit.source_patch);
-    if let Some(cursor) = locate_end_of_last_edit(&src_patch) {
-        return Some(cursor);
-    }
+    let src_cursor = locate_end_of_last_edit(&src_patch);
 
-    // Try beginning of target
+    // Beginning of target
     let tgt_patch = Patch::parse_unified_diff(&split_commit.target_patch);
-    if let Some(cursor) = locate_beginning_of_first_edit(&tgt_patch) {
-        return Some(cursor);
+    let tgt_cursor = locate_beginning_of_first_edit(&tgt_patch);
+
+    // Randomly pick a cursor position
+    let prefer_source = rng.random_bool(0.8);
+    let mut cursor = if prefer_source {
+        src_cursor.or(tgt_cursor)
+    } else {
+        tgt_cursor.or(src_cursor)
+    };
+
+    // Possible add jitter
+    let should_jitter = rng.random_bool(0.2);
+    if should_jitter {
+        if let Some(cursor) = cursor.as_mut() {
+            let col_offset = rng.random_range(1..=5);
+            if rng.random_bool(0.5) {
+                cursor.column = cursor
+                    .column
+                    .saturating_add(col_offset)
+                    .min(cursor.line_length);
+            } else {
+                cursor.column = cursor.column.saturating_sub(col_offset);
+            }
+        }
     }
 
-    // Fallback: use the original patch
-    locate_end_of_last_edit(patch)
+    cursor
 }
 
 /// Get cursor excerpt from the patches.
@@ -1145,6 +1311,55 @@ mod tests {
     }
 
     #[test]
+    fn test_split_ordered_commit_target_header_continues_current_group() {
+        let commit = r#"////////////////////////////////////////////////////////////////////////////////
+// Update dependency version
+////////////////////////////////////////////////////////////////////////////////
+--- a/go.mod
++++ b/go.mod
+@@ -1,3 +1,3 @@
+ require (
+-	gopkg.in/yaml.v3 v3.0.0 // indirect
++	gopkg.in/yaml.v3 v3.0.1 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index f71a068..b8cc3c2 100644
+////////////////////////////////////////////////////////////////////////////////
+// Update go.sum checksums
+////////////////////////////////////////////////////////////////////////////////
+--- a/go.sum
++++ b/go.sum
+@@ -1,3 +1,5 @@
+ gopkg.in/yaml.v3 v3.0.0 h1:old
+ gopkg.in/yaml.v3 v3.0.0/go.mod h1:oldmod
++gopkg.in/yaml.v3 v3.0.1 h1:new
++gopkg.in/yaml.v3 v3.0.1/go.mod h1:newmod
+diff --git a/lib/handler.go b/lib/handler.go
+index 1827a70..d9b3ed1 100644
+////////////////////////////////////////////////////////////////////////////////
+// Fix error wrapping
+////////////////////////////////////////////////////////////////////////////////
+--- a/lib/handler.go
++++ b/lib/handler.go
+@@ -1,3 +1,3 @@
+-	return fmt.Errorf("failed: %s", err)
++	return fmt.Errorf("failed: %w", err)
+"#;
+
+        let (_source, target) = split_ordered_commit(commit, 3);
+
+        assert!(
+            target.starts_with(
+                "////////////////////////////////////////////////////////////////////////////////\n// Update go.sum checksums\n////////////////////////////////////////////////////////////////////////////////\n"
+            ),
+            "target patch should continue with the active group header:\n{target}"
+        );
+        assert!(!target.starts_with(
+            "////////////////////////////////////////////////////////////////////////////////\n// Update dependency version\n////////////////////////////////////////////////////////////////////////////////\n"
+        ));
+    }
+
+    #[test]
     fn test_generate_evaluation_example() {
         let commit = r#"commit abc123
 Author: Test <test@example.com>
@@ -1227,6 +1442,7 @@ Date: Mon Jan 1 00:00:00 2024
             file: "src/main.rs".to_string(),
             line: 42,
             column: 10,
+            line_length: 80,
         };
         assert_eq!(cursor.to_string(), "src/main.rs:42:10");
     }
@@ -1369,6 +1585,9 @@ Date: Mon Jan 1 00:00:00 2024
             tags: vec![],
             reasoning: None,
             uncommitted_diff: String::new(),
+            recently_opened_files: Vec::new(),
+            recently_viewed_files: Vec::new(),
+            uncommitted_diff_contains_edit_history: false,
             rejected_patch: None,
 
             telemetry: None,
@@ -1437,6 +1656,44 @@ index 123..456 789
         // but not the commit metadata
         assert!(!case.edit_history.contains("Author:"));
         assert!(!case.edit_history.contains("Date:"));
+    }
+
+    #[test]
+    fn test_service_file_detection() {
+        assert!(is_service_file("package.json"));
+        assert!(is_service_file("frontend/yarn.lock"));
+        assert!(is_service_file("a/src/generated/types.pb.go"));
+        assert!(is_service_file("b/.github/workflows/ci.yml"));
+        assert!(is_service_file("web/node_modules/pkg/index.js"));
+        assert!(is_service_file("dist/app.bundle.js"));
+
+        assert!(!is_service_file("src/main.rs"));
+        assert!(!is_service_file("src/build.rs"));
+        assert!(!is_service_file("Cargo.toml"));
+    }
+
+    #[test]
+    fn test_edit_starts_on_service_file() {
+        let commit = r#"--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,2 @@
+ fn lib() {}
++pub fn added() {}
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,1 +1,2 @@
+ {}
++{"lockfileVersion": 3}
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,1 +1,2 @@
+ fn main() {}
++println!("hello");
+"#;
+        let patch = Patch::parse_unified_diff(commit);
+
+        assert!(edit_starts_on_service_file(&patch, 1));
+        assert!(!edit_starts_on_service_file(&patch, 2));
     }
 
     #[test]
@@ -1754,6 +2011,7 @@ index 123..456 789
             file: "test.md".to_string(),
             line: 1,
             column: 1, // Byte index 1 is inside '第' (bytes 0..3)
+            line_length: 80,
         };
 
         let source_patch = r#"--- a/test.md
