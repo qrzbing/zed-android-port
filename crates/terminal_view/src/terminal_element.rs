@@ -674,9 +674,7 @@ impl TerminalElement {
                 let scroll_top = terminal_view.read(cx).scroll_top;
                 terminal.update(cx, |terminal, cx| {
                     let mut adjusted_event = e.clone();
-                    if scroll_top > Pixels::ZERO {
-                        adjusted_event.position.y += scroll_top;
-                    }
+                    adjusted_event.position.y += scroll_top - terminal.scroll_fract_px();
                     terminal.mouse_down(&adjusted_event, cx);
                     cx.notify();
                 })
@@ -700,9 +698,7 @@ impl TerminalElement {
                     terminal.update(cx, |terminal, cx| {
                         if terminal.selection_started() || hovered {
                             let mut adjusted_event = e.clone();
-                            if scroll_top > Pixels::ZERO {
-                                adjusted_event.position.y += scroll_top;
-                            }
+                            adjusted_event.position.y += scroll_top - terminal.scroll_fract_px();
                             terminal.mouse_drag(&adjusted_event, hitbox.bounds, cx);
                             cx.notify();
                         }
@@ -1296,9 +1292,14 @@ impl Element for TerminalElement {
         let paint_start = Instant::now();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let scroll_top = self.terminal_view.read(cx).scroll_top;
+            let scroll_fract = self.terminal.read(cx).scroll_fract_px();
 
             window.paint_quad(fill(bounds, layout.background_color));
-            let origin = layout.dimensions.bounds.origin - Point::new(px(0.), scroll_top);
+            // `scroll_top` (block-below-cursor) shifts content up; the smooth
+            // scrollback remainder shifts it down to reveal history above, so
+            // the two combine with opposite sign.
+            let origin =
+                layout.dimensions.bounds.origin - Point::new(px(0.), scroll_top - scroll_fract);
             let scale_factor = window.scale_factor();
             let snap_px = |value: Pixels| {
                 Pixels::from((f32::from(value) * scale_factor).floor() / scale_factor)
