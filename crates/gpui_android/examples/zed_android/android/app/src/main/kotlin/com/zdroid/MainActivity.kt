@@ -818,6 +818,22 @@ class MainActivity : GameActivity(), ImeHost {
     /// View has focus. This avoids the `isFocusableInTouchMode=true`
     /// trap that triggers Samsung One UI's accessibility tint and
     /// breaks GameActivity's key dispatch.
+    /// Captured-mouse delivery path. Samsung (and AOSP generally for
+    /// SOURCE_MOUSE_RELATIVE, which carries the SOURCE_CLASS_TRACKBALL
+    /// bit) routes captured relative-mouse motion, buttons, AND the wheel
+    /// through processTrackballEvent -> onTrackballEvent, not the
+    /// captured-pointer callback and not onGenericMotionEvent. Verified on
+    /// device: every captured event arrives here. This is THE path that
+    /// makes a Bluetooth mouse work under pointer capture; without it the
+    /// cursor never moved on any tested device.
+    override fun onTrackballEvent(event: MotionEvent): Boolean {
+        if (window.decorView.hasPointerCapture()) {
+            handleCapturedEvent(event)
+            return true
+        }
+        return super.onTrackballEvent(event)
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val source = event.source
         val isMouseRel = source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
@@ -829,6 +845,21 @@ class MainActivity : GameActivity(), ImeHost {
             return true
         }
         return super.onGenericMotionEvent(event)
+    }
+
+    /// Mouse pointer-acceleration curve: base sensitivity multiplier plus
+    /// a gentle quadratic boost capped well below the touch trackpad's 4x.
+    /// Mice have real desk range and many users dislike heavy mouse accel,
+    /// so this stays subtle; the sensitivity term fixes the sluggish raw-
+    /// count feel under capture.
+    ///   |d|=1  -> ~1.6   (precision when slow)
+    ///   |d|=10 -> ~22
+    ///   |d|=30 -> ~96    (boost capped at 2x)
+    private fun accelerateMouse(delta: Float): Float {
+        val magnitude = kotlin.math.abs(delta)
+        val direction = kotlin.math.sign(delta)
+        val boost = kotlin.math.min(1f + magnitude * magnitude * MOUSE_ACCEL_COEF, MOUSE_ACCEL_CAP)
+        return direction * magnitude * MOUSE_SENSITIVITY * boost
     }
 
     private fun handleCapturedEvent(event: MotionEvent) {
@@ -860,8 +891,17 @@ class MainActivity : GameActivity(), ImeHost {
                     sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
                 }
                 val (maxX, maxY) = visibleBounds()
-                cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
-                cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
+                // Mouse-tuned pointer curve. Under pointer capture Android
+                // bypasses its own acceleration and hands us raw device
+                // counts, so without a curve the cursor crawls on a
+                // high-res panel. Skipped while a button is held so
+                // click-drag selection stays precise 1:1 -- mirrors the
+                // touch trackpad SM's hold-drag exemption.
+                val dragging = event.buttonState != 0
+                val moveX = if (dragging) sumRx else accelerateMouse(sumRx)
+                val moveY = if (dragging) sumRy else accelerateMouse(sumRy)
+                cursorX = (cursorX + moveX).coerceIn(0f, maxX - 1f)
+                cursorY = (cursorY + moveY).coerceIn(0f, maxY - 1f)
                 cursorOverlay?.move(cursorX, cursorY)
             }
         }
@@ -1244,6 +1284,14 @@ class MainActivity : GameActivity(), ImeHost {
     companion object {
         private const val TAG = "zed_android_saf"
         private const val TAG_CAPTURE = "zed_android_capture"
+
+        /// Mouse pointer-curve tuning (see `accelerateMouse`). Sensitivity
+        /// fixes the sluggish raw-count feel under capture; accel stays
+        /// gentle (2x cap) because a mouse is not a finger-travel-limited
+        /// trackpad.
+        private const val MOUSE_SENSITIVITY = 1.6f
+        private const val MOUSE_ACCEL_COEF = 0.004f
+        private const val MOUSE_ACCEL_CAP = 2.0f
         private const val TAG_UPDATE = "zed_android_update"
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2

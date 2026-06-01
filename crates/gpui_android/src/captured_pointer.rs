@@ -84,6 +84,13 @@ const JAVA_ACTION_POINTER_DOWN: i32 = 5;
 const JAVA_ACTION_POINTER_UP: i32 = 6;
 const JAVA_ACTION_BUTTON_PRESS: i32 = 11;
 const JAVA_ACTION_BUTTON_RELEASE: i32 = 12;
+const JAVA_ACTION_SCROLL: i32 = 8;
+
+/// Mouse-wheel detents scroll one "line" each at the framework level
+/// (`AXIS_VSCROLL` is ~±1.0 per notch). The desktop default moves a few
+/// lines per notch; 3 keeps the wheel from feeling sluggish. Editor
+/// scales these by line height via `ScrollDelta::Lines`.
+const MOUSE_WHEEL_LINES_PER_NOTCH: f32 = 3.0;
 
 /// Android `MotionEvent.BUTTON_*` constants. Mirrors `events/mouse.rs`.
 const ANDROID_BUTTON_PRIMARY: i32 = 1 << 0;
@@ -895,6 +902,25 @@ pub(crate) fn translate(
                         position: cursor,
                         modifiers,
                         click_count: 1,
+                    }));
+                }
+            }
+            JAVA_ACTION_SCROLL => {
+                // Mouse wheel. Android carries detents in AXIS_VSCROLL /
+                // AXIS_HSCROLL; Kotlin forwards them as `vscroll` /
+                // `hscroll`, but no arm consumed them before, so the wheel
+                // did nothing. Emit a Lines-based ScrollWheel so the editor
+                // scales by line height like the desktop discrete-wheel
+                // path. Sign passes through as the framework reports it
+                // (positive vscroll = wheel away from user).
+                let dx = event.hscroll * MOUSE_WHEEL_LINES_PER_NOTCH;
+                let dy = event.vscroll * MOUSE_WHEEL_LINES_PER_NOTCH;
+                if dx != 0.0 || dy != 0.0 {
+                    out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position: cursor,
+                        delta: ScrollDelta::Lines(point(dx, dy)),
+                        modifiers,
+                        touch_phase: TouchPhase::Moved,
                     }));
                 }
             }
