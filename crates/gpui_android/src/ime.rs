@@ -640,8 +640,28 @@ fn apply_event(window_ptr: &AndroidWindowStatePtr, event: ImeEvent) {
             true
         }
         ImeEvent::EditorAction { action_id } => {
-            log::info!("ime::editor_action {action_id} (not yet routed)");
-            false
+            // Soft keyboards deliver Enter either as
+            // sendKeyEvent(KEYCODE_ENTER) (handled in the KeyEvent arm) or
+            // as performEditorAction, depending on the keyboard and the
+            // field's imeOptions. The latter used to be dropped, so Enter
+            // did nothing on keyboards / contexts that use it (single-line
+            // search / finder fields without MULTI_LINE, or some IMEs in
+            // the terminal). Synthesize an Enter keypress so it works
+            // regardless of how the IME delivers it; gpui routes the Enter
+            // to the focused element (newline in the editor, run in the
+            // terminal, confirm in a picker).
+            log::info!("ime::editor_action {action_id} -> Enter");
+            const ACTION_DOWN: i32 = 0;
+            const ACTION_UP: i32 = 1;
+            const KEYCODE_ENTER: u32 = 66;
+            for key_action in [ACTION_DOWN, ACTION_UP] {
+                if let Some(input) =
+                    crate::events::translate_extra_key_event(key_action, KEYCODE_ENTER, 0, 0)
+                {
+                    window_ptr.handle_input(input);
+                }
+            }
+            true
         }
     };
 
