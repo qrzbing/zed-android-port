@@ -79,6 +79,37 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
                 return true
             }
         }
+        // Vim command-mode routing: when the focused editor is in a
+        // vim command mode the committed text has to reach the editor
+        // as key *events* so vim's keymap reads it as motions /
+        // operators (`j`, `d`, `w`) instead of inserting the literal
+        // characters. We re-key the whole commit through
+        // `KeyCharacterMap` (same mechanism as the modifier intercept
+        // above) so the full down/up sequence carries the right keyCode
+        // and metaState — shifted letters (`G`, `A`) and symbols (`$`,
+        // `:`, `/`) come through as the keystrokes vim expects. If any
+        // char has no virtual-keyboard mapping `getEvents` returns null
+        // for the batch; we fall through to a plain commit so nothing is
+        // silently dropped (e.g. an emoji pasted in normal mode).
+        if (s.isNotEmpty() && NativeBridge.nativeImeRouteAsKeys()) {
+            val keyMap = android.view.KeyCharacterMap
+                .load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD)
+            val events = keyMap.getEvents(s.toCharArray())
+            if (events != null && events.isNotEmpty()) {
+                Log.i(TAG, "IC.commitText w=$windowId vim-route ${quote(s)} as ${events.size} key events")
+                for (ev in events) {
+                    NativeBridge.nativeImeSendKeyEvent(
+                        windowId,
+                        ev.action,
+                        ev.keyCode,
+                        ev.metaState,
+                        ev.repeatCount,
+                    )
+                }
+                return true
+            }
+            Log.i(TAG, "IC.commitText w=$windowId vim-route fallthrough (no keymap) ${quote(s)}")
+        }
         Log.i(TAG, "IC.commitText w=$windowId text=${quote(s)} cursor=$newCursorPosition")
         NativeBridge.nativeImeCommitText(windowId, s, newCursorPosition)
         return true

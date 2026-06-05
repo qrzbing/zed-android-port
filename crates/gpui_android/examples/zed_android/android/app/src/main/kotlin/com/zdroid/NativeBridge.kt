@@ -207,6 +207,15 @@ object NativeBridge {
     /// target window.
     external fun nativeImePerformEditorAction(windowId: Long, actionId: Int)
 
+    /// Query the global vim-mode routing gate. True when the focused
+    /// editor is in a vim command mode, in which case soft-keyboard
+    /// text has to be re-delivered as key events (so vim reads `j`/`d`/
+    /// `w` as motions/operators) rather than inserted as literal text.
+    /// Driven Rust-side by the app's vim observer; no `windowId`
+    /// because only one editor is focused app-wide. False when vim is
+    /// off or the mode is Insert/Replace (plain text entry).
+    external fun nativeImeRouteAsKeys(): Boolean
+
     /// Mirror Kotlin's `imeShown` flag into the Rust-side global
     /// `SOFT_KEYBOARD_VISIBLE` atomic. Pushed on every transition
     /// (showSoftInput / hideSoftInputFromWindow / WindowInsetsListener
