@@ -136,19 +136,37 @@ class ZdroidInputConnection(private val hostView: View) : BaseInputConnection(ho
 
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
         event ?: return false
+        // Fold in any armed ExtraKeysView modifier (Ctrl / Alt / Shift)
+        // on keys the IME delivers through this path. The important one
+        // is Enter (keyCode 66), which Samsung's keyboard routes here, so
+        // an armed Shift yields Shift+Enter (e.g. a newline in Claude
+        // Code's prompt), Ctrl yields Ctrl+Enter, and so on. The
+        // commitText intercept only covers single-character commits, not
+        // these hardware-style keys, so Enter / Backspace / arrows
+        // arriving here would otherwise drop the modifier. The OR is
+        // idempotent if the keyboard already set the same bit. Pending
+        // (one-shot) modifiers clear on the key's UP so the modifier
+        // spans the whole down/up pair; a latched modifier stays until
+        // the user unlatches it on the row.
+        val host = hostView.context as? ImeHost
+        val modifier = host?.extraKeysModifierState ?: 0
+        val meta = event.metaState or modifier
         Log.i(
             TAG,
             "IC.sendKeyEvent w=$windowId action=${event.action} keyCode=${event.keyCode} " +
-                "meta=0x${Integer.toHexString(event.metaState)} repeat=${event.repeatCount} " +
-                "unicode=${event.unicodeChar} chars=${quote(event.characters ?: "")}"
+                "meta=0x${Integer.toHexString(meta)} (extras=0x${Integer.toHexString(modifier)}) " +
+                "repeat=${event.repeatCount} unicode=${event.unicodeChar} chars=${quote(event.characters ?: "")}"
         )
         NativeBridge.nativeImeSendKeyEvent(
             windowId,
             event.action,
             event.keyCode,
-            event.metaState,
+            meta,
             event.repeatCount,
         )
+        if (modifier != 0 && event.action == KeyEvent.ACTION_UP) {
+            host?.clearExtrasPendingModifier()
+        }
         return true
     }
 

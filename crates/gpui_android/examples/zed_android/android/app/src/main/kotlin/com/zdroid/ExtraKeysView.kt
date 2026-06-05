@@ -14,8 +14,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /// Termux-style "programming extras" row that floats above the system
-/// soft keyboard. Eight keys total (`Esc`, `Tab`, `Ctrl`, `Alt`, `←`,
-/// `↑`, `↓`, `→`) sized via `weight=1` so they distribute evenly
+/// soft keyboard. Nine keys total (`Esc`, `Tab`, `Ctrl`, `Alt`,
+/// `Shift`, `←`, `↑`, `↓`, `→`) sized via `weight=1` so they distribute
 /// across the available width, with rounded corners, ripple
 /// feedback, and Catppuccin Mocha-derived colors that match the
 /// editor theme.
@@ -94,6 +94,7 @@ class ExtraKeysView(
         addRegularKey("Tab", KeyEvent.KEYCODE_TAB)
         addModifierKey("Ctrl", KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON)
         addModifierKey("Alt", KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON)
+        addModifierKey("Shift", KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON)
         addRegularKey("←", KeyEvent.KEYCODE_DPAD_LEFT)
         addRegularKey("↑", KeyEvent.KEYCODE_DPAD_UP)
         addRegularKey("↓", KeyEvent.KEYCODE_DPAD_DOWN)
@@ -112,8 +113,8 @@ class ExtraKeysView(
     /// `keyRepeatTimeout` (initial delay) / `keyRepeatDelay`
     /// (interval) cadence until the user lifts.
     ///
-    /// Modifier keys (`Ctrl`, `Alt`) deliberately don't get this
-    /// handler because they're state toggles, not key fires.
+    /// Modifier keys (`Ctrl`, `Alt`, `Shift`) deliberately don't get
+    /// this handler because they're state toggles, not key fires.
     /// Holding Ctrl shouldn't spam `Ctrl` events.
     ///
     /// `isPressed = true` on DOWN triggers the `RippleDrawable`
@@ -242,7 +243,7 @@ class ExtraKeysView(
             minHeight = dp(44) // Material standard tap target
 
             // weight=1 + width=0 distributes the row's available
-            // width equally across all 8 keys. WRAP_CONTENT would
+            // width equally across all 9 keys. WRAP_CONTENT would
             // sit them at the left.
             val margin = dp(3)
             layoutParams = LinearLayout.LayoutParams(
