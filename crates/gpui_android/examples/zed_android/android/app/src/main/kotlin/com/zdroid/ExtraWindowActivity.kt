@@ -595,6 +595,21 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
         return w to h
     }
 
+    /// Captured-mouse delivery path. Samsung/AOSP route captured
+    /// relative-mouse motion, buttons, and wheel through
+    /// processTrackballEvent -> onTrackballEvent, not onGenericMotionEvent.
+    /// Without this override the physical mouse is dead in this window (the
+    /// cursor never moves) even though the trackpad works via the touch
+    /// path. Mirrors MainActivity.onTrackballEvent; the captured-pointer
+    /// fix has to live in every window that hosts a gpui surface.
+    override fun onTrackballEvent(event: MotionEvent): Boolean {
+        if (window.decorView.hasPointerCapture()) {
+            handleCapturedEvent(event)
+            return true
+        }
+        return super.onTrackballEvent(event)
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val source = event.source
         val isMouseRel = source and InputDevice.SOURCE_MOUSE_RELATIVE != 0
@@ -625,8 +640,14 @@ class ExtraWindowActivity : AppCompatActivity(), ImeHost {
                     sumRy += sumRelativeAxis(event, MotionEvent.AXIS_RELATIVE_Y, i)
                 }
                 val (maxX, maxY) = visibleBounds()
-                cursorX = (cursorX + sumRx).coerceIn(0f, maxX - 1f)
-                cursorY = (cursorY + sumRy).coerceIn(0f, maxY - 1f)
+                // Mouse-tuned pointer curve (shared accelerateMouse) so the
+                // cursor in this window feels identical to the primary one.
+                // Skipped while a button is held for precise click-drag.
+                val dragging = event.buttonState != 0
+                val moveX = if (dragging) sumRx else accelerateMouse(sumRx)
+                val moveY = if (dragging) sumRy else accelerateMouse(sumRy)
+                cursorX = (cursorX + moveX).coerceIn(0f, maxX - 1f)
+                cursorY = (cursorY + moveY).coerceIn(0f, maxY - 1f)
                 cursorOverlay?.move(cursorX, cursorY)
             }
         }

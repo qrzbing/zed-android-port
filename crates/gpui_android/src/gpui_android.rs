@@ -66,6 +66,14 @@ pub(crate) fn programming_extras_row_enabled() -> bool {
     ime::EXTRAS_ROW_ENABLED.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// Push the user's `android_input.invert_scroll` setting to the runtime
+/// atomic read by the captured-pointer synthesizer (trackpad two-finger
+/// scroll + mouse wheel) and the virtual-trackpad SM. Same independent-
+/// of-pane-render rationale as the others.
+pub fn set_invert_scroll(enabled: bool) {
+    ime::INVERT_SCROLL.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
 use std::rc::Rc;
 
 /// Run a gpui application backed by Android's GameActivity event loop.

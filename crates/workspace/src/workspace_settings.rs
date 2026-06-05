@@ -78,6 +78,7 @@ pub struct AndroidInputSettings {
     pub trackpad_mode: bool,
     pub trackpad_mode_active: bool,
     pub programming_extras_row: bool,
+    pub invert_scroll: bool,
 }
 
 impl Settings for WorkspaceSettings {
@@ -177,6 +178,7 @@ impl Settings for AndroidInputSettings {
             trackpad_mode: android_input.trackpad_mode.unwrap_or(false),
             trackpad_mode_active: android_input.trackpad_mode_active.unwrap_or(false),
             programming_extras_row: android_input.programming_extras_row.unwrap_or(false),
+            invert_scroll: android_input.invert_scroll.unwrap_or(false),
         }
     }
 }

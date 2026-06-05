@@ -71,6 +71,31 @@ pub(crate) fn trackpad_mode_enabled() -> bool {
     TRACKPAD_MODE_ENABLED.load(Ordering::Acquire)
 }
 
+/// Mirrors `android_input.invert_scroll`. Written by the SettingsStore
+/// observer in `zed_android::lib::main`. Read by the captured-pointer
+/// synthesizer (`crate::captured_pointer`: trackpad two-finger scroll +
+/// mouse wheel) and the virtual-trackpad SM (`crate::touch`). When set,
+/// those scroll deltas are negated so scrolling matches the user's
+/// platform convention (macOS-style natural vs traditional). Cursor
+/// movement and direct-touch finger scrolling are never inverted.
+pub(crate) static INVERT_SCROLL: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn invert_scroll_enabled() -> bool {
+    INVERT_SCROLL.load(Ordering::Acquire)
+}
+
+/// Negate a scroll delta when `invert_scroll` is set. No-op otherwise, so
+/// default behavior is byte-identical for users who leave it off.
+pub(crate) fn invert_scroll_delta(delta: gpui::ScrollDelta) -> gpui::ScrollDelta {
+    if !invert_scroll_enabled() {
+        return delta;
+    }
+    match delta {
+        gpui::ScrollDelta::Pixels(p) => gpui::ScrollDelta::Pixels(gpui::point(-p.x, -p.y)),
+        gpui::ScrollDelta::Lines(p) => gpui::ScrollDelta::Lines(gpui::point(-p.x, -p.y)),
+    }
+}
+
 use anyhow::Context as _;
 use android_activity::AndroidApp;
 use futures::channel::mpsc;

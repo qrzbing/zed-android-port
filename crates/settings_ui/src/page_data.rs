@@ -236,6 +236,33 @@ fn android_input_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Invert Scroll Direction",
+                description: "Reverse the scroll direction of the \
+                    trackpad (two-finger) and the mouse wheel \
+                    (macOS-style natural vs traditional). Affects the \
+                    hardware trackpad, the mouse wheel, and the virtual \
+                    trackpad. Direct-touch finger scrolling is never \
+                    inverted.",
+                field: Box::new(SettingField {
+                    json_path: Some("android_input.invert_scroll"),
+                    pick: |settings_content| {
+                        settings_content
+                            .android_input
+                            .as_ref()?
+                            .invert_scroll
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .android_input
+                            .get_or_insert_default()
+                            .invert_scroll = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]),
     }
 }

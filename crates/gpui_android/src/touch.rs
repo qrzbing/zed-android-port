@@ -1097,7 +1097,7 @@ impl TrackpadTouchState {
                     if self.phase == TrackpadGesturePhase::MultiFingerScroll {
                         out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
                             position: self.cursor,
-                            delta: ScrollDelta::Pixels(delta),
+                            delta: crate::ime::invert_scroll_delta(ScrollDelta::Pixels(delta)),
                             modifiers,
                             touch_phase: TouchPhase::Moved,
                         }));

@@ -1301,6 +1301,11 @@
     // true. Toggled by the pane tab-bar icon, not edited here
     // directly.
     "trackpad_mode_active": false,
+    // Invert scroll direction (macOS-style natural vs traditional) for
+    // the trackpad two-finger scroll and the mouse wheel. Affects the
+    // hardware/Book Cover trackpad, the wheel, and the virtual trackpad.
+    // Direct-touch finger scrolling is never inverted.
+    "invert_scroll": false,
   },
   // Settings related to the editor's tabs
   "tabs": {

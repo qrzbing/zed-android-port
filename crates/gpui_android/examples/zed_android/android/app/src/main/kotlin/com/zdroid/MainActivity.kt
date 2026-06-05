@@ -847,21 +847,6 @@ class MainActivity : GameActivity(), ImeHost {
         return super.onGenericMotionEvent(event)
     }
 
-    /// Mouse pointer-acceleration curve: base sensitivity multiplier plus
-    /// a gentle quadratic boost capped well below the touch trackpad's 4x.
-    /// Mice have real desk range and many users dislike heavy mouse accel,
-    /// so this stays subtle; the sensitivity term fixes the sluggish raw-
-    /// count feel under capture.
-    ///   |d|=1  -> ~1.6   (precision when slow)
-    ///   |d|=10 -> ~22
-    ///   |d|=30 -> ~96    (boost capped at 2x)
-    private fun accelerateMouse(delta: Float): Float {
-        val magnitude = kotlin.math.abs(delta)
-        val direction = kotlin.math.sign(delta)
-        val boost = kotlin.math.min(1f + magnitude * magnitude * MOUSE_ACCEL_COEF, MOUSE_ACCEL_CAP)
-        return direction * magnitude * MOUSE_SENSITIVITY * boost
-    }
-
     private fun handleCapturedEvent(event: MotionEvent) {
         // Any captured pointer activity makes pointer the current
         // modality; the central applier ensures the sprite is shown.
@@ -1284,14 +1269,6 @@ class MainActivity : GameActivity(), ImeHost {
     companion object {
         private const val TAG = "zed_android_saf"
         private const val TAG_CAPTURE = "zed_android_capture"
-
-        /// Mouse pointer-curve tuning (see `accelerateMouse`). Sensitivity
-        /// fixes the sluggish raw-count feel under capture; accel stays
-        /// gentle (2x cap) because a mouse is not a finger-travel-limited
-        /// trackpad.
-        private const val MOUSE_SENSITIVITY = 1.6f
-        private const val MOUSE_ACCEL_COEF = 0.004f
-        private const val MOUSE_ACCEL_CAP = 2.0f
         private const val TAG_UPDATE = "zed_android_update"
         private const val REQ_OPEN_TREE = 0xA1
         private const val REQ_CREATE_DOCUMENT = 0xA2

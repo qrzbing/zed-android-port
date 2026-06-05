@@ -503,6 +503,13 @@ pub struct AndroidInputSettingsContent {
     ///
     /// Default: true
     pub programming_extras_row: Option<bool>,
+    /// Invert scroll direction (macOS-style natural vs traditional)
+    /// for the trackpad two-finger scroll and the mouse wheel. Affects
+    /// the hardware / Book Cover trackpad, the wheel, and the virtual
+    /// trackpad. Direct-touch finger scrolling is never inverted.
+    ///
+    /// Default: false
+    pub invert_scroll: Option<bool>,
 }
 
 #[with_fallible_options]

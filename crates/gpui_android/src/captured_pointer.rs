@@ -636,7 +636,9 @@ pub(crate) fn translate(
                             state.last_motion_at = Some(Instant::now());
                             out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
                                 position: cursor,
-                                delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
+                                delta: crate::ime::invert_scroll_delta(ScrollDelta::Pixels(
+                                    point(px(dx), px(dy)),
+                                )),
                                 modifiers,
                                 touch_phase: TouchPhase::Moved,
                             }));
@@ -918,7 +920,7 @@ pub(crate) fn translate(
                 if dx != 0.0 || dy != 0.0 {
                     out.push(PlatformInput::ScrollWheel(ScrollWheelEvent {
                         position: cursor,
-                        delta: ScrollDelta::Lines(point(dx, dy)),
+                        delta: crate::ime::invert_scroll_delta(ScrollDelta::Lines(point(dx, dy))),
                         modifiers,
                         touch_phase: TouchPhase::Moved,
                     }));
