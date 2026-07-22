@@ -34,6 +34,7 @@ use crate::ExpandMessageEditor;
 use crate::ManageProfiles;
 use crate::agent_connection_store::AgentConnectionStore;
 use crate::completion_provider::AgentContextSource;
+use crate::remote_agent_configuration::RemoteAgentConfiguration;
 use crate::terminal_thread_metadata_store::{TerminalThreadMetadata, TerminalThreadMetadataStore};
 use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore, ThreadMetadataStoreEvent};
 use crate::{
@@ -46,8 +47,8 @@ use crate::{
     ui::{AgentNotification, AgentNotificationEvent, EndTrialUpsell},
 };
 use crate::{
-    Agent, AgentInitialContent, AgentThreadSource, ExternalSourcePrompt, NewExternalAgentThread,
-    NewNativeAgentThreadFromSummary,
+    Agent, AgentInitialContent, AgentThreadSource, AgentUiMode, ExternalSourcePrompt,
+    NewExternalAgentThread, NewNativeAgentThreadFromSummary,
 };
 use agent_settings::AgentSettings;
 use ai_onboarding::AgentPanelOnboarding;
@@ -843,6 +844,7 @@ enum VisibleSurface<'a> {
     AgentThread(&'a Entity<ConversationView>),
     Terminal(&'a Entity<TerminalView>),
     Configuration(Option<&'a Entity<AgentConfiguration>>),
+    RemoteConfiguration(Option<&'a Entity<RemoteAgentConfiguration>>),
 }
 
 enum WhichFontSize {
@@ -868,6 +870,7 @@ impl OverlayView {
 }
 
 pub struct AgentPanel {
+    mode: AgentUiMode,
     workspace: WeakEntity<Workspace>,
     /// Workspace id is used as a database key
     workspace_id: Option<WorkspaceId>,
@@ -880,6 +883,7 @@ pub struct AgentPanel {
     connection_store: Entity<AgentConnectionStore>,
     context_server_registry: Entity<ContextServerRegistry>,
     configuration: Option<Entity<AgentConfiguration>>,
+    remote_configuration: Option<Entity<RemoteAgentConfiguration>>,
     configuration_subscription: Option<Subscription>,
     focus_handle: FocusHandle,
     base_view: BaseView,
@@ -892,6 +896,7 @@ pub struct AgentPanel {
     new_thread_menu_handle: PopoverMenuHandle<ContextMenu>,
     agent_panel_menu_handle: PopoverMenuHandle<ContextMenu>,
     _extension_subscription: Option<Subscription>,
+    _agent_server_subscription: Option<Subscription>,
     _project_subscription: Subscription,
     zoomed: bool,
     pending_serialization: Option<Task<Result<()>>>,
@@ -995,14 +1000,30 @@ impl AgentPanel {
 
     pub fn load(
         workspace: WeakEntity<Workspace>,
+        cx: AsyncWindowContext,
+    ) -> Task<Result<Entity<Self>>> {
+        Self::load_with_mode(workspace, AgentUiMode::Full, cx)
+    }
+
+    pub fn load_external_only(
+        workspace: WeakEntity<Workspace>,
+        cx: AsyncWindowContext,
+    ) -> Task<Result<Entity<Self>>> {
+        Self::load_with_mode(workspace, AgentUiMode::ExternalOnly, cx)
+    }
+
+    fn load_with_mode(
+        workspace: WeakEntity<Workspace>,
+        mode: AgentUiMode,
         mut cx: AsyncWindowContext,
     ) -> Task<Result<Entity<Self>>> {
-        let prompt_store = cx.update(|_window, cx| PromptStore::global(cx));
+        let prompt_store =
+            (mode == AgentUiMode::Full).then(|| cx.update(|_window, cx| PromptStore::global(cx)));
         let kvp = cx.update(|_window, cx| KeyValueStore::global(cx)).ok();
         cx.spawn(async move |cx| {
             let prompt_store = match prompt_store {
-                Ok(prompt_store) => prompt_store.await.ok(),
-                Err(_) => None,
+                Some(Ok(prompt_store)) => prompt_store.await.ok(),
+                Some(Err(_)) | None => None,
             };
             let workspace_id = workspace
                 .read_with(cx, |workspace, _| workspace.database_id())
@@ -1128,20 +1149,12 @@ impl AgentPanel {
             };
 
             let panel = workspace.update_in(cx, |workspace, window, cx| {
-                let panel = cx.new(|cx| Self::new(workspace, prompt_store, window, cx));
+                let panel = cx.new(|cx| {
+                    Self::new_with_mode(workspace, prompt_store, mode, window, cx)
+                });
 
                 panel.update(cx, |panel, cx| {
                     let is_via_collab = panel.project.read(cx).is_via_collab();
-                    // Collab workspaces only support NativeAgent; clamp any
-                    // non-native choice so `set_active` can't bypass the
-                    // collab guard in `external_thread`.
-                    let clamp = |agent: Agent| {
-                        if is_via_collab && !agent.is_native() {
-                            Agent::NativeAgent
-                        } else {
-                            agent
-                        }
-                    };
                     let global_fallback =
                         global_last_used_agent.filter(|agent| !is_via_collab || agent.is_native());
 
@@ -1159,16 +1172,24 @@ impl AgentPanel {
                     // backend; otherwise fall back to the serialized
                     // selection, then the global last-used agent.
                     let initial_agent = match &thread_to_restore {
-                        Some((info, _)) => Some(clamp(info.agent_type.clone())),
+                        Some((info, _)) => Some(info.agent_type.clone()),
                         None => serialized_panel
                             .as_ref()
                             .and_then(|p| p.selected_agent.clone())
-                            .map(clamp)
                             .or(global_fallback),
                     };
                     if let Some(agent) = initial_agent {
-                        panel.selected_agent = agent;
+                        if panel.mode == AgentUiMode::ExternalOnly {
+                            if panel.external_agent_is_available(&agent, cx) {
+                                panel.selected_agent = agent;
+                            }
+                        } else if is_via_collab && !agent.is_native() {
+                            panel.selected_agent = Agent::NativeAgent;
+                        } else {
+                            panel.selected_agent = agent;
+                        }
                     }
+                    panel.ensure_external_agent_selection(cx);
 
                     if let Some(metadata) = terminal_to_restore {
                         panel.restore_terminal_for_panel_load(
@@ -1179,8 +1200,14 @@ impl AgentPanel {
                             window,
                             cx,
                         );
-                    } else if let Some((info, thread_id)) = thread_to_restore {
-                        let agent = panel.selected_agent.clone();
+                    } else if let Some((info, thread_id)) = thread_to_restore
+                        && panel.can_use_agent(&info.agent_type, cx)
+                    {
+                        let agent = if panel.mode == AgentUiMode::ExternalOnly {
+                            info.agent_type.clone()
+                        } else {
+                            panel.selected_agent.clone()
+                        };
                         panel.load_agent_thread(
                             agent,
                             thread_id,
@@ -1208,9 +1235,20 @@ impl AgentPanel {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(
         workspace: &Workspace,
         prompt_store: Option<Entity<PromptStore>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_mode(workspace, prompt_store, AgentUiMode::Full, window, cx)
+    }
+
+    pub(crate) fn new_with_mode(
+        workspace: &Workspace,
+        prompt_store: Option<Entity<PromptStore>>,
+        mode: AgentUiMode,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1256,13 +1294,22 @@ impl AgentPanel {
         });
 
         let connection_store = cx.new(|cx| AgentConnectionStore::new(project.clone(), cx));
+        let agent_server_store = project.read(cx).agent_server_store().clone();
+        let _agent_server_subscription = (mode == AgentUiMode::ExternalOnly).then(|| {
+            cx.subscribe(&agent_server_store, |this, _store, _event, cx| {
+                this.ensure_external_agent_selection(cx);
+                cx.notify();
+            })
+        });
         let _project_subscription =
             cx.subscribe(&project, |this, _project, event, cx| match event {
                 project::Event::WorktreeAdded(_)
                 | project::Event::WorktreeRemoved(_)
                 | project::Event::WorktreeOrderChanged
                 | project::Event::WorktreePathsChanged { .. } => {
-                    this.ensure_native_agent_connection(cx);
+                    if this.mode == AgentUiMode::Full {
+                        this.ensure_native_agent_connection(cx);
+                    }
                     this.update_thread_work_dirs(cx);
                     this.persist_all_terminal_metadata(cx);
                     cx.notify();
@@ -1285,7 +1332,8 @@ impl AgentPanel {
         })
         .detach();
 
-        let panel = Self {
+        let mut panel = Self {
+            mode,
             workspace_id,
             base_view,
             last_created_entry_kind: AgentPanelEntryKind::Thread,
@@ -1298,6 +1346,7 @@ impl AgentPanel {
             prompt_store,
             connection_store,
             configuration: None,
+            remote_configuration: None,
             configuration_subscription: None,
             focus_handle: cx.focus_handle(),
             context_server_registry,
@@ -1309,6 +1358,7 @@ impl AgentPanel {
             agent_panel_menu_handle: PopoverMenuHandle::default(),
 
             _extension_subscription: extension_subscription,
+            _agent_server_subscription,
             _project_subscription,
             zoomed: false,
             pending_serialization: None,
@@ -1326,7 +1376,11 @@ impl AgentPanel {
             is_active: false,
         };
 
-        panel.ensure_native_agent_connection(cx);
+        if mode == AgentUiMode::Full {
+            panel.ensure_native_agent_connection(cx);
+        } else {
+            panel.ensure_external_agent_selection(cx);
+        }
         panel
     }
 
@@ -1386,6 +1440,54 @@ impl AgentPanel {
         &self.connection_store
     }
 
+    fn is_ssh_project(&self, cx: &App) -> bool {
+        matches!(
+            self.project.read(cx).remote_connection_options(cx),
+            Some(remote::RemoteConnectionOptions::Ssh(_))
+        )
+    }
+
+    fn external_agent_is_available(&self, agent: &Agent, cx: &App) -> bool {
+        let Agent::Custom { id } = agent else {
+            return false;
+        };
+        self.project
+            .read(cx)
+            .agent_server_store()
+            .read(cx)
+            .external_agents()
+            .any(|available_id| available_id == id)
+    }
+
+    fn first_external_agent(&self, cx: &App) -> Option<Agent> {
+        self.project
+            .read(cx)
+            .agent_server_store()
+            .read(cx)
+            .external_agents()
+            .min_by(|left, right| left.as_ref().cmp(right.as_ref()))
+            .cloned()
+            .map(Agent::from)
+    }
+
+    fn ensure_external_agent_selection(&mut self, cx: &App) {
+        if self.mode != AgentUiMode::ExternalOnly
+            || self.external_agent_is_available(&self.selected_agent, cx)
+        {
+            return;
+        }
+
+        self.selected_agent = self.first_external_agent(cx).unwrap_or(Agent::NativeAgent);
+    }
+
+    fn can_use_agent(&self, agent: &Agent, cx: &App) -> bool {
+        self.mode == AgentUiMode::Full
+            || (self.is_ssh_project(cx)
+                && self.project.read(cx).remote_connection_state(cx)
+                    == Some(remote::ConnectionState::Connected)
+                && self.external_agent_is_available(agent, cx))
+    }
+
     pub fn selected_agent(&self, cx: &App) -> Agent {
         if self.project.read(cx).is_via_collab() {
             Agent::NativeAgent
@@ -1402,6 +1504,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return;
+        }
+
         // Share links / clipboard imports enter with only a session id. If
         // this machine already has a metadata row for the session, route
         // through the normal thread-id path.
@@ -1447,6 +1553,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_use_agent(&agent, cx) {
+            return;
+        }
+
         let thread = self.create_agent_thread_with_server_for_external_session(
             agent, None, session_id, work_dirs, title, None, source, window, cx,
         );
@@ -1486,7 +1596,7 @@ impl AgentPanel {
     }
 
     pub fn new_thread(&mut self, _action: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) || !self.can_use_agent(&self.selected_agent, cx) {
             return;
         }
 
@@ -1513,7 +1623,7 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) || !self.can_use_agent(&self.selected_agent, cx) {
             return;
         }
 
@@ -1625,6 +1735,9 @@ impl AgentPanel {
         } else {
             Agent::from(metadata.agent_id.clone())
         };
+        if !self.can_use_agent(&agent, cx) {
+            return;
+        }
         let initial_content = crate::draft_prompt_store::read(thread_id, cx).map(|blocks| {
             AgentInitialContent::ContentBlock {
                 blocks,
@@ -1652,11 +1765,12 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
+        let agent = Agent::from(action.agent.clone());
+        if !self.has_open_project(cx) || !self.can_use_agent(&agent, cx) {
             return;
         }
 
-        self.selected_agent = action.agent.clone().into();
+        self.selected_agent = agent;
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
 
@@ -2540,7 +2654,7 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) || !self.can_use_agent(&self.selected_agent, cx) {
             return;
         }
 
@@ -2979,6 +3093,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return;
+        }
+
         let session_id = action.from_session_id.clone();
 
         let Some(content) = Self::initial_content_for_thread_summary(session_id.clone(), cx) else {
@@ -3037,6 +3155,9 @@ impl AgentPanel {
         }
 
         let agent = agent_choice.unwrap_or_else(|| self.selected_agent(cx));
+        if !self.can_use_agent(&agent, cx) {
+            return;
+        }
         let thread = self.create_agent_thread_with_server(
             agent,
             None,
@@ -3057,6 +3178,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return;
+        }
+
         // The legacy Rules action is rerouted to the skill creator so the
         // existing keyboard shortcut (still bound to `OpenRulesLibrary` in
         // the default keymaps) and any persisted user keymap entries keep
@@ -3070,6 +3195,10 @@ impl AgentPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return;
+        }
+
         let this = cx.weak_entity();
         let on_saved = Rc::new(move |cx: &mut App| {
             this.update(cx, |this, cx| {
@@ -3250,6 +3379,21 @@ impl AgentPanel {
     }
 
     pub(crate) fn open_configuration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == AgentUiMode::ExternalOnly {
+            if matches!(self.overlay_view, Some(OverlayView::Configuration)) {
+                self.clear_overlay(true, window, cx);
+                return;
+            }
+
+            self.remote_configuration =
+                Some(cx.new(|cx| RemoteAgentConfiguration::new(self.project.clone(), window, cx)));
+            self.set_overlay(OverlayView::Configuration, true, window, cx);
+            if let Some(configuration) = self.remote_configuration.as_ref() {
+                configuration.focus_handle(cx).focus(window, cx);
+            }
+            return;
+        }
+
         if matches!(self.overlay_view, Some(OverlayView::Configuration)) {
             self.clear_overlay(true, window, cx);
             return;
@@ -3816,6 +3960,7 @@ impl AgentPanel {
         self.overlay_view = None;
         self.configuration_subscription = None;
         self.configuration = None;
+        self.remote_configuration = None;
     }
 
     fn refresh_base_view_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3873,7 +4018,11 @@ impl AgentPanel {
         if let Some(overlay_view) = &self.overlay_view {
             return match overlay_view {
                 OverlayView::Configuration => {
-                    VisibleSurface::Configuration(self.configuration.as_ref())
+                    if self.mode == AgentUiMode::ExternalOnly {
+                        VisibleSurface::RemoteConfiguration(self.remote_configuration.as_ref())
+                    } else {
+                        VisibleSurface::Configuration(self.configuration.as_ref())
+                    }
                 }
             };
         }
@@ -3974,6 +4123,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_use_agent(&agent, cx) {
+            return;
+        }
+
         if let Some(store) = ThreadMetadataStore::try_global(cx) {
             store.update(cx, |store, cx| {
                 store.unarchive(thread_id, cx);
@@ -4217,6 +4370,13 @@ impl Focusable for AgentPanel {
             VisibleSurface::AgentThread(conversation_view) => conversation_view.focus_handle(cx),
             VisibleSurface::Terminal(terminal_view) => terminal_view.focus_handle(cx),
             VisibleSurface::Configuration(configuration) => {
+                if let Some(configuration) = configuration {
+                    configuration.focus_handle(cx)
+                } else {
+                    self.focus_handle.clone()
+                }
+            }
+            VisibleSurface::RemoteConfiguration(configuration) => {
                 if let Some(configuration) = configuration {
                     configuration.focus_handle(cx)
                 } else {
@@ -4555,6 +4715,9 @@ impl AgentPanel {
         else {
             return false;
         };
+        if !self.can_use_agent(&agent, cx) {
+            return false;
+        }
 
         let thread = self.create_agent_thread_with_server(
             agent,
@@ -4718,7 +4881,7 @@ impl AgentPanel {
                     Label::new("Terminal").into_any_element()
                 }
             }
-            VisibleSurface::Configuration(_) => {
+            VisibleSurface::Configuration(_) | VisibleSurface::RemoteConfiguration(_) => {
                 Label::new("Settings").truncate().into_any_element()
             }
             VisibleSurface::Uninitialized => Label::new("Agent").truncate().into_any_element(),
@@ -4775,6 +4938,7 @@ impl AgentPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let agent_ui_mode = self.mode;
         let focus_handle = self.focus_handle(cx);
         // Resolve menu shortcuts at the thread root; the active editor can
         // shadow panel-level commands such as OpenRulesLibrary.
@@ -4872,7 +5036,7 @@ impl AgentPanel {
                             }
                         }
 
-                        if !showing_terminal {
+                        if !showing_terminal && agent_ui_mode == AgentUiMode::Full {
                             menu = menu
                                 .header("MCP Servers")
                                 .action("Add Custom Server…", Box::new(AddContextServer))
@@ -4964,8 +5128,15 @@ impl AgentPanel {
                             menu = menu.action("Profiles", Box::new(ManageProfiles::default()));
                         }
 
+                        menu = menu.action(
+                            if agent_ui_mode == AgentUiMode::ExternalOnly {
+                                "Remote Agent Settings"
+                            } else {
+                                "Settings"
+                            },
+                            Box::new(OpenSettings),
+                        );
                         menu = menu
-                            .action("Settings", Box::new(OpenSettings))
                             .separator()
                             .action("Toggle Threads Sidebar", Box::new(ToggleWorkspaceSidebar));
 
@@ -5018,6 +5189,26 @@ impl AgentPanel {
         })
     }
 
+    fn render_no_remote_agent_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(Label::new("No remote Agent configured"))
+            .child(
+                Label::new("Configure an external ACP Agent in the SSH host's server settings.")
+                    .color(Color::Muted),
+            )
+            .child(
+                Button::new("configure-remote-agent", "Configure Remote Agent")
+                    .style(ButtonStyle::Filled)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_configuration(window, cx);
+                    })),
+            )
+    }
+
     fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent_server_store = self.project.read(cx).agent_server_store().clone();
 
@@ -5027,8 +5218,12 @@ impl AgentPanel {
         let supports_terminal = self.supports_terminal(cx);
         let showing_terminal = matches!(self.visible_surface(), VisibleSurface::Terminal(_));
 
+        let has_selected_external_agent =
+            self.external_agent_is_available(&self.selected_agent, cx);
         let (selected_agent_custom_icon, selected_agent_label) = if showing_terminal {
             (None, SharedString::from("Terminal"))
+        } else if self.mode == AgentUiMode::ExternalOnly && !has_selected_external_agent {
+            (None, SharedString::from("No Remote Agent"))
         } else if let Agent::Custom { id, .. } = &self.selected_agent {
             let store = agent_server_store.read(cx);
             let icon = store.agent_icon(&id);
@@ -5051,6 +5246,7 @@ impl AgentPanel {
         let new_thread_menu_builder: Rc<
             dyn Fn(&mut Window, &mut App) -> Option<Entity<ContextMenu>>,
         > = {
+            let agent_ui_mode = self.mode;
             let selected_agent = self.selected_agent.clone();
             let is_agent_selected = move |agent: Agent| selected_agent == agent;
 
@@ -5068,59 +5264,62 @@ impl AgentPanel {
                 let active_thread = active_thread.clone();
                 Some(ContextMenu::build(window, cx, |menu, _window, cx| {
                     menu.context(focus_handle.clone())
-                        .when_some(active_thread, |this, active_thread| {
-                            let thread = active_thread.read(cx);
+                        .when(agent_ui_mode == AgentUiMode::Full, |menu| {
+                            menu.when_some(active_thread, |this, active_thread| {
+                                let thread = active_thread.read(cx);
 
-                            if !thread.is_empty() {
-                                let session_id = thread.id().clone();
-                                this.item(
-                                    ContextMenuEntry::new("New From Summary")
-                                        .icon(IconName::ThreadFromSummary)
-                                        .icon_color(Color::Muted)
-                                        .handler(move |window, cx| {
-                                            window.dispatch_action(
-                                                Box::new(NewNativeAgentThreadFromSummary {
-                                                    from_session_id: session_id.clone(),
-                                                }),
-                                                cx,
-                                            );
-                                        }),
-                                )
-                            } else {
-                                this
-                            }
-                        })
-                        .item(
-                            ContextMenuEntry::new("Zed Agent")
-                                .when(
-                                    !showing_terminal && is_agent_selected(Agent::NativeAgent),
-                                    |this| this.action(Box::new(NewThread)),
-                                )
-                                .icon(IconName::ZedAgent)
-                                .icon_color(Color::Muted)
-                                .handler({
-                                    let workspace = workspace.clone();
-                                    move |window, cx| {
-                                        if let Some(workspace) = workspace.upgrade() {
-                                            workspace.update(cx, |workspace, cx| {
-                                                if let Some(panel) =
-                                                    workspace.panel::<AgentPanel>(cx)
-                                                {
-                                                    panel.update(cx, |panel, cx| {
-                                                        panel.selected_agent = Agent::NativeAgent;
-                                                        panel.activate_new_thread(
-                                                            true,
-                                                            AgentThreadSource::AgentPanel,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                }
-                                            });
+                                if !thread.is_empty() {
+                                    let session_id = thread.id().clone();
+                                    this.item(
+                                        ContextMenuEntry::new("New From Summary")
+                                            .icon(IconName::ThreadFromSummary)
+                                            .icon_color(Color::Muted)
+                                            .handler(move |window, cx| {
+                                                window.dispatch_action(
+                                                    Box::new(NewNativeAgentThreadFromSummary {
+                                                        from_session_id: session_id.clone(),
+                                                    }),
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                } else {
+                                    this
+                                }
+                            })
+                            .item(
+                                ContextMenuEntry::new("Zed Agent")
+                                    .when(
+                                        !showing_terminal && is_agent_selected(Agent::NativeAgent),
+                                        |this| this.action(Box::new(NewThread)),
+                                    )
+                                    .icon(IconName::ZedAgent)
+                                    .icon_color(Color::Muted)
+                                    .handler({
+                                        let workspace = workspace.clone();
+                                        move |window, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |workspace, cx| {
+                                                    if let Some(panel) =
+                                                        workspace.panel::<AgentPanel>(cx)
+                                                    {
+                                                        panel.update(cx, |panel, cx| {
+                                                            panel.selected_agent =
+                                                                Agent::NativeAgent;
+                                                            panel.activate_new_thread(
+                                                                true,
+                                                                AgentThreadSource::AgentPanel,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                });
+                                            }
                                         }
-                                    }
-                                }),
-                        )
+                                    }),
+                            )
+                        })
                         .when(supports_terminal, |menu| {
                             menu.item(
                                 ContextMenuEntry::new("Terminal")
@@ -5242,18 +5441,21 @@ impl AgentPanel {
 
                             menu
                         })
-                        .separator()
-                        .item(
-                            ContextMenuEntry::new("Add More Agents")
-                                .icon(IconName::Plus)
-                                .icon_color(Color::Muted)
-                                .handler({
-                                    move |window, cx| {
-                                        window
-                                            .dispatch_action(Box::new(zed_actions::AcpRegistry), cx)
-                                    }
-                                }),
-                        )
+                        .when(agent_ui_mode == AgentUiMode::Full, |menu| {
+                            menu.separator().item(
+                                ContextMenuEntry::new("Add More Agents")
+                                    .icon(IconName::Plus)
+                                    .icon_color(Color::Muted)
+                                    .handler({
+                                        move |window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(zed_actions::AcpRegistry),
+                                                cx,
+                                            )
+                                        }
+                                    }),
+                            )
+                        })
                 }))
             })
         };
@@ -5267,6 +5469,8 @@ impl AgentPanel {
         let selected_agent_custom_icon_for_button = selected_agent_custom_icon.clone();
         let selected_agent_builtin_icon = if showing_terminal {
             Some(IconName::Terminal)
+        } else if self.mode == AgentUiMode::ExternalOnly && !has_selected_external_agent {
+            Some(IconName::Sparkle)
         } else {
             self.selected_agent.icon()
         };
@@ -5489,6 +5693,10 @@ impl AgentPanel {
     }
 
     fn should_render_trial_end_upsell(&self, cx: &mut Context<Self>) -> bool {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return false;
+        }
+
         if TrialEndUpsell::dismissed(cx) {
             return false;
         }
@@ -5524,6 +5732,10 @@ impl AgentPanel {
     }
 
     fn should_render_new_user_onboarding(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.mode == AgentUiMode::ExternalOnly {
+            return false;
+        }
+
         if self
             .new_user_onboarding_upsell_dismissed
             .load(Ordering::Acquire)
@@ -5823,6 +6035,12 @@ impl Render for AgentPanel {
                 VisibleSurface::Uninitialized if !self.has_open_project(cx) => {
                     parent.child(self.render_no_project_state(cx))
                 }
+                VisibleSurface::Uninitialized
+                    if self.mode == AgentUiMode::ExternalOnly
+                        && !self.external_agent_is_available(&self.selected_agent, cx) =>
+                {
+                    parent.child(self.render_no_remote_agent_state(cx))
+                }
                 VisibleSurface::Uninitialized => parent,
                 VisibleSurface::AgentThread(conversation_view) => parent
                     .child(conversation_view.clone())
@@ -5831,6 +6049,9 @@ impl Render for AgentPanel {
                     .child(terminal_view.clone())
                     .child(self.render_drag_target(cx)),
                 VisibleSurface::Configuration(configuration) => {
+                    parent.children(configuration.cloned())
+                }
+                VisibleSurface::RemoteConfiguration(configuration) => {
                     parent.children(configuration.cloned())
                 }
             })
@@ -6180,6 +6401,49 @@ mod tests {
                 )
             })
         }
+    }
+
+    #[gpui::test]
+    async fn test_external_only_panel_does_not_create_native_agent(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            agent::ThreadStore::init_global(cx);
+            language_model::LanguageModelRegistry::test(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/project", json!({ "file.txt": "" })).await;
+        let project = Project::test(fs, [Path::new("/project")], cx).await;
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace
+            .read_with(cx, |multi_workspace, _cx| {
+                multi_workspace.workspace().clone()
+            })
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            cx.new(|cx| {
+                AgentPanel::new_with_mode(workspace, None, AgentUiMode::ExternalOnly, window, cx)
+            })
+        });
+
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.mode, AgentUiMode::ExternalOnly);
+            assert!(
+                panel
+                    .connection_store
+                    .read(cx)
+                    .entry(&Agent::NativeAgent)
+                    .is_none()
+            );
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.new_thread(&NewThread, window, cx);
+            assert!(panel.active_conversation_view().is_none());
+        });
     }
 
     impl AgentConnection for SessionTrackingConnection {

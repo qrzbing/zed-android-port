@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [target.'cfg(target_os = "android")'.dependencies]
+agent_ui = { path = "../../../agent_ui" }
 android-activity = { version = "0.6", features = ["game-activity"] }
 android_logger = "0.13"
 anyhow = "1"

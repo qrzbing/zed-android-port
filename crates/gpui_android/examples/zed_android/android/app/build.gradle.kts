@@ -182,6 +182,7 @@ tasks.matching { it.name == "preBuild" }.configureEach {
 android {
     namespace = "com.zdroid"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     // Pin the NDK explicitly so reproducibility doesn't depend on whatever
     // `sdkmanager --list_installed` happens to surface. Bionic's
@@ -214,6 +215,15 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
+    // Prefer a smaller APK for bandwidth-constrained direct distribution.
+    // Android extracts the compressed native library during installation
+    // instead of loading an uncompressed copy directly from the APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 

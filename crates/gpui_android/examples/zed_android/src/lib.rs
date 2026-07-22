@@ -20,7 +20,7 @@ use db::AppDatabase;
 use db::kvp::KeyValueStore;
 use fs::{Fs, RealFs};
 use node_runtime::NodeRuntime;
-use project::Project;
+use project::{Project, ProjectItem};
 use session::{AppSession, Session};
 use gpui::{App, AppContext as _, TaskExt as _, UpdateGlobal as _};
 use log::{error, info};
@@ -1123,6 +1123,13 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     // panics at first paint with "no state of type
     // language_model::registry::GlobalLanguageModelRegistry exists".
     language_model::init(cx);
+    // The external-only Agent UI reads external ACP Agent definitions from
+    // each Project's AgentServerStore. Register the settings schema before
+    // any Workspace is constructed, then initialize only the shared ACP
+    // thread state and panel actions; native providers and inline assistants
+    // remain disabled on Android.
+    project::agent_server_store::AllAgentServersSettings::register(cx);
+    agent_ui::init_external_only(cx);
     git_ui::init(cx);
     // Mirror production zed/src/main.rs:733 — register the git graph
     // (commit history) view's serializable item, action handlers
@@ -1191,11 +1198,6 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     workspace::init_settings_file_actions(cx);
     editor::init_bundled_file_actions(cx);
     terminal_view::init(cx);
-    // Onboarding reads `AllAgentServersSettings` from the SettingsStore;
-    // `SettingsStore::get` panics if the type isn't registered, so register
-    // it before any onboarding render. agent_settings doesn't expose a
-    // separate init function — registering the type is the whole step.
-    project::agent_server_store::AllAgentServersSettings::register(cx);
     onboarding::init(cx);
     menu_bar::register_actions(cx);
     runtime_picker::register(cx);
@@ -1230,8 +1232,47 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
     let observe_app_state = app_state.clone();
     cx.observe_new(move |workspace: &mut Workspace, window, cx| {
         let Some(window) = window else { return };
+        let is_ssh_workspace = matches!(
+            workspace.project().read(cx).remote_connection_options(cx),
+            Some(remote::RemoteConnectionOptions::Ssh(_))
+        );
 
         workspace.register_action(editor::open_project_settings_file);
+        if is_ssh_workspace {
+            workspace
+                .register_action(agent_ui::AgentPanel::toggle_focus)
+                .register_action(agent_ui::AgentPanel::focus)
+                .register_action(agent_ui::AgentPanel::toggle)
+                .register_action(
+                    |workspace, _: &zed_actions::OpenServerSettings, window, cx| {
+                        let open_server_settings = workspace
+                            .project()
+                            .update(cx, |project, cx| project.open_server_settings(cx));
+
+                        cx.spawn_in(window, async move |workspace, cx| {
+                            let buffer = open_server_settings.await?;
+
+                            workspace
+                                .update_in(cx, |workspace, window, cx| {
+                                    workspace.open_path(
+                                        buffer
+                                            .read(cx)
+                                            .project_path(cx)
+                                            .expect("Settings file must have a location"),
+                                        None,
+                                        true,
+                                        window,
+                                        cx,
+                                    )
+                                })?
+                                .await?;
+
+                            anyhow::Ok(())
+                        })
+                        .detach_and_log_err(cx);
+                    },
+                );
+        }
 
         // CloseProject: action wired in production at
         // `crates/zed/src/zed.rs:1123-1180`. Production binds it inside
@@ -1458,6 +1499,8 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                 terminal_view::terminal_panel::TerminalPanel::load(weak.clone(), cx.clone());
             let git_panel =
                 git_ui::git_panel::GitPanel::load(weak.clone(), cx.clone());
+            let agent_panel = is_ssh_workspace
+                .then(|| agent_ui::AgentPanel::load_external_only(weak.clone(), cx.clone()));
             let (project_panel, outline_panel, terminal_panel, git_panel) =
                 futures::future::join4(
                     project_panel,
@@ -1466,6 +1509,10 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                     git_panel,
                 )
                 .await;
+            let agent_panel = match agent_panel {
+                Some(agent_panel) => Some(agent_panel.await),
+                None => None,
+            };
             weak.update_in(cx, |workspace, window, cx| {
                 if let Ok(panel) = project_panel {
                     workspace.add_panel(panel, window, cx);
@@ -1477,6 +1524,9 @@ fn boot(cx: &mut App, data_path: &std::path::Path) -> Result<()> {
                     workspace.add_panel(panel, window, cx);
                 }
                 if let Ok(panel) = git_panel {
+                    workspace.add_panel(panel, window, cx);
+                }
+                if let Some(Ok(panel)) = agent_panel {
                     workspace.add_panel(panel, window, cx);
                 }
             })?;

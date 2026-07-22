@@ -289,6 +289,10 @@ fn zed_settings_submenu_items() -> Vec<MenuEntry> {
             Box::new(zed_actions::OpenProjectSettingsFile),
         ),
         MenuEntry::Action(
+            "Open Remote Server Settings",
+            Box::new(zed_actions::OpenServerSettings),
+        ),
+        MenuEntry::Action(
             "Open Default Settings",
             Box::new(zed_actions::OpenDefaultSettings),
         ),

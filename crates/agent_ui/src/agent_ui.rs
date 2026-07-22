@@ -24,6 +24,7 @@ mod mode_selector;
 mod model_selector;
 mod model_selector_popover;
 mod profile_selector;
+mod remote_agent_configuration;
 mod terminal_codegen;
 mod terminal_inline_assistant;
 pub mod terminal_thread_metadata_store;
@@ -394,6 +395,13 @@ pub enum Agent {
     Stub,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentUiMode {
+    #[default]
+    Full,
+    ExternalOnly,
+}
+
 impl From<AgentId> for Agent {
     fn from(id: AgentId) -> Self {
         if id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
@@ -643,6 +651,13 @@ pub fn init(
     }
 
     maybe_backfill_editor_layout(fs, is_new_install, cx);
+}
+
+pub fn init_external_only(cx: &mut App) {
+    agent::ThreadStore::init_global(cx);
+    agent_panel::init(cx);
+    thread_metadata_store::ThreadMetadataStore::init_global(cx);
+    terminal_thread_metadata_store::TerminalThreadMetadataStore::init_global(cx);
 }
 
 fn maybe_backfill_editor_layout(fs: Arc<dyn Fs>, is_new_install: bool, cx: &mut App) {
